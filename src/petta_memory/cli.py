@@ -52,7 +52,7 @@ def main(argv: list[str] | None = None) -> int:
             elif args.kind == "role":
                 clusters = store.query_role(args.value, limit=args.limit)
             else:
-                cluster = next((c for c in store.clusters() if c.cluster_id == args.value), None)
+                cluster = store.query_cluster(args.value)
                 clusters = [cluster] if cluster else []
             print("\n".join(c.text for c in clusters if c))
             return 0

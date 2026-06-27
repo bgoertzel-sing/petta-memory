@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import fcntl
 from pathlib import Path
 import os
 import re
@@ -28,8 +29,27 @@ _DEFAULT_PLN_EXCLUDED = {
     "RawUtterance",
     "ClaimText",
     "Said",
+    "SpeechEvent",
     "QuotedClaim",
+    "ClaimSource",
     "ClaimStatus",
+}
+_ID_DECLARING_PREDICATES = {
+    "MemoryCluster",
+    "ObservedEvent",
+    "SpeechEvent",
+    "QuotedClaim",
+    "DerivedBelief",
+    "Decision",
+    "Hypothesis",
+    "OpenQuestion",
+    "Commitment",
+    "Boundary",
+    "Artifact",
+    "StatusEvent",
+    "SalienceEvent",
+    "PromotionEvent",
+    "TruthValueEvent",
 }
 
 
@@ -75,19 +95,26 @@ class MediumMemoryStore:
     def append_cluster(self, text: str) -> MemoryCluster:
         cluster = self.validate_cluster(text)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        old = self.path.read_text(encoding="utf-8") if self.path.exists() else ""
-        separator = "" if not old or old.endswith("\n\n") else "\n"
-        new = old + separator + cluster.record_text
-        fd, tmp_name = tempfile.mkstemp(prefix=f".{self.path.name}.", suffix=".tmp", dir=self.path.parent)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(new)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp_name, self.path)
-        finally:
-            if os.path.exists(tmp_name):
-                os.unlink(tmp_name)
+        lock_path = self.path.with_suffix(self.path.suffix + ".lock")
+        with lock_path.open("a+", encoding="utf-8") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            try:
+                self._reject_duplicate_ids(cluster)
+                old = self.path.read_text(encoding="utf-8") if self.path.exists() else ""
+                separator = "" if not old or old.endswith("\n\n") else "\n"
+                new = old + separator + cluster.record_text
+                fd, tmp_name = tempfile.mkstemp(prefix=f".{self.path.name}.", suffix=".tmp", dir=self.path.parent)
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        f.write(new)
+                        f.flush()
+                        os.fsync(f.fileno())
+                    os.replace(tmp_name, self.path)
+                finally:
+                    if os.path.exists(tmp_name):
+                        os.unlink(tmp_name)
+            finally:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
         return cluster
 
     def validate_cluster(self, text: str) -> MemoryCluster:
@@ -112,7 +139,19 @@ class MediumMemoryStore:
             raise ValidationError(f"cluster must declare (SchemaVersion {cluster_id} {SCHEMA_VERSION})")
         if not (_has_predicate(atoms, "ClusterSource") or _has_predicate(atoms, "HasProvenance")):
             raise ValidationError("cluster needs ClusterSource or HasProvenance")
+        ids = _declared_ids(atoms)
+        duplicates = sorted({ident for ident in ids if ids.count(ident) > 1})
+        if duplicates:
+            raise ValidationError(f"duplicate declared ids in cluster: {', '.join(duplicates)}")
         return MemoryCluster(cluster_id=cluster_id, atoms=atoms)
+
+    def _reject_duplicate_ids(self, cluster: MemoryCluster) -> None:
+        existing_ids: set[str] = set()
+        for existing in self.clusters():
+            existing_ids.update(_declared_ids(existing.atoms))
+        duplicates = sorted(existing_ids & set(_declared_ids(cluster.atoms)))
+        if duplicates:
+            raise ValidationError(f"duplicate ids already exist: {', '.join(duplicates)}")
 
     def validate_atom(self, atom: str) -> None:
         if len(atom.encode("utf-8")) > self.max_atom_chars:
@@ -209,22 +248,36 @@ class MediumMemoryStore:
         return text[:limit_chars]
 
     def pln_view(self, *, excluded_predicates: Optional[set[str]] = None) -> str:
-        excluded = excluded_predicates or _DEFAULT_PLN_EXCLUDED
+        excluded = _DEFAULT_PLN_EXCLUDED | (excluded_predicates or set())
         safe_atoms: list[str] = []
         promoted_beliefs = self._promoted_belief_ids()
+        excluded_ids = self._pln_excluded_subject_ids(excluded)
         for cluster in self.clusters():
             for atom in cluster.atoms:
                 pred = _predicate(atom)
                 if pred in excluded:
                     continue
-                if pred == "EpistemicRole" and "quoted-utterance" in atom:
+                subject = _first_arg(atom)
+                if subject in excluded_ids:
+                    continue
+                if _atom_mentions_any(atom, excluded_ids) and pred in {"About", "EvidenceFor", "HasProvenance", "EpistemicRole"}:
                     continue
                 if pred in {"DerivedBelief", "BeliefContent"}:
-                    subject = _first_arg(atom)
                     if subject not in promoted_beliefs:
                         continue
                 safe_atoms.append(atom)
         return "\n".join(safe_atoms) + ("\n" if safe_atoms else "")
+
+    def _pln_excluded_subject_ids(self, excluded: set[str]) -> set[str]:
+        out: set[str] = set()
+        for cluster in self.clusters():
+            for atom in cluster.atoms:
+                pred = _predicate(atom)
+                if pred in excluded:
+                    out.add(_first_arg(atom))
+                elif pred == "EpistemicRole" and "quoted-utterance" in atom:
+                    out.add(_first_arg(atom))
+        return out
 
     def _promoted_belief_ids(self) -> set[str]:
         promoted: set[str] = set()
@@ -306,6 +359,16 @@ def _objects_for_predicate(atoms: Iterable[str], predicate: str) -> list[str]:
     return out
 
 
+def _declared_ids(atoms: Iterable[str]) -> list[str]:
+    ids: list[str] = []
+    for atom in atoms:
+        if _predicate(atom) in _ID_DECLARING_PREDICATES:
+            ident = _first_arg(atom)
+            if ident:
+                ids.append(ident)
+    return ids
+
+
 def _second_objects_for_predicate(atoms: Iterable[str], predicate: str) -> list[str]:
     out: list[str] = []
     prefix = f"({predicate} "
@@ -329,6 +392,12 @@ def _second_objects_for_subject(atoms: Iterable[str], predicate: str, subject: s
 
 def _cluster_mentions_id(cluster: MemoryCluster, identifier: str) -> bool:
     return any(identifier in atom.split() for atom in cluster.atoms)
+
+
+def _atom_mentions_any(atom: str, identifiers: set[str]) -> bool:
+    if not identifiers:
+        return False
+    return any(identifier in atom.split() for identifier in identifiers)
 
 
 def _split_cluster_chunks(text: str) -> list[str]:

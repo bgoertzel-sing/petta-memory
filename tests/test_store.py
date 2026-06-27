@@ -178,8 +178,8 @@ class MediumMemoryStoreTests(unittest.TestCase):
             self.assertNotIn("QuotedClaim", view)
             self.assertNotIn("DerivedBelief b1", view)
             self.assertNotIn("BeliefContent b1", view)
-            self.assertIn("SpeechEvent se1", view)
-            self.assertIn("About qc1 PLN", view)
+            self.assertNotIn("SpeechEvent se1", view)
+            self.assertNotIn("About qc1 PLN", view)
 
     def test_pln_view_includes_explicitly_promoted_belief(self):
         with tempfile.TemporaryDirectory() as td:
@@ -216,6 +216,13 @@ class MediumMemoryStoreTests(unittest.TestCase):
             store = MediumMemoryStore(path)
             with self.assertRaises(ValidationError):
                 store.clusters()
+
+    def test_reject_duplicate_ids_on_append(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "medium_memory.metta")
+            store.append_cluster(VALID_CLUSTER)
+            with self.assertRaisesRegex(ValidationError, "duplicate ids"):
+                store.append_cluster(VALID_CLUSTER.replace("mc1", "mc-duplicate"))
 
 
 if __name__ == "__main__":

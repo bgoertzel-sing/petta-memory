@@ -25,6 +25,20 @@ CLUSTER = """
 (About b1 MediumPeTTaMemory)
 """
 
+QUOTE_CLUSTER = """
+(MemoryCluster mc-quote-cli)
+(SchemaVersion mc-quote-cli medium-memory-v1)
+(ClusterType mc-quote-cli quote-test)
+(ClusterOpenedAt mc-quote-cli "2026-06-27 14:24 PDT")
+(ClusterSource mc-quote-cli src-test)
+(Contains mc-quote-cli qc-cli)
+(ClusterStatus mc-quote-cli active)
+(QuotedClaim qc-cli)
+(ClaimText qc-cli "quoted claim text")
+(About qc-cli PLN)
+(RawUtterance qc-cli "raw quote")
+"""
+
 
 class CliTests(unittest.TestCase):
     def run_cli(self, args, *, input_text=None):
@@ -45,6 +59,16 @@ class CliTests(unittest.TestCase):
             pln = self.run_cli(["--store", store, "pln-view"])
             self.assertEqual(pln.returncode, 0, pln.stderr)
             self.assertIn("TruthValue b1", pln.stdout)
+
+    def test_pln_view_exclude_extends_default_exclusions(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = str(Path(td) / "medium_memory.metta")
+            self.assertEqual(self.run_cli(["--store", store, "append"], input_text=QUOTE_CLUSTER).returncode, 0)
+            pln = self.run_cli(["--store", store, "pln-view", "--exclude", "About"])
+            self.assertEqual(pln.returncode, 0, pln.stderr)
+            self.assertNotIn("ClaimText", pln.stdout)
+            self.assertNotIn("RawUtterance", pln.stdout)
+            self.assertNotIn("About qc-cli PLN", pln.stdout)
 
 
 if __name__ == "__main__":
