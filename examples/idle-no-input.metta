@@ -1,4 +1,5 @@
 (MemoryCluster mc-20260627-120200-001)
+(SchemaVersion mc-20260627-120200-001 medium-memory-v1)
 (ClusterType mc-20260627-120200-001 idle-observation)
 (ClusterOpenedAt mc-20260627-120200-001 "2026-06-27 12:02 PDT")
 (ClusterSource mc-20260627-120200-001 src-runtime-log-20260627)

@@ -12,5 +12,8 @@ license = {text = "MIT"}
 authors = [{name = "Benjamin Goertzel and collaborators"}]
 
 
+[project.scripts]
+petta-memory = "petta_memory.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]

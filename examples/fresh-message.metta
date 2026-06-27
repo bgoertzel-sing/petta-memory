@@ -1,4 +1,5 @@
 (MemoryCluster mc-20260627-141000-001)
+(SchemaVersion mc-20260627-141000-001 medium-memory-v1)
 (ClusterType mc-20260627-141000-001 episode-record)
 (ClusterOpenedAt mc-20260627-141000-001 "2026-06-27 14:10 PDT")
 (ClusterSource mc-20260627-141000-001 src-telegram-history-20260627)

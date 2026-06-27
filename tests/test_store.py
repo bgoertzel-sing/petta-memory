@@ -10,6 +10,7 @@ from petta_memory import MediumMemoryStore, ValidationError
 
 VALID_CLUSTER = """
 (MemoryCluster mc1)
+(SchemaVersion mc1 medium-memory-v1)
 (ClusterType mc1 episode-record)
 (ClusterOpenedAt mc1 "2026-06-27 14:10 PDT")
 (ClusterSource mc1 src-test)
@@ -23,6 +24,7 @@ VALID_CLUSTER = """
 
 QUOTE_CLUSTER = """
 (MemoryCluster mc2)
+(SchemaVersion mc2 medium-memory-v1)
 (ClusterType mc2 episode-record)
 (ClusterOpenedAt mc2 "2026-06-27 14:11 PDT")
 (ClusterSource mc2 src-test)
@@ -40,6 +42,8 @@ QUOTE_CLUSTER = """
 (BeliefContent b1 (Requires MediumPeTTaMemory PLNReadyViews))
 (TruthValue b1 (stv 0.90 0.70))
 (EvidenceFor b1 qc1)
+(PromotionEvent pe1)
+(PromotesTo pe1 b1)
 """
 
 
@@ -58,6 +62,7 @@ class MediumMemoryStoreTests(unittest.TestCase):
             with self.assertRaises(ValidationError):
                 store.append_cluster("""
 (MemoryCluster mc1)
+(SchemaVersion mc1 medium-memory-v1)
 (ClusterType mc1 episode-record)
 (ClusterOpenedAt mc1 "now")
 (ClusterSource mc1 src-test)
@@ -77,6 +82,7 @@ class MediumMemoryStoreTests(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "ClusterType"):
                 store.append_cluster("""
 (MemoryCluster mc1)
+(SchemaVersion mc1 medium-memory-v1)
 (ClusterOpenedAt mc1 "now")
 (ClusterSource mc1 src-test)
 (Contains mc1 e1)
