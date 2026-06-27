@@ -159,12 +159,16 @@ class MediumMemoryStore:
 
     def query_status(self, status: str, *, limit: int = 20) -> list[MemoryCluster]:
         matches: list[MemoryCluster] = []
+        superseded_events = self._superseded_event_ids()
         for cluster in self.clusters():
-            subjects = _objects_for_predicate(cluster.atoms, "StatusSubject")
-            if subjects:
-                if any(self.current_status(subject) == status for subject in subjects):
-                    matches.append(cluster)
-            elif re.search(rf"\((?:ClusterStatus|HasStatus)\s+[^\s()]+\s+{re.escape(status)}\)", cluster.text):
+            matched = False
+            for event_id in _objects_for_predicate(cluster.atoms, "StatusEvent"):
+                values = _second_objects_for_subject(cluster.atoms, "StatusValue", event_id)
+                if values and values[-1] == status and event_id not in superseded_events:
+                    matched = True
+            if not matched and re.search(rf"\((?:ClusterStatus|HasStatus)\s+[^\s()]+\s+{re.escape(status)}\)", cluster.text):
+                matched = True
+            if matched:
                 matches.append(cluster)
         return self._bounded(matches, limit)
 
@@ -174,11 +178,10 @@ class MediumMemoryStore:
 
     def current_status(self, subject_id: str) -> Optional[str]:
         current: Optional[str] = None
-        superseded_events: set[str] = set()
+        superseded_events = self._superseded_event_ids()
         events: list[tuple[str, str]] = []
         for cluster in self.clusters():
             atoms = cluster.atoms
-            superseded_events.update(_second_objects_for_predicate(atoms, "Supersedes"))
             for event_id in _objects_for_predicate(atoms, "StatusEvent"):
                 if _second_objects_for_subject(atoms, "StatusSubject", event_id) == [subject_id]:
                     values = _second_objects_for_subject(atoms, "StatusValue", event_id)
@@ -188,6 +191,12 @@ class MediumMemoryStore:
             if event_id not in superseded_events:
                 current = value
         return current
+
+    def _superseded_event_ids(self) -> set[str]:
+        superseded_events: set[str] = set()
+        for cluster in self.clusters():
+            superseded_events.update(_second_objects_for_predicate(cluster.atoms, "Supersedes"))
+        return superseded_events
 
     def prompt_view(self, *, limit_chars: int = 4000) -> str:
         pieces: list[str] = []

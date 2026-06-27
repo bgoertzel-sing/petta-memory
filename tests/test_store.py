@@ -42,8 +42,52 @@ QUOTE_CLUSTER = """
 (BeliefContent b1 (Requires MediumPeTTaMemory PLNReadyViews))
 (TruthValue b1 (stv 0.90 0.70))
 (EvidenceFor b1 qc1)
+"""
+
+PROMOTED_BELIEF_CLUSTER = """
+(MemoryCluster mc3)
+(SchemaVersion mc3 medium-memory-v1)
+(ClusterType mc3 belief-promotion)
+(ClusterOpenedAt mc3 "2026-06-27 14:12 PDT")
+(ClusterSource mc3 src-test)
+(Contains mc3 pe1)
+(Contains mc3 b2)
+(ClusterStatus mc3 active)
 (PromotionEvent pe1)
-(PromotesTo pe1 b1)
+(PromotesFrom pe1 qc1)
+(PromotesTo pe1 b2)
+(PromotionRule pe1 explicit-test-promotion)
+(DerivedBelief b2)
+(BeliefContent b2 (Requires MediumPeTTaMemory PLNReadyViews))
+(TruthValue b2 (stv 0.90 0.70))
+(EvidenceFor b2 qc1)
+"""
+
+STATUS_OPEN = """
+(MemoryCluster mc-status-open)
+(SchemaVersion mc-status-open medium-memory-v1)
+(ClusterType mc-status-open status-update)
+(ClusterOpenedAt mc-status-open "2026-06-27 14:12 PDT")
+(ClusterSource mc-status-open src-test)
+(Contains mc-status-open st1)
+(ClusterStatus mc-status-open active)
+(StatusEvent st1)
+(StatusSubject st1 c1)
+(StatusValue st1 active)
+"""
+
+STATUS_RESOLVED = """
+(MemoryCluster mc-status-resolved)
+(SchemaVersion mc-status-resolved medium-memory-v1)
+(ClusterType mc-status-resolved status-update)
+(ClusterOpenedAt mc-status-resolved "2026-06-27 14:13 PDT")
+(ClusterSource mc-status-resolved src-test)
+(Contains mc-status-resolved st2)
+(ClusterStatus mc-status-resolved active)
+(StatusEvent st2)
+(StatusSubject st2 c1)
+(StatusValue st2 resolved)
+(Supersedes st2 st1)
 """
 
 
@@ -54,21 +98,26 @@ class MediumMemoryStoreTests(unittest.TestCase):
             cluster = store.append_cluster(VALID_CLUSTER)
             self.assertEqual(cluster.cluster_id, "mc1")
             self.assertEqual(len(store.clusters()), 1)
+            self.assertIn(";;; BEGIN MemoryCluster mc1", store.tail())
             self.assertIn("(ObservedEvent e1)", store.tail())
 
-    def test_reject_malformed_atom(self):
+    def test_reject_malformed_atom_does_not_alter_file(self):
         with tempfile.TemporaryDirectory() as td:
-            store = MediumMemoryStore(Path(td) / "medium_memory.metta")
+            path = Path(td) / "medium_memory.metta"
+            store = MediumMemoryStore(path)
+            store.append_cluster(VALID_CLUSTER)
+            before = path.read_text()
             with self.assertRaises(ValidationError):
                 store.append_cluster("""
-(MemoryCluster mc1)
-(SchemaVersion mc1 medium-memory-v1)
-(ClusterType mc1 episode-record)
-(ClusterOpenedAt mc1 "now")
-(ClusterSource mc1 src-test)
-(Contains mc1 e1)
+(MemoryCluster mc-bad)
+(SchemaVersion mc-bad medium-memory-v1)
+(ClusterType mc-bad episode-record)
+(ClusterOpenedAt mc-bad "now")
+(ClusterSource mc-bad src-test)
+(Contains mc-bad e1)
 (ObservedEvent e1
 """)
+            self.assertEqual(path.read_text(), before)
 
     def test_reject_oversized_atom(self):
         with tempfile.TemporaryDirectory() as td:
@@ -88,10 +137,23 @@ class MediumMemoryStoreTests(unittest.TestCase):
 (Contains mc1 e1)
 """)
 
-    def test_query_by_id_type_about_status_role(self):
+    def test_reject_missing_schema_version(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "medium_memory.metta")
+            with self.assertRaisesRegex(ValidationError, "SchemaVersion"):
+                store.append_cluster("""
+(MemoryCluster mc1)
+(ClusterType mc1 episode-record)
+(ClusterOpenedAt mc1 "now")
+(ClusterSource mc1 src-test)
+(Contains mc1 e1)
+""")
+
+    def test_query_by_id_type_about_status_role_and_cluster(self):
         with tempfile.TemporaryDirectory() as td:
             store = MediumMemoryStore(Path(td) / "medium_memory.metta")
             store.append_cluster(VALID_CLUSTER)
+            self.assertEqual(store.query_cluster("mc1").cluster_id, "mc1")
             self.assertEqual([c.cluster_id for c in store.query_id("e1")], ["mc1"])
             self.assertEqual([c.cluster_id for c in store.query_type("ObservedEvent")], ["mc1"])
             self.assertEqual([c.cluster_id for c in store.query_about("MediumPeTTaMemory")], ["mc1"])
@@ -104,7 +166,7 @@ class MediumMemoryStoreTests(unittest.TestCase):
             store.append_cluster(VALID_CLUSTER)
             view = store.prompt_view(limit_chars=30)
             self.assertLessEqual(len(view), 30)
-            self.assertTrue(view.startswith("(About") or view.startswith("(ClusterStatus") or view.startswith("(HasStatus"))
+            self.assertTrue(view.startswith("(ClusterStatus") or view.startswith("(About") or view.startswith("(HasStatus"))
 
     def test_pln_view_filters_raw_quotes_and_unpromoted_claims(self):
         with tempfile.TemporaryDirectory() as td:
@@ -114,8 +176,46 @@ class MediumMemoryStoreTests(unittest.TestCase):
             self.assertNotIn("RawUtterance", view)
             self.assertNotIn("ClaimText", view)
             self.assertNotIn("QuotedClaim", view)
-            self.assertIn("DerivedBelief b1", view)
-            self.assertIn("TruthValue b1", view)
+            self.assertNotIn("DerivedBelief b1", view)
+            self.assertNotIn("BeliefContent b1", view)
+            self.assertIn("SpeechEvent se1", view)
+            self.assertIn("About qc1 PLN", view)
+
+    def test_pln_view_includes_explicitly_promoted_belief(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "medium_memory.metta")
+            store.append_cluster(QUOTE_CLUSTER)
+            store.append_cluster(PROMOTED_BELIEF_CLUSTER)
+            view = store.pln_view()
+            self.assertIn("PromotionEvent pe1", view)
+            self.assertIn("DerivedBelief b2", view)
+            self.assertIn("BeliefContent b2", view)
+            self.assertIn("TruthValue b2", view)
+
+    def test_current_status_uses_supersession_events(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "medium_memory.metta")
+            store.append_cluster(STATUS_OPEN)
+            self.assertEqual(store.current_status("c1"), "active")
+            store.append_cluster(STATUS_RESOLVED)
+            self.assertEqual(store.current_status("c1"), "resolved")
+            self.assertEqual([c.cluster_id for c in store.query_status("resolved")], ["mc-status-resolved"])
+
+    def test_delimiter_mismatch_rejected_on_read(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "medium_memory.metta"
+            path.write_text(""";;; BEGIN MemoryCluster mc1
+(MemoryCluster mc1)
+(SchemaVersion mc1 medium-memory-v1)
+(ClusterType mc1 episode-record)
+(ClusterOpenedAt mc1 "now")
+(ClusterSource mc1 src-test)
+(Contains mc1 e1)
+;;; END MemoryCluster other
+""")
+            store = MediumMemoryStore(path)
+            with self.assertRaises(ValidationError):
+                store.clusters()
 
 
 if __name__ == "__main__":
