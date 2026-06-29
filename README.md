@@ -26,6 +26,44 @@ Design source:
 - No database service.
 - No raw transcript mirroring.
 
+## OmegaClaw integration sketch: feature flags and boundary
+
+`petta_memory.omegaclaw` contains a local-only wrapper sketch for future OmegaClaw
+prompt assembly. It is not imported by OmegaClaw and does not touch any live agent
+state.
+
+Feature flags are explicit and default-safe:
+
+- `prompt_view_reads_enabled=False` by default. When false, the wrapper returns an
+  empty prompt fragment. When true, it returns only the bounded `prompt_view` atoms
+  from a caller-supplied local `MediumMemoryStore`, wrapped in a read-only MeTTa
+  envelope.
+- `autonomous_writes_enabled=False` is enforced. Setting it to true raises
+  `LiveWriteDisabled`, and `OmegaClawMemoryBridge.append_from_omegaclaw(...)`
+  always raises in v0.
+
+Intended read/write boundary:
+
+1. **Prompt-view reads:** OmegaClaw may later read a bounded read-only fragment via
+   `OmegaClawMemoryBridge.prompt_view_metta()` after an integration review. These
+   atoms are prompt context, not new authority.
+2. **Manual/local writes:** repository tests and reviewed migration scripts may use
+   `MediumMemoryStore.append_cluster(...)` directly against local files.
+3. **Autonomous memory writes:** disabled until a separate design review defines
+   validation, provenance, failure handling, audit logging, and rollback semantics.
+
+Example wrapper shape:
+
+```text
+;;; BEGIN OmegaClawPromptView oc-prompt-memory-view
+(OmegaClawPromptView oc-prompt-memory-view)
+(PromptViewSource oc-prompt-memory-view petta-memory)
+(PromptViewMode oc-prompt-memory-view read-only)
+(PromptViewGeneratedAt oc-prompt-memory-view "2026-06-29T18:10:00+00:00")
+...
+;;; END OmegaClawPromptView oc-prompt-memory-view
+```
+
 ## Canonical record format
 
 Each journal record is one cluster:
