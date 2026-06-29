@@ -22,6 +22,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     prompt = sub.add_parser("prompt-view", help="Print bounded prompt view")
     prompt.add_argument("--limit-chars", type=int, default=4000)
+    prompt.add_argument("--topic", action="append", default=[], help="Prefer clusters with this About target")
+    prompt.add_argument("--status", action="append", default=[], help="Prefer clusters with this status")
 
     pln = sub.add_parser("pln-view", help="Print PLN-safe atom view")
     pln.add_argument("--exclude", action="append", default=[], help="Additional predicate to exclude")
@@ -57,7 +59,9 @@ def main(argv: list[str] | None = None) -> int:
             print("\n".join(c.text for c in clusters if c))
             return 0
         if args.cmd == "prompt-view":
-            print(store.prompt_view(limit_chars=args.limit_chars), end="")
+            topics = set(args.topic) if args.topic else None
+            statuses = set(args.status) if args.status else None
+            print(store.prompt_view(limit_chars=args.limit_chars, topics=topics, statuses=statuses), end="")
             return 0
         if args.cmd == "pln-view":
             excluded = set(args.exclude) if args.exclude else None

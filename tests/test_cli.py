@@ -39,6 +39,19 @@ QUOTE_CLUSTER = """
 (RawUtterance qc-cli "raw quote")
 """
 
+OTHER_TOPIC_CLUSTER = """
+(MemoryCluster mc-other-cli)
+(SchemaVersion mc-other-cli medium-memory-v1)
+(ClusterType mc-other-cli prompt-test)
+(ClusterOpenedAt mc-other-cli "2026-06-27 14:25 PDT")
+(ClusterSource mc-other-cli src-test)
+(Contains mc-other-cli q-other-cli)
+(ClusterStatus mc-other-cli active)
+(OpenQuestion q-other-cli)
+(QuestionText q-other-cli "other topic question")
+(About q-other-cli OtherTopic)
+"""
+
 
 class CliTests(unittest.TestCase):
     def run_cli(self, args, *, input_text=None):
@@ -69,6 +82,15 @@ class CliTests(unittest.TestCase):
             self.assertNotIn("ClaimText", pln.stdout)
             self.assertNotIn("RawUtterance", pln.stdout)
             self.assertNotIn("About qc-cli PLN", pln.stdout)
+
+    def test_prompt_view_accepts_topic_and_status_preferences(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = str(Path(td) / "medium_memory.metta")
+            self.assertEqual(self.run_cli(["--store", store, "append"], input_text=OTHER_TOPIC_CLUSTER).returncode, 0)
+            self.assertEqual(self.run_cli(["--store", store, "append"], input_text=CLUSTER).returncode, 0)
+            prompt = self.run_cli(["--store", store, "prompt-view", "--topic", "MediumPeTTaMemory", "--status", "active"])
+            self.assertEqual(prompt.returncode, 0, prompt.stderr)
+            self.assertLess(prompt.stdout.find("MediumPeTTaMemory"), prompt.stdout.find("OtherTopic"))
 
 
 if __name__ == "__main__":

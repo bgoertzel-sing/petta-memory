@@ -237,15 +237,43 @@ class MediumMemoryStore:
             superseded_events.update(_second_objects_for_predicate(cluster.atoms, "Supersedes"))
         return superseded_events
 
-    def prompt_view(self, *, limit_chars: int = 4000) -> str:
+    def prompt_view(
+        self,
+        *,
+        limit_chars: int = 4000,
+        topics: Optional[set[str]] = None,
+        statuses: Optional[set[str]] = None,
+    ) -> str:
         pieces: list[str] = []
-        allowed = {"CommitmentText", "QuestionText", "BoundaryName", "ArtifactPath", "HasStatus", "ClusterStatus", "StatusValue", "About"}
-        for cluster in self.clusters():
+        allowed = {
+            "CommitmentText",
+            "QuestionText",
+            "BoundaryName",
+            "ArtifactPath",
+            "HasStatus",
+            "ClusterStatus",
+            "StatusValue",
+            "About",
+            "SalienceValue",
+        }
+        clusters = self._prompt_ranked_clusters(topics=topics or set(), statuses=statuses or set())
+        for cluster in clusters:
             for atom in cluster.atoms:
                 if _predicate(atom) in allowed:
                     pieces.append(atom)
         text = "\n".join(pieces)
         return text[:limit_chars]
+
+    def _prompt_ranked_clusters(self, *, topics: set[str], statuses: set[str]) -> list[MemoryCluster]:
+        clusters = self.clusters()
+        recency_rank = {cluster.cluster_id: index for index, cluster in enumerate(reversed(clusters))}
+        return sorted(
+            clusters,
+            key=lambda cluster: (
+                -_prompt_cluster_score(cluster, topics=topics, statuses=statuses),
+                recency_rank[cluster.cluster_id],
+            ),
+        )
 
     def pln_view(self, *, excluded_predicates: Optional[set[str]] = None) -> str:
         excluded = _DEFAULT_PLN_EXCLUDED | (excluded_predicates or set())
@@ -398,6 +426,45 @@ def _atom_mentions_any(atom: str, identifiers: set[str]) -> bool:
     if not identifiers:
         return False
     return any(identifier in atom.split() for identifier in identifiers)
+
+
+def _prompt_cluster_score(cluster: MemoryCluster, *, topics: set[str], statuses: set[str]) -> int:
+    score = 0
+    subjects_with_requested_topic: set[str] = set()
+    for atom in cluster.atoms:
+        pred = _predicate(atom)
+        if pred == "About" and _second_arg(atom) in topics:
+            subjects_with_requested_topic.add(_first_arg(atom))
+            score += 100
+        elif pred in {"ClusterStatus", "HasStatus", "StatusValue"} and _second_arg(atom) in statuses:
+            score += 50
+        elif pred == "SalienceValue":
+            score += _salience_points(_second_arg(atom))
+    if subjects_with_requested_topic:
+        for atom in cluster.atoms:
+            if _predicate(atom) in {"CommitmentText", "QuestionText", "ArtifactPath", "BoundaryName"}:
+                if _first_arg(atom) in subjects_with_requested_topic:
+                    score += 10
+    return score
+
+
+def _second_arg(atom: str) -> str:
+    rest = atom[len(_predicate(atom)) + 2 : -1].strip()
+    parts = rest.split(maxsplit=2)
+    return parts[1] if len(parts) >= 2 else ""
+
+
+def _salience_points(value: str) -> int:
+    if not value:
+        return 0
+    named = {"critical": 40, "high": 30, "medium": 20, "low": 10}
+    if value in named:
+        return named[value]
+    try:
+        numeric = float(value)
+    except ValueError:
+        return 0
+    return max(0, min(40, int(numeric * 40)))
 
 
 def _split_cluster_chunks(text: str) -> list[str]:

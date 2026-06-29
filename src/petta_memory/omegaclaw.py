@@ -23,6 +23,8 @@ class OmegaClawMemoryPolicy:
     autonomous_writes_enabled: bool = False
     prompt_view_limit_chars: int = 4000
     view_id: str = "oc-prompt-memory-view"
+    prompt_topics: frozenset[str] = frozenset()
+    prompt_statuses: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if self.autonomous_writes_enabled:
@@ -57,7 +59,11 @@ class OmegaClawMemoryBridge:
         if not self.policy.prompt_view_reads_enabled:
             return ""
         timestamp = generated_at or datetime.now(timezone.utc).isoformat()
-        body = self.store.prompt_view(limit_chars=self.policy.prompt_view_limit_chars).strip()
+        body = self.store.prompt_view(
+            limit_chars=self.policy.prompt_view_limit_chars,
+            topics=set(self.policy.prompt_topics),
+            statuses=set(self.policy.prompt_statuses),
+        ).strip()
         header = [
             f";;; BEGIN OmegaClawPromptView {self.policy.view_id}",
             f"(OmegaClawPromptView {self.policy.view_id})",

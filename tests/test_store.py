@@ -90,6 +90,51 @@ STATUS_RESOLVED = """
 (Supersedes st2 st1)
 """
 
+OLD_LOW_SALIENCE_CLUSTER = """
+(MemoryCluster mc-old-low)
+(SchemaVersion mc-old-low medium-memory-v1)
+(ClusterType mc-old-low prompt-test)
+(ClusterOpenedAt mc-old-low "2026-06-27 14:00 PDT")
+(ClusterSource mc-old-low src-test)
+(Contains mc-old-low old-commitment)
+(ClusterStatus mc-old-low active)
+(Commitment old-commitment)
+(CommitmentText old-commitment "old but relevant")
+(About old-commitment MediumPeTTaMemory)
+(SalienceEvent sal-old)
+(SalienceSubject sal-old old-commitment)
+(SalienceValue sal-old low)
+"""
+
+NEW_OTHER_TOPIC_CLUSTER = """
+(MemoryCluster mc-new-other-topic)
+(SchemaVersion mc-new-other-topic medium-memory-v1)
+(ClusterType mc-new-other-topic prompt-test)
+(ClusterOpenedAt mc-new-other-topic "2026-06-27 14:01 PDT")
+(ClusterSource mc-new-other-topic src-test)
+(Contains mc-new-other-topic new-question)
+(ClusterStatus mc-new-other-topic active)
+(OpenQuestion new-question)
+(QuestionText new-question "new but unrelated")
+(About new-question OtherTopic)
+"""
+
+HIGH_SALIENCE_DONE_CLUSTER = """
+(MemoryCluster mc-high-done)
+(SchemaVersion mc-high-done medium-memory-v1)
+(ClusterType mc-high-done prompt-test)
+(ClusterOpenedAt mc-high-done "2026-06-27 14:02 PDT")
+(ClusterSource mc-high-done src-test)
+(Contains mc-high-done done-artifact)
+(ClusterStatus mc-high-done resolved)
+(Artifact done-artifact)
+(ArtifactPath done-artifact artifacts/done.txt)
+(About done-artifact MediumPeTTaMemory)
+(SalienceEvent sal-done)
+(SalienceSubject sal-done done-artifact)
+(SalienceValue sal-done high)
+"""
+
 
 class MediumMemoryStoreTests(unittest.TestCase):
     def test_append_valid_cluster_and_read_back(self):
@@ -167,6 +212,16 @@ class MediumMemoryStoreTests(unittest.TestCase):
             view = store.prompt_view(limit_chars=30)
             self.assertLessEqual(len(view), 30)
             self.assertTrue(view.startswith("(ClusterStatus") or view.startswith("(About") or view.startswith("(HasStatus"))
+
+    def test_prompt_view_prefers_topic_status_salience_then_recency(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "medium_memory.metta")
+            store.append_cluster(OLD_LOW_SALIENCE_CLUSTER)
+            store.append_cluster(NEW_OTHER_TOPIC_CLUSTER)
+            store.append_cluster(HIGH_SALIENCE_DONE_CLUSTER)
+            view = store.prompt_view(topics={"MediumPeTTaMemory"}, statuses={"active"}, limit_chars=2000)
+            self.assertLess(view.find("old but relevant"), view.find("done.txt"))
+            self.assertLess(view.find("done.txt"), view.find("new but unrelated"))
 
     def test_pln_view_filters_raw_quotes_and_unpromoted_claims(self):
         with tempfile.TemporaryDirectory() as td:

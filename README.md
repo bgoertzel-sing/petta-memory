@@ -15,7 +15,8 @@ Design source:
 - Require `(SchemaVersion <cluster-id> medium-memory-v1)` in each cluster.
 - Validate basic MeTTa-like syntax, required metadata, and size limits.
 - Query by cluster/id, type, `About`, status, and epistemic role, returning whole clusters.
-- Generate bounded prompt context.
+- Generate bounded prompt context, with optional topic/status preferences and
+  salience/recency ordering.
 - Export a PLN-safe view that excludes raw quoted utterance text and unpromoted quoted claims.
 - Compute current status from append-only `StatusEvent` plus `Supersedes` atoms.
 
