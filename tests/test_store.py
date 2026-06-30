@@ -335,6 +335,33 @@ class MediumMemoryStoreTests(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "duplicate ids"):
                 store.append_cluster(VALID_CLUSTER.replace("mc1", "mc-duplicate"))
 
+    def test_optional_parse_checker_receives_canonical_cluster_before_append(self):
+        seen = []
+
+        def checker(cluster):
+            seen.append((cluster.cluster_id, cluster.atoms))
+            self.assertIn("(ObservedEvent e1)", cluster.atoms)
+
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "medium_memory.metta"
+            store = MediumMemoryStore(path, parse_checker=checker)
+            cluster = store.append_cluster(VALID_CLUSTER)
+            self.assertEqual(seen, [("mc1", cluster.atoms)])
+
+    def test_optional_parse_checker_rejection_does_not_alter_file(self):
+        def checker(cluster):
+            raise RuntimeError("runtime parse failed")
+
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "medium_memory.metta"
+            store = MediumMemoryStore(path)
+            store.append_cluster(VALID_CLUSTER)
+            before = path.read_text()
+            checked_store = MediumMemoryStore(path, parse_checker=checker)
+            with self.assertRaisesRegex(ValidationError, "external parse checker rejected cluster mc-new"):
+                checked_store.append_cluster(VALID_CLUSTER.replace("mc1", "mc-new").replace("e1", "e-new"))
+            self.assertEqual(path.read_text(), before)
+
 
 if __name__ == "__main__":
     unittest.main()

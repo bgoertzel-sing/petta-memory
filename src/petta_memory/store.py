@@ -6,7 +6,7 @@ from pathlib import Path
 import os
 import re
 import tempfile
-from typing import Iterable, Optional
+from typing import Callable, Iterable, Optional
 
 from .sexpr import SExpressionSyntaxError, SExpr, parse_one_list, parse_top_level_lists, symbol_text, to_source
 
@@ -87,11 +87,13 @@ class MediumMemoryStore:
         max_atom_chars: int = 4096,
         max_cluster_chars: int = 65536,
         max_query_chars: int = 20000,
+        parse_checker: Optional[Callable[[MemoryCluster], None]] = None,
     ) -> None:
         self.path = Path(path)
         self.max_atom_chars = max_atom_chars
         self.max_cluster_chars = max_cluster_chars
         self.max_query_chars = max_query_chars
+        self.parse_checker = parse_checker
 
     def append_cluster(self, text: str) -> MemoryCluster:
         cluster = self.validate_cluster(text)
@@ -144,7 +146,26 @@ class MediumMemoryStore:
         duplicates = sorted({ident for ident in ids if ids.count(ident) > 1})
         if duplicates:
             raise ValidationError(f"duplicate declared ids in cluster: {', '.join(duplicates)}")
-        return MemoryCluster(cluster_id=cluster_id, atoms=atoms)
+        cluster = MemoryCluster(cluster_id=cluster_id, atoms=atoms)
+        self._run_parse_checker(cluster)
+        return cluster
+
+    def _run_parse_checker(self, cluster: MemoryCluster) -> None:
+        """Run an optional external runtime parser check after local validation.
+
+        This is a deliberately small integration seam for a future PeTTa/MeTTa
+        runtime parse check. The checker receives the canonicalized cluster and
+        should raise on parse failure; external runtime setup stays outside the
+        store so v0 remains local and dependency-free.
+        """
+        if self.parse_checker is None:
+            return
+        try:
+            self.parse_checker(cluster)
+        except ValidationError:
+            raise
+        except Exception as exc:
+            raise ValidationError(f"external parse checker rejected cluster {cluster.cluster_id}: {exc}") from exc
 
     def _reject_duplicate_ids(self, cluster: MemoryCluster) -> None:
         existing_ids: set[str] = set()

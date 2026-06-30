@@ -14,6 +14,7 @@ Design source:
 - Append complete `MemoryCluster` records only, serialized with explicit begin/end delimiters.
 - Require `(SchemaVersion <cluster-id> medium-memory-v1)` in each cluster.
 - Validate basic MeTTa-like syntax, required metadata, and size limits.
+- Allow a caller-supplied parse-check hook for future PeTTa/MeTTa runtime validation.
 - Query by cluster/id, type, `About`, status, and epistemic role, returning whole clusters.
 - Generate bounded prompt context, with optional topic/status preferences and
   salience/recency ordering.
@@ -77,6 +78,7 @@ Each journal record is one cluster:
 ;;; END MemoryCluster mc-example
 ```
 
-The implementation validates the full cluster before writing, then writes through a
-temporary file replacement. This is conservative and local-first; a later OmegaClaw
-integration can replace it with file locking or an AtomSpace-backed journal.
+The implementation validates the full cluster before writing, optionally runs a
+caller-supplied parse-check hook over the canonicalized cluster, then writes through
+a temporary file replacement. This is conservative and local-first; a later
+OmegaClaw integration can replace it with an AtomSpace-backed journal.
