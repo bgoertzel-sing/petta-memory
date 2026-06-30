@@ -164,6 +164,62 @@ class MediumMemoryStoreTests(unittest.TestCase):
 """)
             self.assertEqual(path.read_text(), before)
 
+    def test_parse_multiline_nested_atom_and_ignore_comment_in_string(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "medium_memory.metta")
+            cluster = store.append_cluster('''
+(MemoryCluster mc-multiline)
+(SchemaVersion mc-multiline medium-memory-v1)
+(ClusterType mc-multiline parser-test)
+(ClusterOpenedAt mc-multiline "2026-06-29 18:00 PDT")
+(ClusterSource mc-multiline src-test)
+(Contains mc-multiline b-multiline)
+(ClusterStatus mc-multiline active)
+; comment between atoms should be ignored
+(DerivedBelief b-multiline)
+(BeliefContent b-multiline
+  (And
+    (Requires MediumPeTTaMemory PLNReadyViews)
+    (Note "parentheses in string (ok) and semicolon ; ok")))
+(TruthValue b-multiline (stv 0.80 0.60))
+(EvidenceFor b-multiline src-test)
+(PromotionEvent pe-multiline)
+(PromotesTo pe-multiline b-multiline)
+''')
+            self.assertEqual(cluster.cluster_id, "mc-multiline")
+            self.assertIn(
+                '(BeliefContent b-multiline (And (Requires MediumPeTTaMemory PLNReadyViews) (Note "parentheses in string (ok) and semicolon ; ok")))',
+                cluster.atoms,
+            )
+
+    def test_reject_extra_tokens_after_complete_atom(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "medium_memory.metta")
+            with self.assertRaises(ValidationError):
+                store.append_cluster('''
+(MemoryCluster mc-bad-extra)
+(SchemaVersion mc-bad-extra medium-memory-v1)
+(ClusterType mc-bad-extra parser-test)
+(ClusterOpenedAt mc-bad-extra "now")
+(ClusterSource mc-bad-extra src-test)
+(Contains mc-bad-extra e1) stray-token
+(ObservedEvent e1)
+''')
+
+    def test_reject_top_level_string_or_symbol(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "medium_memory.metta")
+            with self.assertRaisesRegex(ValidationError, "top-level form"):
+                store.append_cluster('''
+(MemoryCluster mc-bad-top)
+(SchemaVersion mc-bad-top medium-memory-v1)
+(ClusterType mc-bad-top parser-test)
+(ClusterOpenedAt mc-bad-top "now")
+(ClusterSource mc-bad-top src-test)
+(Contains mc-bad-top e1)
+"not an atom"
+''')
+
     def test_reject_oversized_atom(self):
         with tempfile.TemporaryDirectory() as td:
             store = MediumMemoryStore(Path(td) / "medium_memory.metta", max_atom_chars=40)

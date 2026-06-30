@@ -8,6 +8,8 @@ import re
 import tempfile
 from typing import Iterable, Optional
 
+from .sexpr import SExpressionSyntaxError, SExpr, parse_one_list, parse_top_level_lists, symbol_text, to_source
+
 
 class ValidationError(ValueError):
     """Raised when a memory atom or cluster is invalid."""
@@ -16,7 +18,6 @@ class ValidationError(ValueError):
 SCHEMA_VERSION = "medium-memory-v1"
 _BEGIN_PREFIX = ";;; BEGIN MemoryCluster "
 _END_PREFIX = ";;; END MemoryCluster "
-_ATOM_RE = re.compile(r"^\(([^\s()]+)(?:\s+.*)?\)$")
 _ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]*$")
 _REQUIRED_CLUSTER_PREDICATES = (
     "MemoryCluster",
@@ -120,7 +121,7 @@ class MediumMemoryStore:
     def validate_cluster(self, text: str) -> MemoryCluster:
         if len(text.encode("utf-8")) > self.max_cluster_chars:
             raise ValidationError("cluster exceeds max_cluster_chars")
-        atoms = tuple(_clean_atom_lines(text))
+        atoms = tuple(_parse_atom_texts(text))
         if not atoms:
             raise ValidationError("cluster is empty")
         for atom in atoms:
@@ -156,11 +157,11 @@ class MediumMemoryStore:
     def validate_atom(self, atom: str) -> None:
         if len(atom.encode("utf-8")) > self.max_atom_chars:
             raise ValidationError("atom exceeds max_atom_chars")
-        if not atom.startswith("(") or not atom.endswith(")"):
-            raise ValidationError(f"not an atom: {atom}")
-        if not _balanced_parentheses(atom):
-            raise ValidationError(f"unbalanced parentheses: {atom}")
-        if not _ATOM_RE.match(atom):
+        try:
+            parsed = _parse_single_atom(atom)
+        except ValidationError as exc:
+            raise ValidationError(f"malformed atom: {atom}") from exc
+        if not _is_symbol(parsed[0]):
             raise ValidationError(f"malformed atom: {atom}")
 
     def clusters(self) -> list[MemoryCluster]:
@@ -328,48 +329,51 @@ class MediumMemoryStore:
         return clusters[:limit]
 
 
-def _clean_atom_lines(text: str) -> Iterable[str]:
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith(";"):
-            continue
-        yield line
+def _parse_atom_texts(text: str) -> Iterable[str]:
+    """Parse and canonicalize top-level MeTTa/S-expression atoms.
+
+    Comments are ignored outside strings, quoted strings may contain whitespace
+    and parentheses, nested expressions are parsed recursively, and every
+    top-level form must be a non-empty list whose head is a symbol.
+    """
+    try:
+        for expr in parse_top_level_lists(text):
+            if not _is_symbol(expr[0]):
+                raise ValidationError("top-level atom predicate must be a symbol")
+            yield to_source(expr)
+    except SExpressionSyntaxError as exc:
+        raise ValidationError(f"malformed cluster syntax: {exc}") from exc
 
 
-def _balanced_parentheses(text: str) -> bool:
-    depth = 0
-    in_string = False
-    escaped = False
-    for ch in text:
-        if in_string:
-            if escaped:
-                escaped = False
-            elif ch == "\\":
-                escaped = True
-            elif ch == '"':
-                in_string = False
-            continue
-        if ch == '"':
-            in_string = True
-        elif ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-            if depth < 0:
-                return False
-    return depth == 0 and not in_string
+def _parse_single_atom(text: str) -> tuple[SExpr, ...]:
+    try:
+        expr = parse_one_list(text)
+    except SExpressionSyntaxError as exc:
+        raise ValidationError(str(exc)) from exc
+    if not expr:
+        raise ValidationError("expected non-empty list atom")
+    return expr
+
+
+def _render_sexpr(expr: SExpr) -> str:
+    return to_source(expr)
+
+
+def _is_symbol(expr: SExpr) -> bool:
+    return symbol_text(expr) is not None
 
 
 def _predicate(atom: str) -> str:
-    m = _ATOM_RE.match(atom)
-    if not m:
+    parsed = _parse_single_atom(atom)
+    head = parsed[0]
+    if not _is_symbol(head):
         raise ValidationError(f"malformed atom: {atom}")
-    return m.group(1)
+    return str(head)
 
 
 def _first_arg(atom: str) -> str:
-    rest = atom[len(_predicate(atom)) + 2 : -1].strip()
-    return rest.split(maxsplit=1)[0] if rest else ""
+    parsed = _parse_single_atom(atom)
+    return _render_sexpr(parsed[1]) if len(parsed) > 1 else ""
 
 
 def _has_predicate(atoms: Iterable[str], predicate: str) -> bool:
@@ -378,12 +382,10 @@ def _has_predicate(atoms: Iterable[str], predicate: str) -> bool:
 
 def _objects_for_predicate(atoms: Iterable[str], predicate: str) -> list[str]:
     out: list[str] = []
-    prefix = f"({predicate} "
     for atom in atoms:
-        if atom.startswith(prefix):
-            rest = atom[len(prefix) : -1].strip()
-            first = rest.split(maxsplit=1)[0] if rest else ""
-            out.append(first)
+        parsed = _parse_single_atom(atom)
+        if parsed and parsed[0] == predicate:
+            out.append(_render_sexpr(parsed[1]) if len(parsed) > 1 else "")
     return out
 
 
@@ -399,33 +401,31 @@ def _declared_ids(atoms: Iterable[str]) -> list[str]:
 
 def _second_objects_for_predicate(atoms: Iterable[str], predicate: str) -> list[str]:
     out: list[str] = []
-    prefix = f"({predicate} "
     for atom in atoms:
-        if atom.startswith(prefix):
-            parts = atom[len(prefix) : -1].strip().split(maxsplit=2)
-            if len(parts) >= 2:
-                out.append(parts[1])
+        parsed = _parse_single_atom(atom)
+        if parsed and parsed[0] == predicate and len(parsed) >= 3:
+            out.append(_render_sexpr(parsed[2]))
     return out
 
 
 def _second_objects_for_subject(atoms: Iterable[str], predicate: str, subject: str) -> list[str]:
     out: list[str] = []
-    prefix = f"({predicate} {subject} "
     for atom in atoms:
-        if atom.startswith(prefix):
-            rest = atom[len(prefix) : -1].strip()
-            out.append(rest.split(maxsplit=1)[0] if rest else "")
+        parsed = _parse_single_atom(atom)
+        if parsed and parsed[0] == predicate and len(parsed) >= 3 and _render_sexpr(parsed[1]) == subject:
+            out.append(_render_sexpr(parsed[2]))
     return out
 
 
 def _cluster_mentions_id(cluster: MemoryCluster, identifier: str) -> bool:
-    return any(identifier in atom.split() for atom in cluster.atoms)
+    return any(identifier in _atom_symbol_tokens(atom) for atom in cluster.atoms)
 
 
 def _atom_mentions_any(atom: str, identifiers: set[str]) -> bool:
     if not identifiers:
         return False
-    return any(identifier in atom.split() for identifier in identifiers)
+    tokens = _atom_symbol_tokens(atom)
+    return any(identifier in tokens for identifier in identifiers)
 
 
 def _prompt_cluster_score(cluster: MemoryCluster, *, topics: set[str], statuses: set[str]) -> int:
@@ -449,9 +449,22 @@ def _prompt_cluster_score(cluster: MemoryCluster, *, topics: set[str], statuses:
 
 
 def _second_arg(atom: str) -> str:
-    rest = atom[len(_predicate(atom)) + 2 : -1].strip()
-    parts = rest.split(maxsplit=2)
-    return parts[1] if len(parts) >= 2 else ""
+    parsed = _parse_single_atom(atom)
+    return _render_sexpr(parsed[2]) if len(parsed) >= 3 else ""
+
+
+def _atom_symbol_tokens(atom: str) -> set[str]:
+    tokens: set[str] = set()
+
+    def visit(expr: SExpr) -> None:
+        if isinstance(expr, tuple):
+            for item in expr:
+                visit(item)
+        elif isinstance(expr, str):
+            tokens.add(expr)
+
+    visit(_parse_single_atom(atom))
+    return tokens
 
 
 def _salience_points(value: str) -> int:
