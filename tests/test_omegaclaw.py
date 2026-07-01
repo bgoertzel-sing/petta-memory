@@ -9,6 +9,9 @@ from petta_memory import LiveWriteDisabled, MediumMemoryStore, OmegaClawMemoryBr
 from petta_memory.sexpr import parse_top_level_lists
 
 
+ROOT = Path(__file__).resolve().parents[1]
+
+
 VALID_CLUSTER = """
 (MemoryCluster mc-oc1)
 (SchemaVersion mc-oc1 medium-memory-v1)
@@ -44,6 +47,7 @@ class OmegaClawMemoryBridgeTests(unittest.TestCase):
             store.append_cluster(VALID_CLUSTER)
             bridge = OmegaClawMemoryBridge(store)
             self.assertEqual(bridge.prompt_view_metta(generated_at="fixed"), "")
+            self.assertEqual(bridge.index_view_metta(generated_at="fixed"), "")
 
     def test_prompt_view_read_wrapper_is_bounded_and_read_only(self):
         with tempfile.TemporaryDirectory() as td:
@@ -85,9 +89,68 @@ class OmegaClawMemoryBridgeTests(unittest.TestCase):
             self.assertIn('(PromptViewGeneratedAt oc-prompt-memory-view "bad \\"timestamp\\"\\\\with newline\\nkept")', view)
             parse_top_level_lists(view)
 
+    def test_omegaclaw_style_fixture_produces_prompt_view_and_index_context(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "medium_memory.metta")
+            fixture = ROOT / "fixtures" / "omegaclaw_prompt_context.metta"
+            for cluster_text in _fixture_clusters(fixture):
+                store.append_cluster(cluster_text)
+            bridge = OmegaClawMemoryBridge(
+                store,
+                OmegaClawMemoryPolicy(
+                    prompt_view_reads_enabled=True,
+                    prompt_view_limit_chars=420,
+                    prompt_topics=frozenset({"ProtomegabotMemory"}),
+                    prompt_statuses=frozenset({"active"}),
+                    view_id="oc-ggb-memory-gate",
+                ),
+            )
+
+            prompt_context = bridge.prompt_view_metta(generated_at="2026-07-01T15:30:00+00:00")
+            index_context = store.index_view(limit_chars=2000)
+
+            self.assertIn("(OmegaClawPromptView oc-ggb-memory-gate)", prompt_context)
+            self.assertIn("(PromptViewMode oc-ggb-memory-gate read-only)", prompt_context)
+            self.assertIn("ProtomegabotMemory", prompt_context)
+            self.assertIn("Keep OmegaClaw memory reads bounded", prompt_context)
+            self.assertNotIn("Unrelated scheduling detail", prompt_context)
+            self.assertNotIn("MemoryCluster mc-oc-fixture-boundary", prompt_context)
+            self.assertIn("(MM-index-about ProtomegabotMemory cmt-oc-boundary mc-oc-fixture-boundary)", index_context)
+            self.assertIn("(MM-index-about ProtomegabotMemory q-oc-next mc-oc-fixture-task)", index_context)
+            self.assertIn("(MM-index-status active cmt-oc-boundary mc-oc-fixture-boundary)", index_context)
+            parse_top_level_lists(prompt_context)
+            parse_top_level_lists(index_context)
+
+    def test_index_view_wrapper_is_separately_flagged_bounded_and_read_only(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "medium_memory.metta")
+            store.append_cluster(VALID_CLUSTER)
+            bridge = OmegaClawMemoryBridge(
+                store,
+                OmegaClawMemoryPolicy(
+                    index_view_reads_enabled=True,
+                    index_view_limit_chars=140,
+                    index_view_id="oc-test-index-view",
+                ),
+            )
+            view = bridge.index_view_metta(generated_at='bad "timestamp"\nkept')
+            self.assertIn(";;; BEGIN OmegaClawIndexView oc-test-index-view", view)
+            self.assertIn("(IndexViewMode oc-test-index-view read-only-derived)", view)
+            self.assertIn('(IndexViewGeneratedAt oc-test-index-view "bad \\"timestamp\\"\\nkept")', view)
+            self.assertIn("(MM-index-id mc-oc1 mc-oc1)", view)
+            self.assertNotIn("(MemoryCluster mc-oc1)", view)
+            parse_top_level_lists(view)
+
     def test_invalid_prompt_view_policy_ids_are_rejected(self):
         with self.assertRaises(ValidationError):
             OmegaClawMemoryPolicy(view_id='bad id)')
+
+        with self.assertRaises(ValidationError):
+            OmegaClawMemoryPolicy(index_view_id='bad id)')
+
+    def test_negative_index_view_policy_limit_is_rejected(self):
+        with self.assertRaises(ValidationError):
+            OmegaClawMemoryPolicy(index_view_limit_chars=-1)
 
     def test_autonomous_write_flag_and_write_method_are_rejected(self):
         with tempfile.TemporaryDirectory() as td:
@@ -97,6 +160,14 @@ class OmegaClawMemoryBridgeTests(unittest.TestCase):
             bridge = OmegaClawMemoryBridge(store)
             with self.assertRaises(LiveWriteDisabled):
                 bridge.append_from_omegaclaw(VALID_CLUSTER)
+
+
+def _fixture_clusters(path: Path) -> list[str]:
+    return [
+        chunk.strip()
+        for chunk in path.read_text(encoding="utf-8").split(";;; --- cluster ---")
+        if "(MemoryCluster" in chunk
+    ]
 
 
 if __name__ == "__main__":

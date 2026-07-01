@@ -25,9 +25,12 @@ class OmegaClawMemoryPolicy:
     """
 
     prompt_view_reads_enabled: bool = False
+    index_view_reads_enabled: bool = False
     autonomous_writes_enabled: bool = False
     prompt_view_limit_chars: int = 4000
+    index_view_limit_chars: int = 4000
     view_id: str = "oc-prompt-memory-view"
+    index_view_id: str = "oc-memory-index-view"
     prompt_topics: frozenset[str] = frozenset()
     prompt_statuses: frozenset[str] = frozenset()
 
@@ -36,8 +39,12 @@ class OmegaClawMemoryPolicy:
             raise LiveWriteDisabled("autonomous OmegaClaw writes are not enabled in petta-memory v0")
         if self.prompt_view_limit_chars < 0:
             raise ValidationError("prompt_view_limit_chars must be non-negative")
+        if self.index_view_limit_chars < 0:
+            raise ValidationError("index_view_limit_chars must be non-negative")
         if not _ID_RE.match(self.view_id):
             raise ValidationError(f"view_id must be a valid symbol id: {self.view_id}")
+        if not _ID_RE.match(self.index_view_id):
+            raise ValidationError(f"index_view_id must be a valid symbol id: {self.index_view_id}")
 
 
 class OmegaClawMemoryBridge:
@@ -81,6 +88,30 @@ class OmegaClawMemoryBridge:
         if body:
             header.append(body)
         header.append(f";;; END OmegaClawPromptView {self.policy.view_id}")
+        return "\n".join(header) + "\n"
+
+    def index_view_metta(self, *, generated_at: Optional[str] = None) -> str:
+        """Return a bounded read-only generated-index wrapper for OmegaClaw tests.
+
+        The generated `MM-index` is a retrieval aid derived from the journal, not
+        a writable memory record. It is separately feature-flagged so a future
+        integration can enable prompt context and index context independently.
+        """
+
+        if not self.policy.index_view_reads_enabled:
+            return ""
+        timestamp = generated_at or datetime.now(timezone.utc).isoformat()
+        body = self.store.index_view(limit_chars=self.policy.index_view_limit_chars).strip()
+        header = [
+            f";;; BEGIN OmegaClawIndexView {self.policy.index_view_id}",
+            f"(OmegaClawIndexView {self.policy.index_view_id})",
+            f"(IndexViewSource {self.policy.index_view_id} petta-memory)",
+            f"(IndexViewMode {self.policy.index_view_id} read-only-derived)",
+            f"(IndexViewGeneratedAt {self.policy.index_view_id} {_quoted_string(timestamp)})",
+        ]
+        if body:
+            header.append(body)
+        header.append(f";;; END OmegaClawIndexView {self.policy.index_view_id}")
         return "\n".join(header) + "\n"
 
     def append_from_omegaclaw(self, cluster_text: str) -> None:
