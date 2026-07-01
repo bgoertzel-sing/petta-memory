@@ -142,6 +142,7 @@ class MediumMemoryStore:
             raise ValidationError(f"cluster must declare (SchemaVersion {cluster_id} {SCHEMA_VERSION})")
         if not (_has_predicate(atoms, "ClusterSource") or _has_predicate(atoms, "HasProvenance")):
             raise ValidationError("cluster needs ClusterSource or HasProvenance")
+        self._validate_id_declarations(atoms)
         ids = _declared_ids(atoms)
         invalid_ids = sorted({ident for ident in ids if not _ID_RE.match(ident)})
         if invalid_ids:
@@ -153,6 +154,19 @@ class MediumMemoryStore:
         cluster = MemoryCluster(cluster_id=cluster_id, atoms=atoms)
         self._run_parse_checker(cluster)
         return cluster
+
+    def _validate_id_declarations(self, atoms: tuple[str, ...]) -> None:
+        """Ensure unary type/id declarations cannot hide extra fields.
+
+        Predicates such as ``ObservedEvent`` and ``Decision`` introduce record
+        ids. Keeping those declarations to exactly one id argument avoids
+        accepting ambiguous append units that later index/query code would
+        silently collapse to the first argument.
+        """
+        for atom in atoms:
+            parsed = _parse_single_atom(atom)
+            if parsed and parsed[0] in _ID_DECLARING_PREDICATES and len(parsed) != 2:
+                raise ValidationError(f"id declaration must have exactly one id argument: {atom}")
 
     def _validate_contains_edges(self, atoms: tuple[str, ...], *, cluster_id: str, declared_ids: set[str]) -> None:
         """Ensure the cluster envelope only lists local declared memory records.
@@ -226,6 +240,28 @@ class MediumMemoryStore:
             return ""
         text = self.path.read_text(encoding="utf-8")
         return text[-limit:]
+
+    def audit_view(self, *, limit_chars: Optional[int] = None) -> str:
+        """Return recent complete canonical cluster records for human audit.
+
+        Unlike ``tail()``, this view never slices through a MemoryCluster record.
+        It keeps the newest records that fit within the budget and returns them
+        in journal order, preserving begin/end delimiters for review tools.
+        """
+        limit = limit_chars if limit_chars is not None else self.max_query_chars
+        if limit < 0:
+            raise ValidationError("limit_chars must be non-negative")
+        selected: list[MemoryCluster] = []
+        used = 0
+        for cluster in reversed(self.clusters()):
+            record = cluster.record_text
+            separator = 1 if selected else 0
+            addition = len(record) + separator
+            if used + addition > limit:
+                break
+            selected.append(cluster)
+            used += addition
+        return "\n".join(cluster.record_text.rstrip("\n") for cluster in reversed(selected)) + ("\n" if selected else "")
 
     def query_id(self, identifier: str, *, limit: int = 20) -> list[MemoryCluster]:
         return self._bounded([c for c in self.clusters() if _cluster_mentions_id(c, identifier)], limit)

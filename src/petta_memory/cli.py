@@ -33,6 +33,9 @@ def build_parser() -> argparse.ArgumentParser:
     pln.add_argument("--normalized", action="store_true", help="Include normalized PLN premise mapping atoms")
     pln.add_argument("--limit-chars", type=int, help="Bound output while preserving complete atom lines")
 
+    audit = sub.add_parser("audit-view", help="Print bounded complete MemoryCluster records for audit")
+    audit.add_argument("--limit-chars", type=int, default=20000)
+
     tail = sub.add_parser("tail", help="Print journal tail")
     tail.add_argument("--chars", type=int, default=4000)
     return parser
@@ -81,6 +84,9 @@ def main(argv: list[str] | None = None) -> int:
                 ),
                 end="",
             )
+            return 0
+        if args.cmd == "audit-view":
+            print(store.audit_view(limit_chars=args.limit_chars), end="")
             return 0
         if args.cmd == "tail":
             print(store.tail(args.chars), end="")

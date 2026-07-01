@@ -13,9 +13,10 @@ Design source:
 
 - Append complete `MemoryCluster` records only, serialized with explicit begin/end delimiters.
 - Require `(SchemaVersion <cluster-id> medium-memory-v1)` in each cluster.
-- Validate basic MeTTa-like syntax, required metadata, symbol IDs, local `Contains` boundaries, and size limits.
+- Validate basic MeTTa-like syntax, required metadata, unary ID-declaration arity, symbol IDs, local `Contains` boundaries, and size limits.
 - Allow a caller-supplied parse-check hook for future PeTTa/MeTTa runtime validation.
 - Query by cluster/id, type, `About`, status, and epistemic role, returning whole clusters.
+- Generate a bounded audit view of complete canonical `MemoryCluster` records for human/review tooling, preserving begin/end delimiters instead of slicing through records.
 - Generate a bounded `MM-index` view for id/type/about/status/role retrieval edges, with id edges for valid identifier arguments so generated index recall can match direct `query_id` recall; bounded index output preserves complete atom lines.
 - Generate bounded prompt context, with optional topic/status preferences and
   salience/recency ordering; fixture tests cover relevance under a tight prompt

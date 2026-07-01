@@ -151,6 +151,31 @@ class MediumMemoryStoreTests(unittest.TestCase):
             self.assertIn(";;; BEGIN MemoryCluster mc1", store.tail())
             self.assertIn("(ObservedEvent e1)", store.tail())
 
+    def test_audit_view_preserves_complete_recent_records_under_budget(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "medium_memory.metta")
+            first = store.append_cluster(VALID_CLUSTER)
+            second = store.append_cluster(PROMOTED_BELIEF_CLUSTER)
+
+            full = store.audit_view(limit_chars=10_000)
+            self.assertIn(first.record_text, full)
+            self.assertIn(second.record_text, full)
+            self.assertIn(";;; BEGIN MemoryCluster mc1", full)
+            self.assertIn(";;; END MemoryCluster mc3", full)
+
+            bounded = store.audit_view(limit_chars=len(second.record_text))
+            self.assertNotIn("mc1", bounded)
+            self.assertEqual(bounded, second.record_text)
+
+            too_small = store.audit_view(limit_chars=len(second.record_text) - 1)
+            self.assertEqual(too_small, "")
+
+    def test_audit_view_rejects_negative_limit(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "medium_memory.metta")
+            with self.assertRaisesRegex(ValidationError, "limit_chars must be non-negative"):
+                store.audit_view(limit_chars=-1)
+
     def test_reject_malformed_atom_does_not_alter_file(self):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "medium_memory.metta"
@@ -268,6 +293,30 @@ class MediumMemoryStoreTests(unittest.TestCase):
 (Contains mc-bad-id bad-id)
 (ObservedEvent bad-id)
 (Decision "not-a-symbol-id")
+""")
+
+    def test_reject_extra_arguments_on_id_declarations(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "medium_memory.metta")
+            with self.assertRaisesRegex(ValidationError, "id declaration must have exactly one id argument"):
+                store.append_cluster("""
+(MemoryCluster mc-bad-id-arity extra-field)
+(SchemaVersion mc-bad-id-arity medium-memory-v1)
+(ClusterType mc-bad-id-arity validation-test)
+(ClusterOpenedAt mc-bad-id-arity "now")
+(ClusterSource mc-bad-id-arity src-test)
+(Contains mc-bad-id-arity e1)
+(ObservedEvent e1)
+""")
+            with self.assertRaisesRegex(ValidationError, "id declaration must have exactly one id argument"):
+                store.append_cluster("""
+(MemoryCluster mc-bad-event-arity)
+(SchemaVersion mc-bad-event-arity medium-memory-v1)
+(ClusterType mc-bad-event-arity validation-test)
+(ClusterOpenedAt mc-bad-event-arity "now")
+(ClusterSource mc-bad-event-arity src-test)
+(Contains mc-bad-event-arity e1)
+(ObservedEvent e1 extra-field)
 """)
 
     def test_reject_contains_edges_outside_cluster_boundary(self):

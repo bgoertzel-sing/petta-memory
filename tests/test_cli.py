@@ -77,6 +77,24 @@ class CliTests(unittest.TestCase):
             self.assertIn("TruthValue b1", pln.stdout)
             self.assertIn("MM-PLNTrust b1 0.75", pln.stdout)
 
+    def test_audit_view_preserves_complete_records_and_rejects_negative_limit(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = str(Path(td) / "medium_memory.metta")
+            self.assertEqual(self.run_cli(["--store", store, "append"], input_text=CLUSTER).returncode, 0)
+            full = self.run_cli(["--store", store, "audit-view"])
+            self.assertEqual(full.returncode, 0, full.stderr)
+            self.assertIn(";;; BEGIN MemoryCluster mc-cli", full.stdout)
+            self.assertIn(";;; END MemoryCluster mc-cli", full.stdout)
+            self.assertIn("(DerivedBelief b1)", full.stdout)
+
+            tiny = self.run_cli(["--store", store, "audit-view", "--limit-chars", "1"])
+            self.assertEqual(tiny.returncode, 0, tiny.stderr)
+            self.assertEqual(tiny.stdout, "")
+
+            negative = self.run_cli(["--store", store, "audit-view", "--limit-chars", "-1"])
+            self.assertEqual(negative.returncode, 2)
+            self.assertIn("limit_chars must be non-negative", negative.stderr)
+
     def test_pln_view_exclude_extends_default_exclusions(self):
         with tempfile.TemporaryDirectory() as td:
             store = str(Path(td) / "medium_memory.metta")
