@@ -22,6 +22,9 @@ CLUSTER = """
 (EvidenceFor b1 src-test)
 (PromotionEvent pe-cli)
 (PromotesTo pe-cli b1)
+(PromotionRule pe-cli explicit-cli-test)
+(PromotionTrust pe-cli 0.75)
+(PromotionDomain pe-cli memory-cli)
 (About b1 MediumPeTTaMemory)
 """
 
@@ -69,9 +72,10 @@ class CliTests(unittest.TestCase):
             self.assertEqual(query.returncode, 0, query.stderr)
             self.assertIn("DerivedBelief b1", query.stdout)
 
-            pln = self.run_cli(["--store", store, "pln-view"])
+            pln = self.run_cli(["--store", store, "pln-view", "--normalized"])
             self.assertEqual(pln.returncode, 0, pln.stderr)
             self.assertIn("TruthValue b1", pln.stdout)
+            self.assertIn("MM-PLNTrust b1 0.75", pln.stdout)
 
     def test_pln_view_exclude_extends_default_exclusions(self):
         with tempfile.TemporaryDirectory() as td:
@@ -91,6 +95,44 @@ class CliTests(unittest.TestCase):
             prompt = self.run_cli(["--store", store, "prompt-view", "--topic", "MediumPeTTaMemory", "--status", "active"])
             self.assertEqual(prompt.returncode, 0, prompt.stderr)
             self.assertLess(prompt.stdout.find("MediumPeTTaMemory"), prompt.stdout.find("OtherTopic"))
+
+    def test_prompt_view_rejects_negative_limit(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = str(Path(td) / "medium_memory.metta")
+            self.assertEqual(self.run_cli(["--store", store, "append"], input_text=CLUSTER).returncode, 0)
+            prompt = self.run_cli(["--store", store, "prompt-view", "--limit-chars", "-1"])
+            self.assertEqual(prompt.returncode, 2)
+            self.assertIn("limit_chars must be non-negative", prompt.stderr)
+
+    def test_index_view_generates_retrieval_atoms(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = str(Path(td) / "medium_memory.metta")
+            self.assertEqual(self.run_cli(["--store", store, "append"], input_text=CLUSTER).returncode, 0)
+            index = self.run_cli(["--store", store, "index-view"])
+            self.assertEqual(index.returncode, 0, index.stderr)
+            self.assertIn("(MM-index-id b1 mc-cli)", index.stdout)
+            self.assertIn("(MM-index-type DerivedBelief b1 mc-cli)", index.stdout)
+            self.assertIn("(MM-index-about MediumPeTTaMemory b1 mc-cli)", index.stdout)
+            self.assertIn("(MM-index-role derived-belief b1 mc-cli)", index.stdout)
+
+    def test_pln_view_limit_chars_preserves_complete_atom_lines(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = str(Path(td) / "medium_memory.metta")
+            self.assertEqual(self.run_cli(["--store", store, "append"], input_text=CLUSTER).returncode, 0)
+            full = self.run_cli(["--store", store, "pln-view", "--normalized"])
+            self.assertEqual(full.returncode, 0, full.stderr)
+            first_line = full.stdout.splitlines()[0]
+            bounded = self.run_cli(["--store", store, "pln-view", "--normalized", "--limit-chars", str(len(first_line) + 1)])
+            self.assertEqual(bounded.returncode, 0, bounded.stderr)
+            self.assertEqual(bounded.stdout, first_line + "\n")
+
+    def test_pln_view_rejects_negative_limit(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = str(Path(td) / "medium_memory.metta")
+            self.assertEqual(self.run_cli(["--store", store, "append"], input_text=CLUSTER).returncode, 0)
+            pln = self.run_cli(["--store", store, "pln-view", "--limit-chars", "-1"])
+            self.assertEqual(pln.returncode, 2)
+            self.assertIn("limit_chars must be non-negative", pln.stderr)
 
 
 if __name__ == "__main__":

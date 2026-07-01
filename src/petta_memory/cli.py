@@ -25,8 +25,13 @@ def build_parser() -> argparse.ArgumentParser:
     prompt.add_argument("--topic", action="append", default=[], help="Prefer clusters with this About target")
     prompt.add_argument("--status", action="append", default=[], help="Prefer clusters with this status")
 
+    index = sub.add_parser("index-view", help="Print generated MM-index retrieval view")
+    index.add_argument("--limit-chars", type=int, default=8000)
+
     pln = sub.add_parser("pln-view", help="Print PLN-safe atom view")
     pln.add_argument("--exclude", action="append", default=[], help="Additional predicate to exclude")
+    pln.add_argument("--normalized", action="store_true", help="Include normalized PLN premise mapping atoms")
+    pln.add_argument("--limit-chars", type=int, help="Bound output while preserving complete atom lines")
 
     tail = sub.add_parser("tail", help="Print journal tail")
     tail.add_argument("--chars", type=int, default=4000)
@@ -63,9 +68,19 @@ def main(argv: list[str] | None = None) -> int:
             statuses = set(args.status) if args.status else None
             print(store.prompt_view(limit_chars=args.limit_chars, topics=topics, statuses=statuses), end="")
             return 0
+        if args.cmd == "index-view":
+            print(store.index_view(limit_chars=args.limit_chars), end="")
+            return 0
         if args.cmd == "pln-view":
             excluded = set(args.exclude) if args.exclude else None
-            print(store.pln_view(excluded_predicates=excluded), end="")
+            print(
+                store.pln_view(
+                    excluded_predicates=excluded,
+                    normalized=args.normalized,
+                    limit_chars=args.limit_chars,
+                ),
+                end="",
+            )
             return 0
         if args.cmd == "tail":
             print(store.tail(args.chars), end="")

@@ -1,3 +1,4 @@
+import re
 import sys
 import tempfile
 import unittest
@@ -6,6 +7,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from petta_memory import MediumMemoryStore, ValidationError
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 VALID_CLUSTER = """
@@ -57,6 +60,8 @@ PROMOTED_BELIEF_CLUSTER = """
 (PromotesFrom pe1 qc1)
 (PromotesTo pe1 b2)
 (PromotionRule pe1 explicit-test-promotion)
+(PromotionTrust pe1 0.82)
+(PromotionDomain pe1 memory-architecture)
 (DerivedBelief b2)
 (BeliefContent b2 (Requires MediumPeTTaMemory PLNReadyViews))
 (TruthValue b2 (stv 0.90 0.70))
@@ -250,6 +255,55 @@ class MediumMemoryStoreTests(unittest.TestCase):
 (Contains mc1 e1)
 """)
 
+    def test_reject_invalid_declared_id(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "medium_memory.metta")
+            with self.assertRaisesRegex(ValidationError, "invalid declared ids"):
+                store.append_cluster("""
+(MemoryCluster mc-bad-id)
+(SchemaVersion mc-bad-id medium-memory-v1)
+(ClusterType mc-bad-id validation-test)
+(ClusterOpenedAt mc-bad-id "now")
+(ClusterSource mc-bad-id src-test)
+(Contains mc-bad-id bad-id)
+(ObservedEvent bad-id)
+(Decision "not-a-symbol-id")
+""")
+
+    def test_reject_contains_edges_outside_cluster_boundary(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "medium_memory.metta")
+            with self.assertRaisesRegex(ValidationError, "Contains target is not declared"):
+                store.append_cluster("""
+(MemoryCluster mc-bad-contains)
+(SchemaVersion mc-bad-contains medium-memory-v1)
+(ClusterType mc-bad-contains validation-test)
+(ClusterOpenedAt mc-bad-contains "now")
+(ClusterSource mc-bad-contains src-test)
+(Contains mc-bad-contains external-id)
+(ObservedEvent local-id)
+""")
+            with self.assertRaisesRegex(ValidationError, "Contains owner must be cluster id"):
+                store.append_cluster("""
+(MemoryCluster mc-bad-owner)
+(SchemaVersion mc-bad-owner medium-memory-v1)
+(ClusterType mc-bad-owner validation-test)
+(ClusterOpenedAt mc-bad-owner "now")
+(ClusterSource mc-bad-owner src-test)
+(Contains other-cluster local-id)
+(ObservedEvent local-id)
+""")
+            with self.assertRaisesRegex(ValidationError, "Contains must have exactly"):
+                store.append_cluster("""
+(MemoryCluster mc-bad-contains-arity)
+(SchemaVersion mc-bad-contains-arity medium-memory-v1)
+(ClusterType mc-bad-contains-arity validation-test)
+(ClusterOpenedAt mc-bad-contains-arity "now")
+(ClusterSource mc-bad-contains-arity src-test)
+(Contains mc-bad-contains-arity local-id extra-id)
+(ObservedEvent local-id)
+""")
+
     def test_query_by_id_type_about_status_role_and_cluster(self):
         with tempfile.TemporaryDirectory() as td:
             store = MediumMemoryStore(Path(td) / "medium_memory.metta")
@@ -269,6 +323,86 @@ class MediumMemoryStoreTests(unittest.TestCase):
             self.assertLessEqual(len(view), 30)
             self.assertTrue(view.startswith("(ClusterStatus") or view.startswith("(About") or view.startswith("(HasStatus"))
 
+    def test_prompt_view_preserves_complete_atom_lines_under_budget(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "medium_memory.metta")
+            store.append_cluster(VALID_CLUSTER)
+            full = store.prompt_view(limit_chars=2000)
+            first_line = full.splitlines()[0]
+            view = store.prompt_view(limit_chars=len(first_line))
+            self.assertEqual(view, "")
+            view = store.prompt_view(limit_chars=len(first_line) + 1)
+            self.assertEqual(view, first_line + "\n")
+
+    def test_prompt_view_rejects_negative_limit(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "medium_memory.metta")
+            store.append_cluster(VALID_CLUSTER)
+            with self.assertRaisesRegex(ValidationError, "limit_chars"):
+                store.prompt_view(limit_chars=-1)
+
+    def test_index_view_covers_id_type_about_status_and_role(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "medium_memory.metta")
+            store.append_cluster(VALID_CLUSTER)
+            view = store.index_view()
+            self.assertIn("(MM-index mc1)", view)
+            self.assertIn("(MM-index-id e1 mc1)", view)
+            self.assertIn("(MM-index-type ObservedEvent e1 mc1)", view)
+            self.assertIn("(MM-index-about MediumPeTTaMemory e1 mc1)", view)
+            self.assertIn("(MM-index-status active mc1 mc1)", view)
+            self.assertIn("(MM-index-status recorded e1 mc1)", view)
+            self.assertIn("(MM-index-role observed-event e1 mc1)", view)
+            self.assertLessEqual(len(store.index_view(limit_chars=25)), 25)
+
+    def test_index_view_preserves_complete_atom_lines_under_budget(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "medium_memory.metta")
+            store.append_cluster(VALID_CLUSTER)
+            full = store.index_view()
+            first_line = full.splitlines()[0]
+            self.assertEqual(store.index_view(limit_chars=len(first_line)), "")
+            self.assertEqual(store.index_view(limit_chars=len(first_line) + 1), first_line + "\n")
+
+    def test_index_view_uses_current_status_subject_for_superseded_events(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "medium_memory.metta")
+            store.append_cluster(STATUS_OPEN)
+            store.append_cluster(STATUS_RESOLVED)
+            view = store.index_view()
+            self.assertNotIn("(MM-index-status active c1 mc-status-open)", view)
+            self.assertIn("(MM-index-status resolved c1 mc-status-resolved)", view)
+
+    def test_index_view_matches_direct_queries_on_empirical_fixture(self):
+        store = MediumMemoryStore(ROOT / "fixtures" / "index_query_parity.metta")
+        index = store.index_view()
+
+        def index_clusters(pattern: str) -> list[str]:
+            return sorted(set(re.findall(pattern, index, flags=re.MULTILINE)))
+
+        self.assertEqual(
+            index_clusters(r"^\(MM-index-id e-parity-request ([^\s()]+)\)"),
+            sorted(c.cluster_id for c in store.query_id("e-parity-request")),
+        )
+        self.assertEqual(
+            index_clusters(r"^\(MM-index-type ObservedEvent [^\s()]+ ([^\s()]+)\)"),
+            sorted(c.cluster_id for c in store.query_type("ObservedEvent")),
+        )
+        self.assertEqual(
+            index_clusters(r"^\(MM-index-about MediumPeTTaMemory [^\s()]+ ([^\s()]+)\)"),
+            sorted(c.cluster_id for c in store.query_about("MediumPeTTaMemory")),
+        )
+        self.assertEqual(
+            index_clusters(r"^\(MM-index-status resolved [^\s()]+ ([^\s()]+)\)"),
+            sorted(c.cluster_id for c in store.query_status("resolved")),
+        )
+        self.assertEqual(
+            index_clusters(r"^\(MM-index-role derived-belief [^\s()]+ ([^\s()]+)\)"),
+            sorted(c.cluster_id for c in store.query_role("derived-belief")),
+        )
+        self.assertEqual(store.current_status("task-parity"), "resolved")
+        self.assertNotIn("(MM-index-status in_progress task-parity mc-parity-status-open)", index)
+
     def test_prompt_view_prefers_topic_status_salience_then_recency(self):
         with tempfile.TemporaryDirectory() as td:
             store = MediumMemoryStore(Path(td) / "medium_memory.metta")
@@ -278,6 +412,15 @@ class MediumMemoryStoreTests(unittest.TestCase):
             view = store.prompt_view(topics={"MediumPeTTaMemory"}, statuses={"active"}, limit_chars=2000)
             self.assertLess(view.find("old but relevant"), view.find("done.txt"))
             self.assertLess(view.find("done.txt"), view.find("new but unrelated"))
+
+    def test_prompt_view_empirical_fixture_keeps_relevant_atoms_under_budget(self):
+        store = MediumMemoryStore(ROOT / "fixtures" / "bounded_prompt_recall.metta")
+        view = store.prompt_view(topics={"MediumPeTTaMemory"}, statuses={"active"}, limit_chars=190)
+        self.assertLessEqual(len(view), 190)
+        self.assertIn("commit-prompt-target", view)
+        self.assertIn("MediumPeTTaMemory", view)
+        self.assertNotIn("commit-prompt-distractor", view)
+        self.assertNotIn("OtherTopic", view)
 
     def test_pln_view_filters_raw_quotes_and_unpromoted_claims(self):
         with tempfile.TemporaryDirectory() as td:
@@ -299,9 +442,50 @@ class MediumMemoryStoreTests(unittest.TestCase):
             store.append_cluster(PROMOTED_BELIEF_CLUSTER)
             view = store.pln_view()
             self.assertIn("PromotionEvent pe1", view)
+            self.assertIn("PromotionTrust pe1 0.82", view)
+            self.assertIn("PromotionDomain pe1 memory-architecture", view)
             self.assertIn("DerivedBelief b2", view)
             self.assertIn("BeliefContent b2", view)
             self.assertIn("TruthValue b2", view)
+
+    def test_pln_view_requires_promotion_trust_and_domain(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "medium_memory.metta")
+            store.append_cluster(QUOTE_CLUSTER)
+            store.append_cluster(PROMOTED_BELIEF_CLUSTER.replace("(PromotionTrust pe1 0.82)\n", ""))
+            view = store.pln_view()
+            self.assertNotIn("DerivedBelief b2", view)
+            self.assertNotIn("BeliefContent b2", view)
+
+    def test_pln_view_normalized_mapping_includes_domain_trust_rule(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "medium_memory.metta")
+            store.append_cluster(QUOTE_CLUSTER)
+            store.append_cluster(PROMOTED_BELIEF_CLUSTER)
+            view = store.pln_view(normalized=True)
+            self.assertIn("(MM-PLNPremise b2)", view)
+            self.assertIn("(MM-PLNDomain b2 memory-architecture)", view)
+            self.assertIn("(MM-PLNTrust b2 0.82)", view)
+            self.assertIn("(MM-PLNPromotionRule b2 explicit-test-promotion)", view)
+
+    def test_pln_view_can_be_bounded_on_complete_atom_lines(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "medium_memory.metta")
+            store.append_cluster(QUOTE_CLUSTER)
+            store.append_cluster(PROMOTED_BELIEF_CLUSTER)
+            full = store.pln_view(normalized=True)
+            first_line = full.splitlines()[0]
+            self.assertEqual(store.pln_view(normalized=True, limit_chars=len(first_line)), "")
+            view = store.pln_view(normalized=True, limit_chars=len(first_line) + 1)
+            self.assertEqual(view, first_line + "\n")
+            self.assertNotIn("RawUtterance", view)
+
+    def test_pln_view_rejects_negative_limit(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "medium_memory.metta")
+            store.append_cluster(PROMOTED_BELIEF_CLUSTER)
+            with self.assertRaisesRegex(ValidationError, "limit_chars"):
+                store.pln_view(limit_chars=-1)
 
     def test_current_status_uses_supersession_events(self):
         with tempfile.TemporaryDirectory() as td:

@@ -71,6 +71,8 @@
 (PromotesFrom pe-e2e qc-e2e-request)
 (PromotesTo pe-e2e belief-e2e-pln-view)
 (PromotionRule pe-e2e explicit-human-request-plus-design-doc)
+(PromotionTrust pe-e2e 0.85)
+(PromotionDomain pe-e2e memory-architecture)
 (DerivedBelief belief-e2e-pln-view)
 (EpistemicRole belief-e2e-pln-view derived-belief)
 (BeliefContent belief-e2e-pln-view (Requires MediumPeTTaMemory PLNReadyViews))

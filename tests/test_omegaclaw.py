@@ -5,7 +5,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from petta_memory import LiveWriteDisabled, MediumMemoryStore, OmegaClawMemoryBridge, OmegaClawMemoryPolicy
+from petta_memory import LiveWriteDisabled, MediumMemoryStore, OmegaClawMemoryBridge, OmegaClawMemoryPolicy, ValidationError
+from petta_memory.sexpr import parse_top_level_lists
 
 
 VALID_CLUSTER = """
@@ -74,6 +75,19 @@ class OmegaClawMemoryBridgeTests(unittest.TestCase):
             )
             view = bridge.prompt_view_metta(generated_at="fixed")
             self.assertLess(view.find("OmegaClawMemoryBoundary"), view.find("OtherTopic"))
+
+    def test_prompt_view_wrapper_escapes_generated_timestamp(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "medium_memory.metta")
+            store.append_cluster(VALID_CLUSTER)
+            bridge = OmegaClawMemoryBridge(store, OmegaClawMemoryPolicy(prompt_view_reads_enabled=True))
+            view = bridge.prompt_view_metta(generated_at='bad "timestamp"\\with newline\nkept')
+            self.assertIn('(PromptViewGeneratedAt oc-prompt-memory-view "bad \\"timestamp\\"\\\\with newline\\nkept")', view)
+            parse_top_level_lists(view)
+
+    def test_invalid_prompt_view_policy_ids_are_rejected(self):
+        with self.assertRaises(ValidationError):
+            OmegaClawMemoryPolicy(view_id='bad id)')
 
     def test_autonomous_write_flag_and_write_method_are_rejected(self):
         with tempfile.TemporaryDirectory() as td:

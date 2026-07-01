@@ -2,9 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import re
 from typing import Optional
 
+from .sexpr import StringAtom, to_source
 from .store import MediumMemoryStore, ValidationError
+
+
+_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]*$")
 
 
 class LiveWriteDisabled(RuntimeError):
@@ -31,6 +36,8 @@ class OmegaClawMemoryPolicy:
             raise LiveWriteDisabled("autonomous OmegaClaw writes are not enabled in petta-memory v0")
         if self.prompt_view_limit_chars < 0:
             raise ValidationError("prompt_view_limit_chars must be non-negative")
+        if not _ID_RE.match(self.view_id):
+            raise ValidationError(f"view_id must be a valid symbol id: {self.view_id}")
 
 
 class OmegaClawMemoryBridge:
@@ -69,7 +76,7 @@ class OmegaClawMemoryBridge:
             f"(OmegaClawPromptView {self.policy.view_id})",
             f"(PromptViewSource {self.policy.view_id} petta-memory)",
             f"(PromptViewMode {self.policy.view_id} read-only)",
-            f'(PromptViewGeneratedAt {self.policy.view_id} "{timestamp}")',
+            f"(PromptViewGeneratedAt {self.policy.view_id} {_quoted_string(timestamp)})",
         ]
         if body:
             header.append(body)
@@ -83,3 +90,7 @@ class OmegaClawMemoryBridge:
             "OmegaClaw autonomous writes are outside v0; use MediumMemoryStore.append_cluster "
             "only in local tests or a reviewed manual migration path"
         )
+
+
+def _quoted_string(value: str) -> str:
+    return to_source(StringAtom(value))

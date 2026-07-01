@@ -143,12 +143,38 @@ class MediumMemoryStore:
         if not (_has_predicate(atoms, "ClusterSource") or _has_predicate(atoms, "HasProvenance")):
             raise ValidationError("cluster needs ClusterSource or HasProvenance")
         ids = _declared_ids(atoms)
+        invalid_ids = sorted({ident for ident in ids if not _ID_RE.match(ident)})
+        if invalid_ids:
+            raise ValidationError(f"invalid declared ids: {', '.join(invalid_ids)}")
         duplicates = sorted({ident for ident in ids if ids.count(ident) > 1})
         if duplicates:
             raise ValidationError(f"duplicate declared ids in cluster: {', '.join(duplicates)}")
+        self._validate_contains_edges(atoms, cluster_id=cluster_id, declared_ids=set(ids))
         cluster = MemoryCluster(cluster_id=cluster_id, atoms=atoms)
         self._run_parse_checker(cluster)
         return cluster
+
+    def _validate_contains_edges(self, atoms: tuple[str, ...], *, cluster_id: str, declared_ids: set[str]) -> None:
+        """Ensure the cluster envelope only lists local declared memory records.
+
+        `Contains` is the read/write boundary for one append unit: a cluster may
+        contain records declared inside the same append, but should not appear to
+        claim ownership of external ids or use a mismatched cluster id.
+        """
+        contained: list[str] = []
+        for atom in atoms:
+            parsed = _parse_single_atom(atom)
+            if parsed and parsed[0] == "Contains":
+                if len(parsed) != 3:
+                    raise ValidationError(f"Contains must have exactly cluster and target ids: {atom}")
+                owner = _render_sexpr(parsed[1])
+                target = _render_sexpr(parsed[2])
+                if owner != cluster_id:
+                    raise ValidationError(f"Contains owner must be cluster id {cluster_id}: {atom}")
+                contained.append(target)
+        missing = sorted({target for target in contained if target not in declared_ids})
+        if missing:
+            raise ValidationError(f"Contains target is not declared in cluster: {', '.join(missing)}")
 
     def _run_parse_checker(self, cluster: MemoryCluster) -> None:
         """Run an optional external runtime parser check after local validation.
@@ -266,6 +292,8 @@ class MediumMemoryStore:
         topics: Optional[set[str]] = None,
         statuses: Optional[set[str]] = None,
     ) -> str:
+        if limit_chars < 0:
+            raise ValidationError("limit_chars must be non-negative")
         pieces: list[str] = []
         allowed = {
             "CommitmentText",
@@ -283,8 +311,7 @@ class MediumMemoryStore:
             for atom in cluster.atoms:
                 if _predicate(atom) in allowed:
                     pieces.append(atom)
-        text = "\n".join(pieces)
-        return text[:limit_chars]
+        return _join_bounded_atom_lines(pieces, limit_chars)
 
     def _prompt_ranked_clusters(self, *, topics: set[str], statuses: set[str]) -> list[MemoryCluster]:
         clusters = self.clusters()
@@ -297,10 +324,31 @@ class MediumMemoryStore:
             ),
         )
 
-    def pln_view(self, *, excluded_predicates: Optional[set[str]] = None) -> str:
+    def index_view(self, *, limit_chars: int = 8000) -> str:
+        """Return a bounded generated index for deterministic retrieval.
+
+        The index is derived from the append-only journal and is not written back
+        to it.  It keeps retrieval predicates small and explicit so callers can
+        inspect which cluster introduced each id/type/about/status/role edge.
+        """
+        if limit_chars < 0:
+            raise ValidationError("limit_chars must be non-negative")
+        atoms = _index_atoms(self.clusters(), superseded_event_ids=self._superseded_event_ids())
+        return _join_bounded_atom_lines(atoms, limit_chars)
+
+    def pln_view(
+        self,
+        *,
+        excluded_predicates: Optional[set[str]] = None,
+        normalized: bool = False,
+        limit_chars: Optional[int] = None,
+    ) -> str:
+        if limit_chars is not None and limit_chars < 0:
+            raise ValidationError("limit_chars must be non-negative")
         excluded = _DEFAULT_PLN_EXCLUDED | (excluded_predicates or set())
         safe_atoms: list[str] = []
-        promoted_beliefs = self._promoted_belief_ids()
+        promoted_beliefs = self._promoted_belief_metadata()
+        promoted_belief_ids = set(promoted_beliefs)
         excluded_ids = self._pln_excluded_subject_ids(excluded)
         for cluster in self.clusters():
             for atom in cluster.atoms:
@@ -312,10 +360,22 @@ class MediumMemoryStore:
                     continue
                 if _atom_mentions_any(atom, excluded_ids) and pred in {"About", "EvidenceFor", "HasProvenance", "EpistemicRole"}:
                     continue
-                if pred in {"DerivedBelief", "BeliefContent"}:
-                    if subject not in promoted_beliefs:
+                if pred in {"DerivedBelief", "BeliefContent", "TruthValue", "EvidenceFor"}:
+                    if subject not in promoted_belief_ids:
                         continue
                 safe_atoms.append(atom)
+                if normalized and pred == "DerivedBelief" and subject in promoted_beliefs:
+                    meta = promoted_beliefs[subject]
+                    safe_atoms.extend(
+                        [
+                            f"(MM-PLNPremise {subject})",
+                            f"(MM-PLNDomain {subject} {meta['domain']})",
+                            f"(MM-PLNTrust {subject} {meta['trust']})",
+                            f"(MM-PLNPromotionRule {subject} {meta['rule']})",
+                        ]
+                    )
+        if limit_chars is not None:
+            return _join_bounded_atom_lines(safe_atoms, limit_chars)
         return "\n".join(safe_atoms) + ("\n" if safe_atoms else "")
 
     def _pln_excluded_subject_ids(self, excluded: set[str]) -> set[str]:
@@ -329,20 +389,40 @@ class MediumMemoryStore:
                     out.add(_first_arg(atom))
         return out
 
-    def _promoted_belief_ids(self) -> set[str]:
-        promoted: set[str] = set()
+    def _promoted_belief_metadata(self) -> dict[str, dict[str, str]]:
+        """Return PLN-eligible promoted belief ids and their promotion metadata.
+
+        A belief is PLN-eligible only when an explicit PromotionEvent names the
+        promoted belief, promotion rule, bounded trust value, and intended PLN
+        domain. The belief must also carry a TruthValue and EvidenceFor atom.
+        """
+
+        candidates: dict[str, dict[str, str]] = {}
         truth_subjects: set[str] = set()
         evidence_subjects: set[str] = set()
         for cluster in self.clusters():
             for atom in cluster.atoms:
                 pred = _predicate(atom)
+                subject = _first_arg(atom)
                 if pred == "PromotionEvent":
-                    promoted.update(_second_objects_for_subject(cluster.atoms, "PromotesTo", _first_arg(atom)))
+                    targets = _second_objects_for_subject(cluster.atoms, "PromotesTo", subject)
+                    rules = _second_objects_for_subject(cluster.atoms, "PromotionRule", subject)
+                    trusts = _second_objects_for_subject(cluster.atoms, "PromotionTrust", subject)
+                    domains = _second_objects_for_subject(cluster.atoms, "PromotionDomain", subject)
+                    if targets and rules and trusts and domains and _is_bounded_probability(trusts[-1]):
+                        candidates[targets[-1]] = {"rule": rules[-1], "trust": trusts[-1], "domain": domains[-1]}
                 elif pred == "TruthValue":
-                    truth_subjects.add(_first_arg(atom))
+                    truth_subjects.add(subject)
                 elif pred == "EvidenceFor":
-                    evidence_subjects.add(_first_arg(atom))
-        return promoted & truth_subjects & evidence_subjects
+                    evidence_subjects.add(subject)
+        return {
+            belief_id: meta
+            for belief_id, meta in candidates.items()
+            if belief_id in truth_subjects and belief_id in evidence_subjects
+        }
+
+    def _promoted_belief_ids(self) -> set[str]:
+        return set(self._promoted_belief_metadata())
 
     def _bounded(self, clusters: list[MemoryCluster], limit: int) -> list[MemoryCluster]:
         if limit < 0:
@@ -474,6 +554,68 @@ def _second_arg(atom: str) -> str:
     return _render_sexpr(parsed[2]) if len(parsed) >= 3 else ""
 
 
+def _index_atoms(clusters: list[MemoryCluster], *, superseded_event_ids: set[str]) -> list[str]:
+    atoms: list[str] = []
+    seen: set[str] = set()
+
+    def add(atom: str) -> None:
+        if atom not in seen:
+            seen.add(atom)
+            atoms.append(atom)
+
+    for cluster in clusters:
+        add(f"(MM-index {cluster.cluster_id})")
+        add(f"(MM-index-id {cluster.cluster_id} {cluster.cluster_id})")
+        for atom in cluster.atoms:
+            parsed = _parse_single_atom(atom)
+            pred = str(parsed[0])
+            for ident in _argument_identifier_tokens(parsed):
+                add(f"(MM-index-id {ident} {cluster.cluster_id})")
+            if pred in _ID_DECLARING_PREDICATES and len(parsed) >= 2:
+                ident = _render_sexpr(parsed[1])
+                add(f"(MM-index-type {pred} {ident} {cluster.cluster_id})")
+            elif pred == "About" and len(parsed) >= 3:
+                subject = _render_sexpr(parsed[1])
+                entity = _render_sexpr(parsed[2])
+                add(f"(MM-index-about {entity} {subject} {cluster.cluster_id})")
+            elif pred in {"ClusterStatus", "HasStatus"} and len(parsed) >= 3:
+                subject = _render_sexpr(parsed[1])
+                status = _render_sexpr(parsed[2])
+                add(f"(MM-index-status {status} {subject} {cluster.cluster_id})")
+            elif pred == "StatusValue" and len(parsed) >= 3:
+                event_id = _render_sexpr(parsed[1])
+                if event_id not in superseded_event_ids:
+                    status = _render_sexpr(parsed[2])
+                    subjects = _second_objects_for_subject(cluster.atoms, "StatusSubject", event_id)
+                    subject = subjects[-1] if subjects else event_id
+                    add(f"(MM-index-status {status} {subject} {cluster.cluster_id})")
+            elif pred == "EpistemicRole" and len(parsed) >= 3:
+                subject = _render_sexpr(parsed[1])
+                role = _render_sexpr(parsed[2])
+                add(f"(MM-index-role {role} {subject} {cluster.cluster_id})")
+    return atoms
+
+
+def _join_bounded_atom_lines(atoms: Iterable[str], limit_chars: int) -> str:
+    """Join complete atom lines without exceeding a character budget.
+
+    Bounded prompt/index views should remain parseable MeTTa snippets. If the
+    next atom would cross the budget, omit it rather than returning a partial
+    atom that a caller might misparse as corrupted memory.
+    """
+    if limit_chars <= 0:
+        return ""
+    out: list[str] = []
+    used = 0
+    for atom in atoms:
+        addition = len(atom) + 1  # every emitted atom is newline-terminated
+        if used + addition > limit_chars:
+            break
+        out.append(atom)
+        used += addition
+    return "\n".join(out) + ("\n" if out else "")
+
+
 def _atom_symbol_tokens(atom: str) -> set[str]:
     tokens: set[str] = set()
 
@@ -485,6 +627,21 @@ def _atom_symbol_tokens(atom: str) -> set[str]:
             tokens.add(expr)
 
     visit(_parse_single_atom(atom))
+    return tokens
+
+
+def _argument_identifier_tokens(parsed_atom: tuple[SExpr, ...]) -> set[str]:
+    tokens: set[str] = set()
+
+    def visit(expr: SExpr) -> None:
+        if isinstance(expr, tuple):
+            for item in expr:
+                visit(item)
+        elif isinstance(expr, str) and _ID_RE.match(expr):
+            tokens.add(expr)
+
+    for arg in parsed_atom[1:]:
+        visit(arg)
     return tokens
 
 
@@ -540,3 +697,11 @@ def _split_cluster_chunks(text: str) -> list[str]:
     if not saw_delimiter and current:
         records.append("\n".join(current))
     return records
+
+
+def _is_bounded_probability(value: str) -> bool:
+    try:
+        number = float(value)
+    except ValueError:
+        return False
+    return 0.0 <= number <= 1.0
