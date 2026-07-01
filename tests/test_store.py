@@ -319,6 +319,31 @@ class MediumMemoryStoreTests(unittest.TestCase):
 (ObservedEvent e1 extra-field)
 """)
 
+    def test_reject_extra_arguments_on_binary_relations(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "medium_memory.metta")
+            with self.assertRaisesRegex(ValidationError, "binary relation must have exactly"):
+                store.append_cluster("""
+(MemoryCluster mc-bad-schema-arity)
+(SchemaVersion mc-bad-schema-arity medium-memory-v1 hidden-extra)
+(ClusterType mc-bad-schema-arity validation-test)
+(ClusterOpenedAt mc-bad-schema-arity "now")
+(ClusterSource mc-bad-schema-arity src-test)
+(Contains mc-bad-schema-arity e1)
+(ObservedEvent e1)
+""")
+            with self.assertRaisesRegex(ValidationError, "binary relation must have exactly"):
+                store.append_cluster("""
+(MemoryCluster mc-bad-about-arity)
+(SchemaVersion mc-bad-about-arity medium-memory-v1)
+(ClusterType mc-bad-about-arity validation-test)
+(ClusterOpenedAt mc-bad-about-arity "now")
+(ClusterSource mc-bad-about-arity src-test)
+(Contains mc-bad-about-arity e1)
+(ObservedEvent e1)
+(About e1 MediumPeTTaMemory hidden-extra)
+""")
+
     def test_reject_contains_edges_outside_cluster_boundary(self):
         with tempfile.TemporaryDirectory() as td:
             store = MediumMemoryStore(Path(td) / "medium_memory.metta")

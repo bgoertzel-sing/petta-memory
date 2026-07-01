@@ -52,6 +52,39 @@ _ID_DECLARING_PREDICATES = {
     "PromotionEvent",
     "TruthValueEvent",
 }
+_BINARY_RELATION_PREDICATES = {
+    "SchemaVersion",
+    "ClusterType",
+    "ClusterOpenedAt",
+    "ClusterSource",
+    "HasProvenance",
+    "ClusterStatus",
+    "EpistemicRole",
+    "About",
+    "HasStatus",
+    "StatusSubject",
+    "StatusValue",
+    "Supersedes",
+    "SalienceSubject",
+    "SalienceValue",
+    "CommitmentText",
+    "QuestionText",
+    "BoundaryName",
+    "ArtifactPath",
+    "RawUtterance",
+    "ClaimText",
+    "ClaimSource",
+    "ClaimStatus",
+    "Said",
+    "BeliefContent",
+    "TruthValue",
+    "EvidenceFor",
+    "PromotesFrom",
+    "PromotesTo",
+    "PromotionRule",
+    "PromotionTrust",
+    "PromotionDomain",
+}
 
 
 @dataclass(frozen=True)
@@ -143,6 +176,7 @@ class MediumMemoryStore:
         if not (_has_predicate(atoms, "ClusterSource") or _has_predicate(atoms, "HasProvenance")):
             raise ValidationError("cluster needs ClusterSource or HasProvenance")
         self._validate_id_declarations(atoms)
+        self._validate_relation_arities(atoms)
         ids = _declared_ids(atoms)
         invalid_ids = sorted({ident for ident in ids if not _ID_RE.match(ident)})
         if invalid_ids:
@@ -167,6 +201,19 @@ class MediumMemoryStore:
             parsed = _parse_single_atom(atom)
             if parsed and parsed[0] in _ID_DECLARING_PREDICATES and len(parsed) != 2:
                 raise ValidationError(f"id declaration must have exactly one id argument: {atom}")
+
+    def _validate_relation_arities(self, atoms: tuple[str, ...]) -> None:
+        """Reject schema/retrieval relations with hidden extra fields.
+
+        Most v0 metadata predicates are binary relations of the form
+        ``(Predicate subject object)``. Enforcing exact arity keeps append units
+        from smuggling additional arguments that direct query/index/prompt code
+        would otherwise ignore when it reads only the subject/object pair.
+        """
+        for atom in atoms:
+            parsed = _parse_single_atom(atom)
+            if parsed and parsed[0] in _BINARY_RELATION_PREDICATES and len(parsed) != 3:
+                raise ValidationError(f"binary relation must have exactly subject and object arguments: {atom}")
 
     def _validate_contains_edges(self, atoms: tuple[str, ...], *, cluster_id: str, declared_ids: set[str]) -> None:
         """Ensure the cluster envelope only lists local declared memory records.
