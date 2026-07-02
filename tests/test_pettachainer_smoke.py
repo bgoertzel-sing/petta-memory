@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from petta_memory import MediumMemoryStore
+from petta_memory import MediumMemoryStore, make_petta_parse_checker
 
 ROOT = Path(__file__).resolve().parents[5]
 PROJECT = ROOT / "projects" / "petta-memory"
@@ -52,6 +52,17 @@ def _configure_local_pettachainer_runtime():
 
 
 class PeTTaChainerSmokeTests(unittest.TestCase):
+    def test_petta_parse_checker_accepts_canonical_cluster(self):
+        _configure_local_pettachainer_runtime()
+        from petta import PeTTa
+
+        with tempfile.TemporaryDirectory() as td:
+            checker = make_petta_parse_checker(PeTTa(verbose=False, petta_path=str(PETTA)))
+            store = MediumMemoryStore(Path(td) / "medium_memory.metta", parse_checker=checker)
+            cluster = store.append_cluster(PROMOTED_CLUSTER)
+
+        self.assertEqual(cluster.cluster_id, "mc-pettachainer-smoke")
+
     def test_exported_promoted_belief_is_pettachainer_checkable(self):
         _configure_local_pettachainer_runtime()
         from pettachainer import check_stmt

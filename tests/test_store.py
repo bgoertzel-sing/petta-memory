@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from petta_memory import MediumMemoryStore, ValidationError
+from petta_memory import MediumMemoryStore, ValidationError, make_petta_parse_checker
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -663,6 +663,36 @@ class MediumMemoryStoreTests(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "external parse checker rejected cluster mc-new"):
                 checked_store.append_cluster(VALID_CLUSTER.replace("mc1", "mc-new").replace("e1", "e-new"))
             self.assertEqual(path.read_text(), before)
+
+    def test_petta_parse_checker_uses_canonical_cluster_text(self):
+        class FakePeTTa:
+            def __init__(self):
+                self.programs = []
+
+            def process_metta_string(self, program):
+                self.programs.append(program)
+                return []
+
+        with tempfile.TemporaryDirectory() as td:
+            runtime = FakePeTTa()
+            store = MediumMemoryStore(Path(td) / "medium_memory.metta", parse_checker=make_petta_parse_checker(runtime))
+            cluster = store.append_cluster(VALID_CLUSTER)
+
+        self.assertEqual(runtime.programs, [cluster.text])
+        self.assertIn("(MemoryCluster mc1)\n", runtime.programs[0])
+
+    def test_petta_parse_checker_rejection_is_validation_error(self):
+        class RejectingPeTTa:
+            def process_metta_string(self, program):
+                raise RuntimeError("bad metta")
+
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(
+                Path(td) / "medium_memory.metta",
+                parse_checker=make_petta_parse_checker(RejectingPeTTa()),
+            )
+            with self.assertRaisesRegex(ValidationError, "PeTTa runtime rejected cluster mc1"):
+                store.append_cluster(VALID_CLUSTER)
 
 
 if __name__ == "__main__":

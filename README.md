@@ -14,7 +14,7 @@ Design source:
 - Append complete `MemoryCluster` records only, serialized with explicit begin/end delimiters.
 - Require `(SchemaVersion <cluster-id> medium-memory-v1)` in each cluster.
 - Validate basic MeTTa-like syntax, required metadata, delimited record envelope/atom id consistency, unary ID-declaration and binary metadata/retrieval relation arity, symbol IDs, local `Contains` boundaries including self-containment rejection, and size limits.
-- Allow a caller-supplied parse-check hook for future PeTTa/MeTTa runtime validation.
+- Allow a caller-supplied parse-check hook for external PeTTa/MeTTa runtime validation; `make_petta_parse_checker(...)` wires this to a local PeTTa runtime when explicitly requested.
 - Query by cluster/id, type, `About`, status, and epistemic role, returning whole clusters.
 - Generate a bounded audit view of complete canonical `MemoryCluster` records for human/review tooling, preserving begin/end delimiters instead of slicing through records.
 - Generate a bounded `MM-index` view for id/type/about/status/role retrieval edges, with id edges for valid identifier arguments so generated index recall can match direct `query_id` recall; bounded index output preserves complete atom lines.
@@ -94,5 +94,8 @@ Each journal record is one cluster:
 
 The implementation validates the full cluster before writing, optionally runs a
 caller-supplied parse-check hook over the canonicalized cluster, then writes through
-a temporary file replacement. This is conservative and local-first; a later
-OmegaClaw integration can replace it with an AtomSpace-backed journal.
+a temporary file replacement. `petta_memory.make_petta_parse_checker(...)` can be
+passed as that hook to check the canonical cluster with an explicitly configured
+local PeTTa runtime; it is opt-in and does not enable live OmegaClaw writes. This
+is conservative and local-first; a later OmegaClaw integration can replace it
+with an AtomSpace-backed journal.
