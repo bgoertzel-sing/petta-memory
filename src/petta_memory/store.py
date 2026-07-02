@@ -232,6 +232,8 @@ class MediumMemoryStore:
                 target = _render_sexpr(parsed[2])
                 if owner != cluster_id:
                     raise ValidationError(f"Contains owner must be cluster id {cluster_id}: {atom}")
+                if target == cluster_id:
+                    raise ValidationError(f"Contains target must be a record id, not the cluster id: {atom}")
                 contained.append(target)
         missing = sorted({target for target in contained if target not in declared_ids})
         if missing:

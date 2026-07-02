@@ -377,6 +377,15 @@ class MediumMemoryStoreTests(unittest.TestCase):
 (Contains mc-bad-contains-arity local-id extra-id)
 (ObservedEvent local-id)
 """)
+            with self.assertRaisesRegex(ValidationError, "not the cluster id"):
+                store.append_cluster("""
+(MemoryCluster mc-self-contained)
+(SchemaVersion mc-self-contained medium-memory-v1)
+(ClusterType mc-self-contained validation-test)
+(ClusterOpenedAt mc-self-contained "now")
+(ClusterSource mc-self-contained src-test)
+(Contains mc-self-contained mc-self-contained)
+""")
 
     def test_query_by_id_type_about_status_role_and_cluster(self):
         with tempfile.TemporaryDirectory() as td:
