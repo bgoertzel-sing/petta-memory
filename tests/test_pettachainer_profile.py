@@ -2,10 +2,12 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+import petta_memory.pettachainer_profile as profile
 from petta_memory.pettachainer_profile import _run_isolated_stage, build_profile_store, build_promoted_cluster
 
 
@@ -60,6 +62,45 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         self.assertEqual(event["status"], "timeout")
         self.assertEqual(event["label"], "slow")
         self.assertEqual(event["timeout_sec"], 0.05)
+
+    def test_contextual_profile_schedules_add_only_bottleneck_stages(self):
+        def fake_isolated_stage(label, _target, _args, *, stage_timeout_sec):
+            return {"label": label, "status": "ok", "timeout_sec": stage_timeout_sec}
+
+        with (
+            patch.object(profile, "_configure_local_runtime", return_value=None),
+            patch.object(
+                profile,
+                "_build_export_payload",
+                return_value={
+                    "statements": ["(: p (S x) (STV 1 0.9))"],
+                    "packets": ["(EvidencePacket (S x) (EC 1 0) () pe)"],
+                },
+            ),
+            patch.object(profile, "_run_isolated_stage", side_effect=fake_isolated_stage),
+        ):
+            result = profile.profile_sizes(
+                [1],
+                steps=1,
+                timeout_sec=1.0,
+                project_root=Path("/unused"),
+                stage_timeout_sec=2.0,
+                include_runtime_add=True,
+                include_contextual=True,
+            )
+
+        labels = [event["label"] for event in result["results"][0]["events"]]
+        self.assertEqual(
+            labels,
+            [
+                "build_store_and_exports",
+                "check_stmt_all",
+                "proof_runtime_add_only",
+                "proof_runtime_add_and_query",
+                "contextual_packet_add_only",
+                "contextual_runtime_add_and_query",
+            ],
+        )
 
 
 if __name__ == "__main__":

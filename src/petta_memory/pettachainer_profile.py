@@ -144,6 +144,13 @@ def _check_statements_stage(statements: list[str]) -> dict[str, object]:
     return {"result": [check_stmt(stmt) for stmt in statements]}
 
 
+def _proof_add_stage(statements: list[str]) -> dict[str, object]:
+    from pettachainer import PeTTaChainer
+
+    handler = PeTTaChainer()
+    return {"stages": [_time_call("add_proof_statements_no_check", lambda: handler.add_atoms_no_check(statements))]}
+
+
 def _proof_runtime_stage(statements: list[str], steps: int, timeout_sec: float) -> dict[str, object]:
     from pettachainer import PeTTaChainer
 
@@ -153,6 +160,13 @@ def _proof_runtime_stage(statements: list[str], steps: int, timeout_sec: float) 
     query = "(: $proof (Requires MemoryTarget0 PLNReadyViews) $tv)"
     stages.append(_time_call("query_first_target", lambda: handler.query(query, steps=steps, timeout_sec=timeout_sec)))
     return {"stages": stages}
+
+
+def _contextual_add_stage(packets: list[str]) -> dict[str, object]:
+    from pettachainer import PeTTaChainer
+
+    handler = PeTTaChainer()
+    return {"stages": [_time_call("add_evidence_packets_no_check", lambda: handler.add_atoms_no_check(packets))]}
 
 
 def _contextual_runtime_stage(packets: list[str], steps: int, timeout_sec: float) -> dict[str, object]:
@@ -237,6 +251,14 @@ def profile_sizes(
             if include_runtime_add:
                 events.append(
                     _run_isolated_stage(
+                        "proof_runtime_add_only",
+                        _proof_add_stage,
+                        (statements,),
+                        stage_timeout_sec=stage_timeout_sec,
+                    )
+                )
+                events.append(
+                    _run_isolated_stage(
                         "proof_runtime_add_and_query",
                         _proof_runtime_stage,
                         (statements, steps, timeout_sec),
@@ -244,6 +266,14 @@ def profile_sizes(
                     )
                 )
                 if include_contextual:
+                    events.append(
+                        _run_isolated_stage(
+                            "contextual_packet_add_only",
+                            _contextual_add_stage,
+                            (packets,),
+                            stage_timeout_sec=stage_timeout_sec,
+                        )
+                    )
                     events.append(
                         _run_isolated_stage(
                             "contextual_runtime_add_and_query",
