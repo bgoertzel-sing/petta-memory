@@ -72,6 +72,34 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         self.assertEqual(direct, "!(materialize-stmt-lambdas (: p (S x) (STV 1 0.9)))")
         self.assertEqual(eval_control, "!(eval (materialize-stmt-lambdas (: p (S x) (STV 1 0.9))))")
 
+    def test_compileadd_strategy_summary_recommends_precompiled_cache_gate(self):
+        sample_profile = {
+            "results": [
+                {
+                    "events": [
+                        {"label": "check_stmt_all", "status": "ok"},
+                        {"label": "pettachainer_init_only", "status": "ok"},
+                        {"label": "compileadd_probe_materialize_direct", "status": "timeout"},
+                        {"label": "compileadd_probe_materialize_eval_control", "status": "timeout"},
+                        {"label": "compileadd_probe_mm2compile_direct", "status": "timeout"},
+                        {"label": "compileadd_probe_mm2compile_eval_control", "status": "timeout"},
+                        {"label": "compileadd_probe_index_source_direct", "status": "ok"},
+                        {"label": "compileadd_probe_maybe_process_on_add_direct", "status": "ok"},
+                        {"label": "proof_runtime_add_only", "status": "timeout"},
+                    ]
+                }
+            ]
+        }
+
+        summary = profile.summarize_compileadd_strategy(sample_profile)
+
+        self.assertEqual(summary["recommended_next_add_path"], "precompiled_statement_cache_gate")
+        self.assertEqual(
+            summary["fast_later_probes"],
+            ["compileadd_probe_index_source_direct", "compileadd_probe_maybe_process_on_add_direct"],
+        )
+        self.assertIn("checked handoff inputs only", " ".join(summary["gates"]))
+
     def test_contextual_profile_schedules_add_only_bottleneck_stages(self):
         def fake_isolated_stage(label, _target, _args, *, stage_timeout_sec):
             return {"label": label, "status": "ok", "timeout_sec": stage_timeout_sec}

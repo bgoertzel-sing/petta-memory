@@ -392,6 +392,85 @@ def _build_export_payload(store_path: Path, count: int) -> dict[str, list[str]]:
     }
 
 
+def summarize_compileadd_strategy(profile: dict[str, object]) -> dict[str, object]:
+    """Summarize the bounded PeTTaChainer add-path decision from a profile.
+
+    The profile artifacts are intentionally noisy and stage-oriented.  This
+    pure helper extracts the decision-relevant statuses so cron slices and
+    project records can make the add-path choice reproducibly without rerunning
+    PeTTaChainer.  It does not change export semantics or call the runtime.
+    """
+    results = profile.get("results")
+    if not isinstance(results, list) or not results:
+        raise ValueError("profile must contain at least one result row")
+    row = results[0]
+    if not isinstance(row, dict):
+        raise ValueError("profile result row must be an object")
+    events = row.get("events")
+    if not isinstance(events, list):
+        raise ValueError("profile result row must contain events")
+    by_label = {event.get("label"): event for event in events if isinstance(event, dict) and event.get("label")}
+
+    def status(label: str) -> str:
+        event = by_label.get(label, {})
+        value = event.get("status") if isinstance(event, dict) else None
+        return str(value) if value is not None else "missing"
+
+    materialize_direct = status("compileadd_probe_materialize_direct")
+    materialize_eval = status("compileadd_probe_materialize_eval_control")
+    mm2compile_direct = status("compileadd_probe_mm2compile_direct")
+    mm2compile_eval = status("compileadd_probe_mm2compile_eval_control")
+    proof_add = status("proof_runtime_add_only")
+    check_stmt = status("check_stmt_all")
+    init_only = status("pettachainer_init_only")
+    fast_later_probes = [
+        label
+        for label in ("compileadd_probe_index_source_direct", "compileadd_probe_maybe_process_on_add_direct")
+        if status(label) == "ok"
+    ]
+
+    direct_and_eval_timeout = all(
+        value == "timeout"
+        for value in (materialize_direct, materialize_eval, mm2compile_direct, mm2compile_eval)
+    )
+    add_path_blocked = proof_add == "timeout" or direct_and_eval_timeout
+    if check_stmt == "ok" and init_only == "ok" and add_path_blocked:
+        recommendation = "precompiled_statement_cache_gate"
+        rationale = (
+            "Validated STV/EvidencePacket exports and PeTTaChainer construction are healthy, "
+            "but compileadd materialization/mm2compile and proof add remain timeout-bound. "
+            "The next bounded petta-memory path should cache checked promoted statements/packets "
+            "as a non-live PLN-ready handoff artifact while leaving full PeTTaChainer add/query "
+            "behind an explicit gate and reserving upstream materialization instrumentation for follow-up."
+        )
+    elif check_stmt == "ok" and not add_path_blocked:
+        recommendation = "continue_runtime_add_query_gate"
+        rationale = "The checked profile does not show the compileadd/add timeout pattern; continue with runtime add/query smoke gates."
+    else:
+        recommendation = "runtime_setup_or_export_debug"
+        rationale = "Basic statement validation or constructor setup is not healthy enough to choose an add optimization path."
+
+    return {
+        "recommended_next_add_path": recommendation,
+        "rationale": rationale,
+        "observed_statuses": {
+            "check_stmt_all": check_stmt,
+            "pettachainer_init_only": init_only,
+            "compileadd_probe_materialize_direct": materialize_direct,
+            "compileadd_probe_materialize_eval_control": materialize_eval,
+            "compileadd_probe_mm2compile_direct": mm2compile_direct,
+            "compileadd_probe_mm2compile_eval_control": mm2compile_eval,
+            "proof_runtime_add_only": proof_add,
+        },
+        "fast_later_probes": fast_later_probes,
+        "gates": [
+            "Do not enable live OmegaClaw integration from this artifact.",
+            "Do not treat cached statements as inferred beliefs; they are checked handoff inputs only.",
+            "Revisit full compileadd/query after upstream materialize/mm2compile instrumentation or a precompiled add API exists.",
+        ],
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Profile narrow PeTTaChainer workloads generated from petta-memory exports")
     parser.add_argument("--sizes", default="1,3", help="Comma-separated promoted-belief cluster counts")
