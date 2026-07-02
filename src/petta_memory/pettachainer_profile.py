@@ -144,6 +144,14 @@ def _check_statements_stage(statements: list[str]) -> dict[str, object]:
     return {"result": [check_stmt(stmt) for stmt in statements]}
 
 
+def _pettachainer_init_stage() -> dict[str, object]:
+    from pettachainer import PeTTaChainer
+
+    init_event = _time_call("construct_pettachainer", lambda: PeTTaChainer())
+    init_event["result"] = "initialized"
+    return {"result": "initialized", "stages": [init_event]}
+
+
 def _proof_add_stage(statements: list[str]) -> dict[str, object]:
     from pettachainer import PeTTaChainer
 
@@ -249,6 +257,14 @@ def profile_sizes(
                 )
             )
             if include_runtime_add:
+                events.append(
+                    _run_isolated_stage(
+                        "pettachainer_init_only",
+                        _pettachainer_init_stage,
+                        (),
+                        stage_timeout_sec=stage_timeout_sec,
+                    )
+                )
                 events.append(
                     _run_isolated_stage(
                         "proof_runtime_add_only",

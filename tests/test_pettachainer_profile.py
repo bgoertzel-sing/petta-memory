@@ -95,6 +95,7 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
             [
                 "build_store_and_exports",
                 "check_stmt_all",
+                "pettachainer_init_only",
                 "proof_runtime_add_only",
                 "proof_runtime_add_and_query",
                 "contextual_packet_add_only",
