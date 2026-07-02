@@ -1,11 +1,22 @@
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from petta_memory.pettachainer_profile import build_profile_store, build_promoted_cluster
+from petta_memory.pettachainer_profile import _run_isolated_stage, build_profile_store, build_promoted_cluster
+
+
+def _slow_profile_stage() -> dict[str, object]:
+    time.sleep(5)
+    return {"result": "too late"}
+
+
+def _echo_profile_stage(value: str) -> dict[str, object]:
+    print("noisy runtime output")
+    return {"result": value}
 
 
 class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
@@ -34,6 +45,21 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         self.assertIn("(EvidenceSupportCount b-profile-004 14.0)", cluster)
         self.assertIn("(EvidenceOppositionCount b-profile-004 3.0)", cluster)
         self.assertIn("(PromotionDomain pe-profile-004 omegaclaw-memory)", cluster)
+
+    def test_isolated_stage_captures_output_and_result(self):
+        event = _run_isolated_stage("echo", _echo_profile_stage, ("ok",), stage_timeout_sec=2.0)
+
+        self.assertEqual(event["status"], "ok")
+        self.assertEqual(event["label"], "echo")
+        self.assertEqual(event["result"], "ok")
+        self.assertGreater(event["stdout_chars"], 0)
+
+    def test_isolated_stage_timeout_returns_bounded_event(self):
+        event = _run_isolated_stage("slow", _slow_profile_stage, (), stage_timeout_sec=0.05)
+
+        self.assertEqual(event["status"], "timeout")
+        self.assertEqual(event["label"], "slow")
+        self.assertEqual(event["timeout_sec"], 0.05)
 
 
 if __name__ == "__main__":
