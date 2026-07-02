@@ -159,7 +159,41 @@ def _proof_add_stage(statements: list[str]) -> dict[str, object]:
     return {"stages": [_time_call("add_proof_statements_no_check", lambda: handler.add_atoms_no_check(statements))]}
 
 
-def _compileadd_probe_stage(statement: str, probe: str) -> dict[str, object]:
+def _compileadd_probe_expressions(statement: str, kb: str) -> dict[str, str]:
+    stmt1 = f"(materialize-stmt-lambdas {statement})"
+    atoms = f"(collapse (mm2compile {kb} {stmt1}))"
+    iatoms = f"(list_to_set (map-flat internalize-proof-structure {atoms}))"
+    return {
+        "materialize_stmt_lambdas": stmt1,
+        "mm2compile_collapse": atoms,
+        "internalize_proof_structure": iatoms,
+        "externalize_proof_structure": f"(map-flat externalize-proof-structure {iatoms})",
+        "index_source_implication": f"(index-source-implication {kb} {stmt1})",
+        "add_internalized_atoms": f"(collapse (foreach-flat add-to-kb {iatoms}))",
+        "maybe_process_on_add": f"(maybe-process-on-add {kb} {stmt1})",
+    }
+
+
+def _compileadd_probe_call_text(statement: str, kb: str, probe: str, invocation: str) -> str:
+    """Return the exact MeTTa call used for an internal ``compileadd`` probe.
+
+    ``compileadd`` itself invokes its subforms directly inside a ``let*``. The
+    first probe version wrapped each subform in ``eval``, which may evaluate the
+    materialized statement rather than just timing the subform. Keeping both call
+    modes available lets profile artifacts distinguish genuine subform cost from
+    an eval/probe artifact.
+    """
+    expressions = _compileadd_probe_expressions(statement, kb)
+    if probe not in expressions:
+        raise ValueError(f"unknown compileadd probe: {probe}")
+    if invocation == "direct":
+        return f"!{expressions[probe]}"
+    if invocation == "eval":
+        return f"!(eval {expressions[probe]})"
+    raise ValueError(f"unknown compileadd probe invocation: {invocation}")
+
+
+def _compileadd_probe_stage(statement: str, probe: str, invocation: str = "direct") -> dict[str, object]:
     """Time one internal expression from PeTTaChainer's ``compileadd`` path.
 
     Each probe is intentionally isolated in its own subprocess by the caller. If
@@ -170,35 +204,30 @@ def _compileadd_probe_stage(statement: str, probe: str) -> dict[str, object]:
     from pettachainer import PeTTaChainer
 
     handler = PeTTaChainer()
-    kb = handler.kb
-    stmt1 = f"(materialize-stmt-lambdas {statement})"
-    atoms = f"(collapse (mm2compile {kb} {stmt1}))"
-    iatoms = f"(list_to_set (map-flat internalize-proof-structure {atoms}))"
-    expressions = {
-        "materialize_stmt_lambdas": stmt1,
-        "mm2compile_collapse": atoms,
-        "internalize_proof_structure": iatoms,
-        "externalize_proof_structure": f"(map-flat externalize-proof-structure {iatoms})",
-        "index_source_implication": f"(index-source-implication {kb} {stmt1})",
-        "add_internalized_atoms": f"(collapse (foreach-flat add-to-kb {iatoms}))",
-        "maybe_process_on_add": f"(maybe-process-on-add {kb} {stmt1})",
+    call_text = _compileadd_probe_call_text(statement, handler.kb, probe, invocation)
+    return {
+        "probe": probe,
+        "invocation": invocation,
+        "stages": [_time_call(f"{probe}_{invocation}", lambda: handler.handler.process_metta_string(call_text))],
     }
-    if probe not in expressions:
-        raise ValueError(f"unknown compileadd probe: {probe}")
-    return {"probe": probe, "stages": [_time_call(probe, lambda: handler.handler.process_metta_string(f"!(eval {expressions[probe]})"))]}
 
 
-def _compileadd_probe_specs(statements: list[str]) -> list[tuple[str, str]]:
+def _compileadd_probe_specs(statements: list[str]) -> list[tuple[str, str, str]]:
     if not statements:
         return []
+    # Direct probes mirror PeTTaChainer's compileadd let* path. The two legacy
+    # eval probes are retained narrowly as controls for the previous timeout
+    # artifact hypothesis, without doubling every expensive subform.
     return [
-        ("compileadd_probe_materialize", "materialize_stmt_lambdas"),
-        ("compileadd_probe_mm2compile", "mm2compile_collapse"),
-        ("compileadd_probe_internalize", "internalize_proof_structure"),
-        ("compileadd_probe_externalize", "externalize_proof_structure"),
-        ("compileadd_probe_index_source", "index_source_implication"),
-        ("compileadd_probe_add_internalized", "add_internalized_atoms"),
-        ("compileadd_probe_maybe_process_on_add", "maybe_process_on_add"),
+        ("compileadd_probe_materialize_direct", "materialize_stmt_lambdas", "direct"),
+        ("compileadd_probe_materialize_eval_control", "materialize_stmt_lambdas", "eval"),
+        ("compileadd_probe_mm2compile_direct", "mm2compile_collapse", "direct"),
+        ("compileadd_probe_mm2compile_eval_control", "mm2compile_collapse", "eval"),
+        ("compileadd_probe_internalize_direct", "internalize_proof_structure", "direct"),
+        ("compileadd_probe_externalize_direct", "externalize_proof_structure", "direct"),
+        ("compileadd_probe_index_source_direct", "index_source_implication", "direct"),
+        ("compileadd_probe_add_internalized_direct", "add_internalized_atoms", "direct"),
+        ("compileadd_probe_maybe_process_on_add_direct", "maybe_process_on_add", "direct"),
     ]
 
 
@@ -308,12 +337,12 @@ def profile_sizes(
                         stage_timeout_sec=stage_timeout_sec,
                     )
                 )
-                for label, probe in _compileadd_probe_specs(statements):
+                for label, probe, invocation in _compileadd_probe_specs(statements):
                     events.append(
                         _run_isolated_stage(
                             label,
                             _compileadd_probe_stage,
-                            (statements[0], probe),
+                            (statements[0], probe, invocation),
                             stage_timeout_sec=stage_timeout_sec,
                         )
                     )

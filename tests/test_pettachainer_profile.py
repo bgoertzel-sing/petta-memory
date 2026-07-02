@@ -63,6 +63,15 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         self.assertEqual(event["label"], "slow")
         self.assertEqual(event["timeout_sec"], 0.05)
 
+    def test_compileadd_probe_call_text_distinguishes_direct_from_eval_control(self):
+        statement = "(: p (S x) (STV 1 0.9))"
+
+        direct = profile._compileadd_probe_call_text(statement, "kb", "materialize_stmt_lambdas", "direct")
+        eval_control = profile._compileadd_probe_call_text(statement, "kb", "materialize_stmt_lambdas", "eval")
+
+        self.assertEqual(direct, "!(materialize-stmt-lambdas (: p (S x) (STV 1 0.9)))")
+        self.assertEqual(eval_control, "!(eval (materialize-stmt-lambdas (: p (S x) (STV 1 0.9))))")
+
     def test_contextual_profile_schedules_add_only_bottleneck_stages(self):
         def fake_isolated_stage(label, _target, _args, *, stage_timeout_sec):
             return {"label": label, "status": "ok", "timeout_sec": stage_timeout_sec}
@@ -96,13 +105,15 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
                 "build_store_and_exports",
                 "check_stmt_all",
                 "pettachainer_init_only",
-                "compileadd_probe_materialize",
-                "compileadd_probe_mm2compile",
-                "compileadd_probe_internalize",
-                "compileadd_probe_externalize",
-                "compileadd_probe_index_source",
-                "compileadd_probe_add_internalized",
-                "compileadd_probe_maybe_process_on_add",
+                "compileadd_probe_materialize_direct",
+                "compileadd_probe_materialize_eval_control",
+                "compileadd_probe_mm2compile_direct",
+                "compileadd_probe_mm2compile_eval_control",
+                "compileadd_probe_internalize_direct",
+                "compileadd_probe_externalize_direct",
+                "compileadd_probe_index_source_direct",
+                "compileadd_probe_add_internalized_direct",
+                "compileadd_probe_maybe_process_on_add_direct",
                 "proof_runtime_add_only",
                 "proof_runtime_add_and_query",
                 "contextual_packet_add_only",
