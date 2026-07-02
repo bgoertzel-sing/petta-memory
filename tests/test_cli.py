@@ -77,6 +77,10 @@ class CliTests(unittest.TestCase):
             self.assertIn("TruthValue b1", pln.stdout)
             self.assertIn("MM-PLNTrust b1 0.75", pln.stdout)
 
+            pettachainer = self.run_cli(["--store", store, "pettachainer-view"])
+            self.assertEqual(pettachainer.returncode, 0, pettachainer.stderr)
+            self.assertIn("(: b1 (Requires MediumPeTTaMemory CLI) (STV 0.80 0.60))", pettachainer.stdout)
+
     def test_audit_view_preserves_complete_records_and_rejects_negative_limit(self):
         with tempfile.TemporaryDirectory() as td:
             store = str(Path(td) / "medium_memory.metta")

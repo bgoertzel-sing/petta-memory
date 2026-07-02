@@ -551,6 +551,25 @@ class MediumMemoryStoreTests(unittest.TestCase):
             self.assertIn("(MM-PLNTrust b2 0.82)", view)
             self.assertIn("(MM-PLNPromotionRule b2 explicit-test-promotion)", view)
 
+    def test_pettachainer_evidence_view_exports_promoted_beliefs_as_stv_proofs(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "medium_memory.metta")
+            store.append_cluster(QUOTE_CLUSTER)
+            store.append_cluster(PROMOTED_BELIEF_CLUSTER)
+            view = store.pettachainer_evidence_view()
+            self.assertEqual(view, "(: b2 (Requires MediumPeTTaMemory PLNReadyViews) (STV 0.90 0.70))\n")
+            first_line = view.splitlines()[0]
+            self.assertEqual(store.pettachainer_evidence_view(limit_chars=len(first_line)), "")
+            self.assertEqual(store.pettachainer_evidence_view(limit_chars=len(first_line) + 1), view)
+            with self.assertRaisesRegex(ValidationError, "limit_chars"):
+                store.pettachainer_evidence_view(limit_chars=-1)
+
+    def test_pettachainer_evidence_view_caps_confidence_by_promotion_trust(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "medium_memory.metta")
+            store.append_cluster(PROMOTED_BELIEF_CLUSTER.replace("(PromotionTrust pe1 0.82)", "(PromotionTrust pe1 0.40)"))
+            self.assertIn("(STV 0.90 0.4)", store.pettachainer_evidence_view())
+
     def test_pln_view_can_be_bounded_on_complete_atom_lines(self):
         with tempfile.TemporaryDirectory() as td:
             store = MediumMemoryStore(Path(td) / "medium_memory.metta")

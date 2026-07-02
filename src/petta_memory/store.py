@@ -421,6 +421,35 @@ class MediumMemoryStore:
         atoms = _index_atoms(self.clusters(), superseded_event_ids=self._superseded_event_ids())
         return _join_bounded_atom_lines(atoms, limit_chars)
 
+    def pettachainer_evidence_view(self, *, limit_chars: Optional[int] = None) -> str:
+        """Export promoted beliefs as PeTTaChainer proof statements.
+
+        This is a runtime-specific normalized PLN view.  Each eligible
+        ``DerivedBelief`` becomes a PeTTaChainer-checkable atom of the form
+        ``(: proof-id statement (STV strength confidence))``.  The source
+        ``TruthValue`` strength is preserved, while confidence is capped by the
+        bounded ``PromotionTrust`` value so the explicit promotion decision can
+        only reduce, not inflate, the exported confidence. Evidence-count/EC
+        export is intentionally left for a later mapping once support and
+        opposition counts are represented explicitly in the memory schema.
+        """
+        if limit_chars is not None and limit_chars < 0:
+            raise ValidationError("limit_chars must be non-negative")
+        promoted_beliefs = self._promoted_belief_metadata()
+        atoms: list[str] = []
+        for cluster in self.clusters():
+            for belief_id, meta in promoted_beliefs.items():
+                contents = _second_objects_for_subject(cluster.atoms, "BeliefContent", belief_id)
+                truth_values = _second_objects_for_subject(cluster.atoms, "TruthValue", belief_id)
+                if not contents or not truth_values:
+                    continue
+                stv = _pettachainer_stv(truth_values[-1], promotion_trust=meta["trust"])
+                if stv:
+                    atoms.append(f"(: {belief_id} {contents[-1]} {stv})")
+        if limit_chars is not None:
+            return _join_bounded_atom_lines(atoms, limit_chars)
+        return "\n".join(atoms) + ("\n" if atoms else "")
+
     def pln_view(
         self,
         *,
@@ -797,6 +826,24 @@ def _declared_cluster_ids_in_chunk(text: str) -> list[str]:
     envelope points at a different cluster.
     """
     return _objects_for_predicate(tuple(_parse_atom_texts(text)), "MemoryCluster")
+
+
+def _pettachainer_stv(truth_value: str, *, promotion_trust: str) -> Optional[str]:
+    parsed = _parse_single_atom(truth_value)
+    if len(parsed) != 3 or str(parsed[0]).lower() != "stv":
+        return None
+    strength = _render_sexpr(parsed[1])
+    confidence = _render_sexpr(parsed[2])
+    if not (_is_bounded_probability(strength) and _is_bounded_probability(confidence)):
+        return None
+    confidence_number = float(confidence)
+    capped_confidence = min(confidence_number, float(promotion_trust))
+    rendered_confidence = confidence if capped_confidence == confidence_number else _format_probability(capped_confidence)
+    return f"(STV {strength} {rendered_confidence})"
+
+
+def _format_probability(value: float) -> str:
+    return f"{value:.6f}".rstrip("0").rstrip(".") or "0"
 
 
 def _is_bounded_probability(value: str) -> bool:
