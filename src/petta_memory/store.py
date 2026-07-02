@@ -761,7 +761,11 @@ def _split_cluster_chunks(text: str) -> list[str]:
             end_id = line[len(_END_PREFIX) :].strip()
             if current_id is None or end_id != current_id:
                 raise ValidationError("cluster delimiter id mismatch")
-            records.append("\n".join(current))
+            chunk = "\n".join(current)
+            declared_ids = _declared_cluster_ids_in_chunk(chunk)
+            if len(declared_ids) == 1 and declared_ids[0] != current_id:
+                raise ValidationError("cluster delimiter id mismatch")
+            records.append(chunk)
             current = []
             current_id = None
             continue
@@ -780,6 +784,17 @@ def _split_cluster_chunks(text: str) -> list[str]:
     if not saw_delimiter and current:
         records.append("\n".join(current))
     return records
+
+
+def _declared_cluster_ids_in_chunk(text: str) -> list[str]:
+    """Return MemoryCluster ids declared in a raw delimited record body.
+
+    Delimited journals carry the cluster id both in the BEGIN/END markers and in
+    the MemoryCluster atom.  Checking the redundant id during read prevents audit
+    and query views from silently normalizing a manually corrupted record whose
+    envelope points at a different cluster.
+    """
+    return _objects_for_predicate(tuple(_parse_atom_texts(text)), "MemoryCluster")
 
 
 def _is_bounded_probability(value: str) -> bool:

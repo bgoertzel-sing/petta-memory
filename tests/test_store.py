@@ -583,7 +583,23 @@ class MediumMemoryStoreTests(unittest.TestCase):
 ;;; END MemoryCluster other
 """)
             store = MediumMemoryStore(path)
-            with self.assertRaises(ValidationError):
+            with self.assertRaisesRegex(ValidationError, "delimiter id mismatch"):
+                store.clusters()
+
+    def test_delimiter_atom_id_mismatch_rejected_on_read(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "medium_memory.metta"
+            path.write_text(""";;; BEGIN MemoryCluster mc-envelope
+(MemoryCluster mc-atom)
+(SchemaVersion mc-atom medium-memory-v1)
+(ClusterType mc-atom episode-record)
+(ClusterOpenedAt mc-atom "now")
+(ClusterSource mc-atom src-test)
+(Contains mc-atom e1)
+;;; END MemoryCluster mc-envelope
+""")
+            store = MediumMemoryStore(path)
+            with self.assertRaisesRegex(ValidationError, "delimiter id mismatch"):
                 store.clusters()
 
     def test_reject_duplicate_ids_on_append(self):
