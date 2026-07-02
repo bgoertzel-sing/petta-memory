@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import fcntl
+import math
 from pathlib import Path
 import os
 import re
@@ -79,6 +80,8 @@ _BINARY_RELATION_PREDICATES = {
     "BeliefContent",
     "TruthValue",
     "EvidenceFor",
+    "EvidenceSupportCount",
+    "EvidenceOppositionCount",
     "PromotesFrom",
     "PromotesTo",
     "PromotionRule",
@@ -177,6 +180,7 @@ class MediumMemoryStore:
             raise ValidationError("cluster needs ClusterSource or HasProvenance")
         self._validate_id_declarations(atoms)
         self._validate_relation_arities(atoms)
+        self._validate_relation_values(atoms)
         ids = _declared_ids(atoms)
         invalid_ids = sorted({ident for ident in ids if not _ID_RE.match(ident)})
         if invalid_ids:
@@ -214,6 +218,15 @@ class MediumMemoryStore:
             parsed = _parse_single_atom(atom)
             if parsed and parsed[0] in _BINARY_RELATION_PREDICATES and len(parsed) != 3:
                 raise ValidationError(f"binary relation must have exactly subject and object arguments: {atom}")
+
+    def _validate_relation_values(self, atoms: tuple[str, ...]) -> None:
+        """Validate values whose range is part of the v0 schema boundary."""
+        for atom in atoms:
+            parsed = _parse_single_atom(atom)
+            if parsed and parsed[0] in {"EvidenceSupportCount", "EvidenceOppositionCount"}:
+                value = _render_sexpr(parsed[2])
+                if not _is_non_negative_number(value):
+                    raise ValidationError(f"evidence count must be non-negative numeric value: {atom}")
 
     def _validate_contains_edges(self, atoms: tuple[str, ...], *, cluster_id: str, declared_ids: set[str]) -> None:
         """Ensure the cluster envelope only lists local declared memory records.
@@ -450,6 +463,38 @@ class MediumMemoryStore:
             return _join_bounded_atom_lines(atoms, limit_chars)
         return "\n".join(atoms) + ("\n" if atoms else "")
 
+    def pettachainer_evidence_packet_view(self, *, limit_chars: Optional[int] = None) -> str:
+        """Export promoted beliefs with explicit EC counts as EvidencePackets.
+
+        This view is emitted only when a promoted ``DerivedBelief`` has both
+        ``EvidenceSupportCount`` and ``EvidenceOppositionCount`` atoms.  The
+        packet shape follows PeTTaChainer's context modules:
+        ``(EvidencePacket statement (EC pos neg) features provenance)``.  Counts
+        are explicit schema data; they are not inferred from ``TruthValue``.
+        """
+        if limit_chars is not None and limit_chars < 0:
+            raise ValidationError("limit_chars must be non-negative")
+        promoted_beliefs = self._promoted_belief_metadata()
+        atoms: list[str] = []
+        for cluster in self.clusters():
+            for belief_id, meta in promoted_beliefs.items():
+                contents = _second_objects_for_subject(cluster.atoms, "BeliefContent", belief_id)
+                support_counts = _second_objects_for_subject(cluster.atoms, "EvidenceSupportCount", belief_id)
+                opposition_counts = _second_objects_for_subject(cluster.atoms, "EvidenceOppositionCount", belief_id)
+                if not (contents and support_counts and opposition_counts):
+                    continue
+                support = support_counts[-1]
+                opposition = opposition_counts[-1]
+                if not (_is_non_negative_number(support) and _is_non_negative_number(opposition)):
+                    continue
+                atoms.append(
+                    f"(EvidencePacket {contents[-1]} (EC {support} {opposition}) "
+                    f"((domain {meta['domain']}) (promotion-rule {meta['rule']})) {meta['event']})"
+                )
+        if limit_chars is not None:
+            return _join_bounded_atom_lines(atoms, limit_chars)
+        return "\n".join(atoms) + ("\n" if atoms else "")
+
     def pln_view(
         self,
         *,
@@ -524,7 +569,12 @@ class MediumMemoryStore:
                     trusts = _second_objects_for_subject(cluster.atoms, "PromotionTrust", subject)
                     domains = _second_objects_for_subject(cluster.atoms, "PromotionDomain", subject)
                     if targets and rules and trusts and domains and _is_bounded_probability(trusts[-1]):
-                        candidates[targets[-1]] = {"rule": rules[-1], "trust": trusts[-1], "domain": domains[-1]}
+                        candidates[targets[-1]] = {
+                            "event": subject,
+                            "rule": rules[-1],
+                            "trust": trusts[-1],
+                            "domain": domains[-1],
+                        }
                 elif pred == "TruthValue":
                     truth_subjects.add(subject)
                 elif pred == "EvidenceFor":
@@ -852,3 +902,11 @@ def _is_bounded_probability(value: str) -> bool:
     except ValueError:
         return False
     return 0.0 <= number <= 1.0
+
+
+def _is_non_negative_number(value: str) -> bool:
+    try:
+        number = float(value)
+    except ValueError:
+        return False
+    return math.isfinite(number) and number >= 0.0

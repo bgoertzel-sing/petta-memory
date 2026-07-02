@@ -20,6 +20,8 @@ CLUSTER = """
 (BeliefContent b1 (Requires MediumPeTTaMemory CLI))
 (TruthValue b1 (stv 0.80 0.60))
 (EvidenceFor b1 src-test)
+(EvidenceSupportCount b1 3.0)
+(EvidenceOppositionCount b1 1.0)
 (PromotionEvent pe-cli)
 (PromotesTo pe-cli b1)
 (PromotionRule pe-cli explicit-cli-test)
@@ -80,6 +82,14 @@ class CliTests(unittest.TestCase):
             pettachainer = self.run_cli(["--store", store, "pettachainer-view"])
             self.assertEqual(pettachainer.returncode, 0, pettachainer.stderr)
             self.assertIn("(: b1 (Requires MediumPeTTaMemory CLI) (STV 0.80 0.60))", pettachainer.stdout)
+
+            packets = self.run_cli(["--store", store, "pettachainer-packets-view"])
+            self.assertEqual(packets.returncode, 0, packets.stderr)
+            self.assertIn(
+                "(EvidencePacket (Requires MediumPeTTaMemory CLI) (EC 3.0 1.0) "
+                "((domain memory-cli) (promotion-rule explicit-cli-test)) pe-cli)",
+                packets.stdout,
+            )
 
     def test_audit_view_preserves_complete_records_and_rejects_negative_limit(self):
         with tempfile.TemporaryDirectory() as td:

@@ -23,7 +23,8 @@ Design source:
   character budget, negative bounds are rejected, and bounded output preserves
   complete atom lines.
 - Export a PLN-safe view that excludes raw quoted utterance text and unpromoted quoted claims; optional PLN-view character bounds preserve complete atom lines.
-- Export promoted beliefs as PeTTaChainer-compatible `(: proof-id statement (STV strength confidence))` statements via `pettachainer-view`; confidence is capped by `PromotionTrust`, and EC/support-opposition export is deferred until the schema records explicit counts.
+- Export promoted beliefs as PeTTaChainer-compatible `(: proof-id statement (STV strength confidence))` statements via `pettachainer-view`; confidence is capped by `PromotionTrust`.
+- Export promoted beliefs with explicit `EvidenceSupportCount`/`EvidenceOppositionCount` atoms as PeTTaChainer `EvidencePacket` atoms via `pettachainer-packets-view`; EC counts are never inferred from truth values.
 - Compute current status from append-only `StatusEvent` plus `Supersedes` atoms.
 - Require explicit promotion rule, bounded trust, and domain metadata before derived beliefs are exported as PLN premises; `pln-view --normalized` adds normalized `MM-PLN*` mapping atoms for eligible beliefs.
 

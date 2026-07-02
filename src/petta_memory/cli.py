@@ -36,6 +36,12 @@ def build_parser() -> argparse.ArgumentParser:
     pettachainer = sub.add_parser("pettachainer-view", help="Print promoted beliefs as PeTTaChainer proof statements")
     pettachainer.add_argument("--limit-chars", type=int, help="Bound output while preserving complete atom lines")
 
+    packets = sub.add_parser(
+        "pettachainer-packets-view",
+        help="Print promoted beliefs with explicit evidence counts as PeTTaChainer EvidencePacket atoms",
+    )
+    packets.add_argument("--limit-chars", type=int, help="Bound output while preserving complete atom lines")
+
     audit = sub.add_parser("audit-view", help="Print bounded complete MemoryCluster records for audit")
     audit.add_argument("--limit-chars", type=int, default=20000)
 
@@ -90,6 +96,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.cmd == "pettachainer-view":
             print(store.pettachainer_evidence_view(limit_chars=args.limit_chars), end="")
+            return 0
+        if args.cmd == "pettachainer-packets-view":
+            print(store.pettachainer_evidence_packet_view(limit_chars=args.limit_chars), end="")
             return 0
         if args.cmd == "audit-view":
             print(store.audit_view(limit_chars=args.limit_chars), end="")

@@ -68,6 +68,11 @@ PROMOTED_BELIEF_CLUSTER = """
 (EvidenceFor b2 qc1)
 """
 
+PROMOTED_BELIEF_WITH_COUNTS_CLUSTER = PROMOTED_BELIEF_CLUSTER.replace(
+    "(EvidenceFor b2 qc1)\n",
+    "(EvidenceFor b2 qc1)\n(EvidenceSupportCount b2 8.0)\n(EvidenceOppositionCount b2 2.0)\n",
+)
+
 STATUS_OPEN = """
 (MemoryCluster mc-status-open)
 (SchemaVersion mc-status-open medium-memory-v1)
@@ -569,6 +574,31 @@ class MediumMemoryStoreTests(unittest.TestCase):
             store = MediumMemoryStore(Path(td) / "medium_memory.metta")
             store.append_cluster(PROMOTED_BELIEF_CLUSTER.replace("(PromotionTrust pe1 0.82)", "(PromotionTrust pe1 0.40)"))
             self.assertIn("(STV 0.90 0.4)", store.pettachainer_evidence_view())
+
+    def test_pettachainer_evidence_packet_view_uses_explicit_counts_only(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "medium_memory.metta")
+            store.append_cluster(PROMOTED_BELIEF_CLUSTER)
+            self.assertEqual(store.pettachainer_evidence_packet_view(), "")
+
+            store.append_cluster(PROMOTED_BELIEF_WITH_COUNTS_CLUSTER.replace("mc3", "mc-counts").replace("pe1", "pe-counts").replace("b2", "b-counts"))
+            view = store.pettachainer_evidence_packet_view()
+            self.assertIn(
+                "(EvidencePacket (Requires MediumPeTTaMemory PLNReadyViews) (EC 8.0 2.0) "
+                "((domain memory-architecture) (promotion-rule explicit-test-promotion)) pe-counts)",
+                view,
+            )
+            first_line = view.splitlines()[0]
+            self.assertEqual(store.pettachainer_evidence_packet_view(limit_chars=len(first_line)), "")
+            self.assertEqual(store.pettachainer_evidence_packet_view(limit_chars=len(first_line) + 1), view)
+            with self.assertRaisesRegex(ValidationError, "limit_chars"):
+                store.pettachainer_evidence_packet_view(limit_chars=-1)
+
+    def test_reject_negative_evidence_counts(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "medium_memory.metta")
+            with self.assertRaisesRegex(ValidationError, "evidence count"):
+                store.append_cluster(PROMOTED_BELIEF_WITH_COUNTS_CLUSTER.replace("(EvidenceOppositionCount b2 2.0)", "(EvidenceOppositionCount b2 -1.0)"))
 
     def test_pln_view_can_be_bounded_on_complete_atom_lines(self):
         with tempfile.TemporaryDirectory() as td:
