@@ -159,6 +159,49 @@ def _proof_add_stage(statements: list[str]) -> dict[str, object]:
     return {"stages": [_time_call("add_proof_statements_no_check", lambda: handler.add_atoms_no_check(statements))]}
 
 
+def _compileadd_probe_stage(statement: str, probe: str) -> dict[str, object]:
+    """Time one internal expression from PeTTaChainer's ``compileadd`` path.
+
+    Each probe is intentionally isolated in its own subprocess by the caller. If
+    one internal form hangs, the surrounding profile still records which substep
+    hit the hard timeout instead of collapsing the whole add path into a single
+    opaque ``compileadd`` timeout.
+    """
+    from pettachainer import PeTTaChainer
+
+    handler = PeTTaChainer()
+    kb = handler.kb
+    stmt1 = f"(materialize-stmt-lambdas {statement})"
+    atoms = f"(collapse (mm2compile {kb} {stmt1}))"
+    iatoms = f"(list_to_set (map-flat internalize-proof-structure {atoms}))"
+    expressions = {
+        "materialize_stmt_lambdas": stmt1,
+        "mm2compile_collapse": atoms,
+        "internalize_proof_structure": iatoms,
+        "externalize_proof_structure": f"(map-flat externalize-proof-structure {iatoms})",
+        "index_source_implication": f"(index-source-implication {kb} {stmt1})",
+        "add_internalized_atoms": f"(collapse (foreach-flat add-to-kb {iatoms}))",
+        "maybe_process_on_add": f"(maybe-process-on-add {kb} {stmt1})",
+    }
+    if probe not in expressions:
+        raise ValueError(f"unknown compileadd probe: {probe}")
+    return {"probe": probe, "stages": [_time_call(probe, lambda: handler.handler.process_metta_string(f"!(eval {expressions[probe]})"))]}
+
+
+def _compileadd_probe_specs(statements: list[str]) -> list[tuple[str, str]]:
+    if not statements:
+        return []
+    return [
+        ("compileadd_probe_materialize", "materialize_stmt_lambdas"),
+        ("compileadd_probe_mm2compile", "mm2compile_collapse"),
+        ("compileadd_probe_internalize", "internalize_proof_structure"),
+        ("compileadd_probe_externalize", "externalize_proof_structure"),
+        ("compileadd_probe_index_source", "index_source_implication"),
+        ("compileadd_probe_add_internalized", "add_internalized_atoms"),
+        ("compileadd_probe_maybe_process_on_add", "maybe_process_on_add"),
+    ]
+
+
 def _proof_runtime_stage(statements: list[str], steps: int, timeout_sec: float) -> dict[str, object]:
     from pettachainer import PeTTaChainer
 
@@ -265,6 +308,15 @@ def profile_sizes(
                         stage_timeout_sec=stage_timeout_sec,
                     )
                 )
+                for label, probe in _compileadd_probe_specs(statements):
+                    events.append(
+                        _run_isolated_stage(
+                            label,
+                            _compileadd_probe_stage,
+                            (statements[0], probe),
+                            stage_timeout_sec=stage_timeout_sec,
+                        )
+                    )
                 events.append(
                     _run_isolated_stage(
                         "proof_runtime_add_only",
