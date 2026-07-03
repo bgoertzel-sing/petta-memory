@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import sys
 
+from .goalchainer_smoke import run_goalchainer_handoff_smoke
 from .store import MediumMemoryStore, ValidationError
 
 
@@ -54,6 +55,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print non-live JSON cache mapping promoted evidence to GoalChainer appraisal inputs",
     )
     goalchainer.add_argument("--cache-id", default="petta-memory-goalchainer-handoff")
+
+    goal_smoke = sub.add_parser(
+        "goalchainer-smoke",
+        help="Run a bounded non-live GoalChainer decision smoke from promoted handoff evidence",
+    )
+    goal_smoke.add_argument("--cache-id", default="petta-memory-goalchainer-handoff-smoke")
+    goal_smoke.add_argument("--goalchainer-repo", help="Path to local OmegaClaw-GoalChainer checkout")
+    goal_smoke.add_argument("--request", help="Incident/request text for GoalChainer demo --json")
+    goal_smoke.add_argument("--timeout-sec", type=float, default=20.0)
 
     audit = sub.add_parser("audit-view", help="Print bounded complete MemoryCluster records for audit")
     audit.add_argument("--limit-chars", type=int, default=20000)
@@ -118,6 +128,15 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.cmd == "goalchainer-handoff-cache":
             print(json.dumps(store.goalchainer_handoff_cache(cache_id=args.cache_id), indent=2, sort_keys=True))
+            return 0
+        if args.cmd == "goalchainer-smoke":
+            cache = store.goalchainer_handoff_cache(cache_id=args.cache_id)
+            kwargs = {"timeout_sec": args.timeout_sec}
+            if args.goalchainer_repo:
+                kwargs["goalchainer_repo"] = args.goalchainer_repo
+            if args.request:
+                kwargs["request"] = args.request
+            print(json.dumps(run_goalchainer_handoff_smoke(cache, **kwargs), indent=2, sort_keys=True))
             return 0
         if args.cmd == "audit-view":
             print(store.audit_view(limit_chars=args.limit_chars), end="")
