@@ -326,5 +326,68 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         )
 
 
+    def test_run_static_import_microbenchmark_skips_unsafe_atoms(self):
+        """Microbenchmark should skip when atoms are not converter-safe."""
+        result = profile.run_static_import_microbenchmark(
+            ["(unsupported_atom_only)"],
+            project_root=Path("/unused"),
+            stage_timeout_sec=1.0,
+        )
+        self.assertEqual(result["status"], "skipped")
+        self.assertIn("not all normalized atoms are safe", result["reason"])
+        self.assertFalse(result["design"]["all_records_safe_for_current_converter"])
+
+    def test_run_static_import_microbenchmark_uses_isolated_stage(self):
+        """Microbenchmark should delegate to _run_isolated_stage with expected args."""
+        sample = [
+            "(: b-profile-000 (Requires MemoryTarget0 PLNReadyViews) (STV 0.70 0.55))",
+            "(EvidencePacket (Requires MemoryTarget0 PLNReadyViews) (EC 3.0 1.0) "
+            "((domain omegaclaw-memory) (promotion-rule explicit-profile-workload)) pe-profile-000)",
+        ]
+        captured = {}
+
+        def fake_isolated_stage(label, target, args, *, stage_timeout_sec):
+            captured["label"] = label
+            captured["target"] = target
+            captured["args"] = args
+            captured["stage_timeout_sec"] = stage_timeout_sec
+            return {
+                "label": label,
+                "status": "ok",
+                "seconds": 0.1,
+                "result": "loaded",
+                "loaded_fact_count": 2,
+                "expected_fact_count": 2,
+                "facts_match": True,
+            }
+
+        with (
+            patch.object(profile, "_configure_local_runtime", return_value=None),
+            patch.object(profile, "_run_isolated_stage", side_effect=fake_isolated_stage),
+        ):
+            result = profile.run_static_import_microbenchmark(
+                sample,
+                project_root=Path("/unused"),
+                stage_timeout_sec=5.0,
+            )
+
+        self.assertEqual(result["source"], "non-live static-import microbenchmark")
+        self.assertEqual(captured["label"], "static_import_load_and_query")
+        self.assertEqual(captured["stage_timeout_sec"], 5.0)
+        self.assertTrue(result["design"]["all_records_safe_for_current_converter"])
+        self.assertEqual(result["runtime_event"]["status"], "ok")
+        self.assertTrue(result["runtime_event"]["facts_match"])
+        # Verify normalized atoms were passed to the stage
+        normalized = captured["args"][0]
+        self.assertTrue(all("(" in atom and ")" in atom for atom in normalized))
+        # Verify expected facts were passed
+        expected = captured["args"][1]
+        self.assertTrue(all("gckb" in fact for fact in expected))
+        # Gates
+        gates = " ".join(result["gates"])
+        self.assertIn("no petta-memory journal writes", gates)
+        self.assertIn("not PeTTaChainer compileadd/query success", gates)
+
+
 if __name__ == "__main__":
     unittest.main()

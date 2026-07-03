@@ -852,6 +852,116 @@ def inspect_petta_static_import_source(petta_repo_path: str | Path, sample_atoms
 
 
 
+def _static_import_microbenchmark_stage(
+    normalized_atoms: list[str],
+    expected_facts: list[str],
+    space: str = "gckb",
+) -> dict[str, object]:
+    """Run PeTTa ``static-import!`` on normalized atoms in a subprocess.
+
+    This stage is designed to be called via ``_run_isolated_stage`` so that the
+    SWI/PeTTa runtime noise and time are bounded.  It writes normalized atoms to
+    a temporary ``.metta`` file, loads PeTTa's ``lib_import.pl`` to register
+    the ``static-import!`` Prolog predicate, sets ``working_dir`` to the temp
+    directory, calls ``static-import!``, then queries the loaded space predicate
+    and compares results against expected facts.
+    """
+    import tempfile as _tempfile
+
+    from petta import PeTTa
+
+    petta = PeTTa(verbose=False)
+    with _tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        scratch_metta = td_path / "scratch.metta"
+        scratch_metta.write_text("\n".join(normalized_atoms) + "\n", encoding="utf-8")
+
+        # Load lib_import.pl to register static-import! as a Prolog predicate.
+        import janus_swi as janus
+
+        import_path = str(Path(__file__).resolve().parents[4] / "repos" / "PeTTa" / "lib" / "lib_import.pl")
+        janus.query_once(f"consult('{import_path}')")
+
+        # Set working_dir so static-import! finds scratch.metta in the temp dir.
+        janus.query_once(f"retractall(working_dir(_)), assertz(working_dir('{td}'))")
+
+        # Call static-import! to convert .metta -> .pl -> .qlf -> consult.
+        result = petta.process_metta_string(f"!(static-import! {space} scratch)")
+
+        # Query the loaded space predicate to retrieve all loaded facts.
+        query_result = janus.query_once(f"findall([A,B,C], '{space}'(A,B,C), Facts)")
+        loaded_facts_raw = query_result.get("Facts", []) if query_result else []
+        loaded_facts = sorted(
+            f"{fact[0]},{fact[1]},{fact[2]}" if isinstance(fact, (list, tuple)) and len(fact) == 3
+            else str(fact)
+            for fact in loaded_facts_raw
+        )
+        expected_sorted = sorted(expected_facts)
+        facts_match = loaded_facts == expected_sorted
+
+        return {
+            "result": "loaded" if loaded_facts else "empty",
+            "space": space,
+            "loaded_fact_count": len(loaded_facts),
+            "expected_fact_count": len(expected_sorted),
+            "facts_match": facts_match,
+            "loaded_facts": loaded_facts,
+            "expected_facts": expected_sorted,
+            "static_import_result": str(result),
+        }
+
+
+def run_static_import_microbenchmark(
+    sample_atoms: list[str],
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 30.0,
+) -> dict[str, object]:
+    """Run a non-live PeTTa ``static-import!`` microbenchmark over normalized atoms.
+
+    This consumes the output of ``design_static_import_microbenchmark_atoms``
+    and runs the actual ``static-import!`` loader in a bounded subprocess to
+    verify that (1) the converter accepts the normalized atoms, (2) the loaded
+    space predicate contains the expected facts, and (3) the conversion timing
+    is bounded.  It does not append to petta-memory journals, does not invoke
+    PeTTaChainer ``compileadd``/query, and does not touch OmegaClaw.
+    """
+    design = design_static_import_microbenchmark_atoms(sample_atoms)
+    if not design["all_records_safe_for_current_converter"]:
+        return {
+            "source": "non-live static-import microbenchmark",
+            "status": "skipped",
+            "reason": "not all normalized atoms are safe for the current PeTTa static-import converter",
+            "design": design,
+            "gates": [
+                "No runtime execution attempted; unsafe atoms were not loaded.",
+                "Do not treat this as PeTTaChainer compileadd/query success or inferred belief evidence.",
+            ],
+        }
+
+    normalized_atoms = [r["normalized_atom"] for r in design["records"] if r["normalized_atom"]]
+    expected_facts = [r["converted_prolog_fact"] for r in design["records"] if r["converted_prolog_fact"]]
+
+    _configure_local_runtime(project_root)
+    event = _run_isolated_stage(
+        "static_import_load_and_query",
+        _static_import_microbenchmark_stage,
+        (normalized_atoms, expected_facts),
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    return {
+        "source": "non-live static-import microbenchmark",
+        "design": design,
+        "runtime_event": event,
+        "gates": [
+            "Temporary directory only; no petta-memory journal writes or OmegaClaw integration.",
+            "This is a loader semantics benchmark, not PeTTaChainer compileadd/query success.",
+            "Do not treat loaded facts as inferred beliefs or PLN premises.",
+            "Keep compileadd/query/live OmegaClaw paths gated until a separate runtime semantics test passes.",
+        ],
+    }
+
+
 def summarize_compileadd_strategy(profile: dict[str, object]) -> dict[str, object]:
     """Summarize the bounded PeTTaChainer add-path decision from a profile.
 
