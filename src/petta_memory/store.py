@@ -495,6 +495,97 @@ class MediumMemoryStore:
             return _join_bounded_atom_lines(atoms, limit_chars)
         return "\n".join(atoms) + ("\n" if atoms else "")
 
+    def pettachainer_handoff_cache(
+        self,
+        *,
+        cache_id: str = "petta-memory-pettachainer-handoff",
+        statement_checker: Optional[Callable[[str], bool]] = None,
+    ) -> dict[str, object]:
+        """Return a non-live cache of PLN-ready PeTTaChainer handoff inputs.
+
+        The cache deliberately contains precompiled/exported atoms only:
+        promoted STV proof statements and promoted EvidencePackets with explicit
+        support/opposition counts.  It is a stable handoff contract for review,
+        OmegaClaw/GoalChainer mapping, and future PeTTaChainer ingestion; it is
+        not appended to the journal and its items are not inferred beliefs.
+
+        A caller may pass ``statement_checker`` (for example
+        ``pettachainer.check_stmt``) to require runtime validation of every STV
+        proof statement before the cache is accepted.  Without that opt-in hook,
+        items are still limited to locally validated, promotion-eligible exports
+        but are marked as not runtime-checked in the cache metadata.
+        """
+        if not _ID_RE.match(cache_id):
+            raise ValidationError(f"invalid cache id: {cache_id}")
+        promoted_beliefs = self._promoted_belief_metadata()
+        items: list[dict[str, str]] = []
+        statement_check_mode = "runtime-checker-not-run"
+        if statement_checker is not None:
+            statement_check_mode = "runtime-checker-passed"
+        for cluster in self.clusters():
+            for belief_id, meta in promoted_beliefs.items():
+                contents = _second_objects_for_subject(cluster.atoms, "BeliefContent", belief_id)
+                truth_values = _second_objects_for_subject(cluster.atoms, "TruthValue", belief_id)
+                if contents and truth_values:
+                    stv = _pettachainer_stv(truth_values[-1], promotion_trust=meta["trust"])
+                    if stv:
+                        atom = f"(: {belief_id} {contents[-1]} {stv})"
+                        if statement_checker is not None:
+                            try:
+                                ok = statement_checker(atom)
+                            except Exception as exc:
+                                raise ValidationError(f"statement checker rejected {belief_id}: {exc}") from exc
+                            if not ok:
+                                raise ValidationError(f"statement checker rejected {belief_id}")
+                        items.append(
+                            {
+                                "kind": "pettachainer-stv-statement",
+                                "atom": atom,
+                                "belief_id": belief_id,
+                                "cluster_id": cluster.cluster_id,
+                                "promotion_event": meta["event"],
+                                "promotion_rule": meta["rule"],
+                                "promotion_domain": meta["domain"],
+                                "promotion_trust": meta["trust"],
+                                "item_status": "pln-ready-input-not-inferred-belief",
+                                "statement_check": statement_check_mode,
+                            }
+                        )
+                support_counts = _second_objects_for_subject(cluster.atoms, "EvidenceSupportCount", belief_id)
+                opposition_counts = _second_objects_for_subject(cluster.atoms, "EvidenceOppositionCount", belief_id)
+                if contents and support_counts and opposition_counts:
+                    support = support_counts[-1]
+                    opposition = opposition_counts[-1]
+                    if _is_non_negative_number(support) and _is_non_negative_number(opposition):
+                        atom = (
+                            f"(EvidencePacket {contents[-1]} (EC {support} {opposition}) "
+                            f"((domain {meta['domain']}) (promotion-rule {meta['rule']})) {meta['event']})"
+                        )
+                        items.append(
+                            {
+                                "kind": "pettachainer-evidence-packet",
+                                "atom": atom,
+                                "belief_id": belief_id,
+                                "cluster_id": cluster.cluster_id,
+                                "promotion_event": meta["event"],
+                                "promotion_rule": meta["rule"],
+                                "promotion_domain": meta["domain"],
+                                "promotion_trust": meta["trust"],
+                                "item_status": "pln-ready-input-not-inferred-belief",
+                                "evidence_count_check": "explicit-non-negative-support-opposition",
+                            }
+                        )
+        return {
+            "schema": "petta-memory-pettachainer-handoff-v1",
+            "cache_id": cache_id,
+            "mode": "non-live-precompiled-statement-cache",
+            "compileadd_gate": "disabled-pending-materialize-stmt-lambdas-mm2compile-instrumentation-or-precompiled-add-api",
+            "canonical_source": "append-only MemoryCluster journal via promotion-eligible PeTTaChainer views",
+            "boundary": "read-only handoff artifact; do not append as memory and do not treat as inferred belief",
+            "item_count": len(items),
+            "items": items,
+        }
+
     def pln_view(
         self,
         *,

@@ -1,3 +1,4 @@
+import json
 import subprocess
 import sys
 import tempfile
@@ -90,6 +91,14 @@ class CliTests(unittest.TestCase):
                 "((domain memory-cli) (promotion-rule explicit-cli-test)) pe-cli)",
                 packets.stdout,
             )
+
+            handoff = self.run_cli(["--store", store, "pettachainer-handoff-cache"])
+            self.assertEqual(handoff.returncode, 0, handoff.stderr)
+            cache = json.loads(handoff.stdout)
+            self.assertEqual(cache["mode"], "non-live-precompiled-statement-cache")
+            self.assertEqual(cache["item_count"], 2)
+            self.assertEqual(cache["items"][0]["kind"], "pettachainer-stv-statement")
+            self.assertEqual(cache["items"][1]["kind"], "pettachainer-evidence-packet")
 
     def test_audit_view_preserves_complete_records_and_rejects_negative_limit(self):
         with tempfile.TemporaryDirectory() as td:

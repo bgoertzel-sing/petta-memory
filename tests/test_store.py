@@ -181,6 +181,34 @@ class MediumMemoryStoreTests(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "limit_chars must be non-negative"):
                 store.audit_view(limit_chars=-1)
 
+    def test_pettachainer_handoff_cache_labels_non_live_inputs(self):
+        checked: list[str] = []
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "medium_memory.metta")
+            store.append_cluster(PROMOTED_BELIEF_WITH_COUNTS_CLUSTER)
+            cache = store.pettachainer_handoff_cache(statement_checker=lambda atom: checked.append(atom) or True)
+
+        self.assertEqual(cache["schema"], "petta-memory-pettachainer-handoff-v1")
+        self.assertEqual(cache["mode"], "non-live-precompiled-statement-cache")
+        self.assertIn("do not treat as inferred belief", cache["boundary"])
+        self.assertEqual(cache["item_count"], 2)
+        self.assertEqual(checked, ["(: b2 (Requires MediumPeTTaMemory PLNReadyViews) (STV 0.90 0.70))"])
+        kinds = [item["kind"] for item in cache["items"]]
+        self.assertEqual(kinds, ["pettachainer-stv-statement", "pettachainer-evidence-packet"])
+        for item in cache["items"]:
+            self.assertEqual(item["belief_id"], "b2")
+            self.assertEqual(item["promotion_event"], "pe1")
+            self.assertEqual(item["item_status"], "pln-ready-input-not-inferred-belief")
+        self.assertEqual(cache["items"][0]["statement_check"], "runtime-checker-passed")
+        self.assertEqual(cache["items"][1]["evidence_count_check"], "explicit-non-negative-support-opposition")
+
+    def test_pettachainer_handoff_cache_rejects_failed_statement_check(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "medium_memory.metta")
+            store.append_cluster(PROMOTED_BELIEF_CLUSTER)
+            with self.assertRaisesRegex(ValidationError, "statement checker rejected b2"):
+                store.pettachainer_handoff_cache(statement_checker=lambda _atom: False)
+
     def test_reject_malformed_atom_does_not_alter_file(self):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "medium_memory.metta"
