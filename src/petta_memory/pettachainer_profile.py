@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import multiprocessing as mp
 import os
 import queue
+import re
 import sys
 import tempfile
 import time
@@ -390,6 +392,97 @@ def _build_export_payload(store_path: Path, count: int) -> dict[str, list[str]]:
         "statements": [line for line in store.pettachainer_evidence_view().splitlines() if line],
         "packets": [line for line in store.pettachainer_evidence_packet_view().splitlines() if line],
     }
+
+
+def inspect_pettachainer_add_api(repo_path: str | Path) -> dict[str, object]:
+    """Inspect a PeTTaChainer checkout for add-path API options.
+
+    This is a source-level, no-runtime probe.  It records whether the checked-out
+    PeTTaChainer exposes a public precompiled-add/cache API or only routes public
+    add calls through ``compileadd``/``compileadd-mine``.  Keeping this as a pure
+    filesystem inspection lets project records justify the current non-live
+    precompiled handoff gate without rerunning the noisy SWI/MeTTa runtime.
+    """
+    repo = Path(repo_path)
+    py_path = repo / "pettachainer" / "pettachainer.py"
+    metta_path = repo / "pettachainer" / "metta" / "petta_chainer.metta"
+    missing = [str(path) for path in (py_path, metta_path) if not path.exists()]
+    if missing:
+        raise FileNotFoundError("missing PeTTaChainer source files: " + ", ".join(missing))
+
+    py_source = py_path.read_text(encoding="utf-8")
+    metta_source = metta_path.read_text(encoding="utf-8")
+    tree = ast.parse(py_source)
+    class_node = next(
+        (
+            node
+            for node in tree.body
+            if isinstance(node, ast.ClassDef) and node.name == "PeTTaChainer"
+        ),
+        None,
+    )
+    if class_node is None:
+        raise ValueError("PeTTaChainer class not found")
+    public_methods = [
+        node.name
+        for node in class_node.body
+        if isinstance(node, ast.FunctionDef) and not node.name.startswith("_")
+    ]
+    add_methods = [name for name in public_methods if "add" in name.lower()]
+    add_method_sources = {
+        node.name: ast.get_source_segment(py_source, node) or ""
+        for node in class_node.body
+        if isinstance(node, ast.FunctionDef) and node.name in add_methods
+    }
+    add_method_compile_calls = {
+        name: sorted(set(re.findall(r"compileadd(?:-mine)?", source)))
+        for name, source in add_method_sources.items()
+    }
+    precompiled_terms = sorted(
+        set(re.findall(r"\b[\w-]*(?:precompile|precompiled|cache|handoff)[\w-]*\b", py_source + "\n" + metta_source, re.IGNORECASE))
+    )
+    compileadd_defs = sorted(set(re.findall(r"\(= \((compileadd(?:-mine)?)\b", metta_source)))
+    compileadd_subforms = re.findall(r"\$[\w-]+ \(([^\s()]+)", metta_source)
+    selected_subforms = [
+        name
+        for name in compileadd_subforms
+        if name
+        in {
+            "materialize-stmt-lambdas",
+            "collapse",
+            "list_to_set",
+            "map-flat",
+            "index-source-implication",
+            "maybe-process-on-add",
+            "process-on-add-items",
+        }
+    ]
+    exposes_precompiled_add_api = any(
+        token.lower() in {"precompile", "precompiled", "precompiled-add", "precompiled-cache", "handoff"}
+        for token in precompiled_terms
+    )
+    return {
+        "source": "pettachainer source inspection",
+        "repo_path": str(repo),
+        "public_add_methods": add_methods,
+        "add_method_compile_calls": add_method_compile_calls,
+        "compileadd_definitions": compileadd_defs,
+        "compileadd_subforms_seen": selected_subforms,
+        "precompiled_add_terms_seen": precompiled_terms,
+        "exposes_precompiled_add_api": exposes_precompiled_add_api,
+        "recommended_boundary": (
+            "no public precompiled-add API found; keep petta-memory's handoff cache non-live and continue "
+            "upstream materialize-stmt-lambdas/mm2compile instrumentation"
+            if not exposes_precompiled_add_api
+            else "review discovered precompiled/cache terms manually before adopting any API"
+        ),
+        "gates": [
+            "Source inspection only; does not invoke PeTTaChainer compileadd/query.",
+            "Do not infer beliefs or enable OmegaClaw writes from this inspection.",
+            "Adopt an upstream API only after a separate non-live gate verifies semantics and provenance.",
+        ],
+    }
+
 
 
 def summarize_compileadd_strategy(profile: dict[str, object]) -> dict[str, object]:

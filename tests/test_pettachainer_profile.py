@@ -72,6 +72,40 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         self.assertEqual(direct, "!(materialize-stmt-lambdas (: p (S x) (STV 1 0.9)))")
         self.assertEqual(eval_control, "!(eval (materialize-stmt-lambdas (: p (S x) (STV 1 0.9))))")
 
+    def test_inspect_pettachainer_add_api_reports_no_precompiled_api(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            package = repo / "pettachainer"
+            metta_dir = package / "metta"
+            metta_dir.mkdir(parents=True)
+            (package / "pettachainer.py").write_text(
+                "class PeTTaChainer:\n"
+                "    def add_atom(self, atom):\n"
+                "        return self.handler.process_metta_string(f'!(compileadd {atom})')\n"
+                "    def add_atoms_no_check(self, atoms):\n"
+                "        return self.handler.process_metta_string('!(superpose ((compileadd kb a)))')\n"
+                "    def query(self, atom):\n"
+                "        return []\n",
+                encoding="utf-8",
+            )
+            (metta_dir / "petta_chainer.metta").write_text(
+                "(= (compileadd $kb $stmt)\n"
+                "  (let* (($stmt1 (materialize-stmt-lambdas $stmt))\n"
+                "         ($atoms (collapse (mm2compile $kb $stmt1)))\n"
+                "         ($_index (index-source-implication $kb $stmt1))\n"
+                "         ($_ (maybe-process-on-add $kb $stmt1)))\n"
+                "    $atoms))\n",
+                encoding="utf-8",
+            )
+
+            summary = profile.inspect_pettachainer_add_api(repo)
+
+        self.assertEqual(summary["public_add_methods"], ["add_atom", "add_atoms_no_check"])
+        self.assertFalse(summary["exposes_precompiled_add_api"])
+        self.assertEqual(summary["compileadd_definitions"], ["compileadd"])
+        self.assertEqual(summary["add_method_compile_calls"]["add_atom"], ["compileadd"])
+        self.assertIn("no public precompiled-add API found", summary["recommended_boundary"])
+
     def test_compileadd_strategy_summary_recommends_precompiled_cache_gate(self):
         sample_profile = {
             "results": [
