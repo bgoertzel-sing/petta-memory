@@ -151,6 +151,51 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         )
         self.assertIn("no compileadd/query/runtime execution", " ".join(summary["gates"]))
 
+    def test_inspect_compile_dispatch_for_statement_maps_promoted_belief_to_fact_branch(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            chainer_dir = repo / "pettachainer" / "metta" / "chainer"
+            chainer_dir.mkdir(parents=True)
+            (chainer_dir / "compile.metta").write_text(
+                "(= (compile_ $kb (@ $stmt (: $prf $Type $tv)))\n"
+                "   (if (is-var $Type) (empty)\n"
+                "      (if (= $Type (Implication (cons Premises $premises) (cons Conclusions $conclusions)))\n"
+                "         (compile-implication-forward-rules $kb $prf $premises $conclusions)\n"
+                "         (if (bidirectional-implication-type? $Type)\n"
+                "            (compile_ $kb (: (bi-forward $prf) (Implication $left $right) $tv))\n"
+                "            (let $fact-kb (compile-fact-kb $kb)\n"
+                "               (superpose ((() |- ((: $fact-kb $prf $Type $tv)))\n"
+                "                           (compile-outputs (: $fact-kb $prf $Type $tv)))))))))\n",
+                encoding="utf-8",
+            )
+            (chainer_dir / "logic_config.metta").write_text(
+                "!(set-bidirectional-implication-form BiImplication)\n",
+                encoding="utf-8",
+            )
+
+            summary = profile.inspect_compile_dispatch_for_statement(
+                repo,
+                "(: b-profile-000 (Requires MemoryTarget0 PLNReadyViews) (STV 0.70 0.55))",
+            )
+
+        self.assertEqual(summary["parsed_statement"]["type_head"], "Requires")
+        self.assertEqual(summary["selected_compile_branch"], "fact-assertion")
+        self.assertIn("concrete non-Implication", summary["reason"])
+        self.assertIn("compile-outputs", summary["compile_definition"]["calls"])
+        self.assertEqual(summary["configured_bidirectional_heads"], ["BiImplication"])
+        self.assertIn("no PeTTaChainer runtime", " ".join(summary["gates"]))
+
+    def test_inspect_compile_dispatch_for_statement_rejects_non_proof_atom(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            chainer_dir = repo / "pettachainer" / "metta" / "chainer"
+            chainer_dir.mkdir(parents=True)
+            (chainer_dir / "compile.metta").write_text("(= (compile_ $kb $stmt) ())\n", encoding="utf-8")
+            (chainer_dir / "logic_config.metta").write_text("", encoding="utf-8")
+
+            with self.assertRaises(ValueError):
+                profile.inspect_compile_dispatch_for_statement(repo, "(Requires MemoryTarget0 PLNReadyViews)")
+
     def test_compileadd_strategy_summary_recommends_precompiled_cache_gate(self):
         sample_profile = {
             "results": [

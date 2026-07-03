@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 from typing import Callable, Iterable
 
+from .sexpr import parse_one_list, symbol_text, to_source
 from .store import MediumMemoryStore
 
 
@@ -582,6 +583,91 @@ def inspect_compileadd_bottleneck_sources(repo_path: str | Path) -> dict[str, ob
             "Source inspection only; no compileadd/query/runtime execution.",
             "Do not adopt or modify upstream PeTTaChainer semantics from this artifact alone.",
             "Keep petta-memory handoff cache non-live until a separate runtime gate passes.",
+        ],
+    }
+
+
+def inspect_compile_dispatch_for_statement(repo_path: str | Path, statement: str) -> dict[str, object]:
+    """Map one exported PeTTaChainer statement to a source-level ``compile_`` branch.
+
+    This is deliberately not a runtime probe.  It answers a narrower question
+    after the ``compileadd`` bottleneck source map: for the tiny promoted-belief
+    STV statement that petta-memory exports, which branch of PeTTaChainer's
+    ``compile_`` dispatcher should be reached *after* materialization and
+    ``mm2compile``?  The result keeps follow-up instrumentation focused without
+    invoking SWI, ``compileadd``, query, or GoalChainer.
+    """
+    repo = Path(repo_path)
+    compile_path = repo / "pettachainer" / "metta" / "chainer" / "compile.metta"
+    logic_config_path = repo / "pettachainer" / "metta" / "chainer" / "logic_config.metta"
+    missing = [str(path) for path in (compile_path, logic_config_path) if not path.exists()]
+    if missing:
+        raise FileNotFoundError("missing PeTTaChainer source files: " + ", ".join(missing))
+
+    form = parse_one_list(statement)
+    if len(form) != 4 or symbol_text(form[0]) != ":":
+        raise ValueError("statement must be a PeTTaChainer proof atom: (: proof type tv)")
+    proof_id = to_source(form[1])
+    statement_type = form[2]
+    truth_value = to_source(form[3])
+    type_head = symbol_text(statement_type[0]) if isinstance(statement_type, tuple) and statement_type else symbol_text(statement_type)
+    is_variable_type = bool(type_head and type_head.startswith("$"))
+
+    logic_source = logic_config_path.read_text(encoding="utf-8")
+    bidirectional_heads = sorted(
+        token
+        for token in set(re.findall(r"!\(set-bidirectional-implication-form\s+([^)\s]+)\)", logic_source))
+        if not token.startswith("$")
+    )
+    if is_variable_type:
+        selected_branch = "variable-type-empty"
+        reason = "compile_ first rejects variable Type values by returning empty."
+    elif type_head == "Implication":
+        selected_branch = "implication-rule"
+        reason = "Type head is Implication, so compile_ enters build-implication-plan and rule compilation."
+    elif type_head in bidirectional_heads:
+        selected_branch = "bidirectional-implication-rule"
+        reason = "Type head is configured as bidirectional and compile_ expands it into forward/backward implications."
+    else:
+        selected_branch = "fact-assertion"
+        reason = "Type is a concrete non-Implication expression, so compile_ should use compile-fact-kb plus compile-outputs."
+
+    compile_source = compile_path.read_text(encoding="utf-8")
+    compile_definition = _extract_metta_definition(compile_source, "compile_")
+    if compile_definition is not None:
+        compile_definition["file"] = "pettachainer/metta/chainer/compile.metta"
+    return {
+        "source": "pettachainer compile_ dispatch source inspection",
+        "repo_path": str(repo),
+        "statement": statement,
+        "parsed_statement": {
+            "proof_id": proof_id,
+            "type": to_source(statement_type),
+            "type_head": type_head,
+            "truth_value": truth_value,
+        },
+        "configured_bidirectional_heads": bidirectional_heads,
+        "selected_compile_branch": selected_branch,
+        "reason": reason,
+        "compile_definition": compile_definition,
+        "next_instrumentation_targets": [
+            {
+                "symbol": "materialize-stmt-lambdas",
+                "reason": "Still the first timed-out compileadd binding before any compile_ branch can be reached.",
+            },
+            {
+                "symbol": "mm2compile",
+                "reason": "Owns context clearing, broad compile dispatch, and generated ctx atom collection.",
+            },
+            {
+                "symbol": "compile_ fact-assertion branch",
+                "reason": "The petta-memory promoted-belief STV shape should avoid implication/rule branches; future probes can instrument this fact path specifically.",
+            },
+        ],
+        "gates": [
+            "Source inspection only; no PeTTaChainer runtime, compileadd, query, GoalChainer, or OmegaClaw path is invoked.",
+            "Do not treat branch mapping as inferred belief evidence; it only narrows instrumentation targets.",
+            "Keep handoff caches non-live until a separate add/query runtime gate passes.",
         ],
     }
 
