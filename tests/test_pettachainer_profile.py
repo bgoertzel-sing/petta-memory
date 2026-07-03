@@ -106,6 +106,51 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         self.assertEqual(summary["add_method_compile_calls"]["add_atom"], ["compileadd"])
         self.assertIn("no public precompiled-add API found", summary["recommended_boundary"])
 
+    def test_inspect_compileadd_bottleneck_sources_records_target_definitions(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            metta_dir = repo / "pettachainer" / "metta"
+            chainer_dir = metta_dir / "chainer"
+            chainer_dir.mkdir(parents=True)
+            (metta_dir / "petta_chainer.metta").write_text(
+                "!(import! &self chainer/compile)\n"
+                "!(import! &self chainer/mining)\n"
+                "(= (materialize-stmt-lambdas $term)\n"
+                "   (if (is-var $term) $term (materialize-stmt-lambdas (car-atom $term))))\n"
+                "(= (compileadd $kb $stmt)\n"
+                "   (let* (($stmt1 (materialize-stmt-lambdas $stmt))\n"
+                "          ($atoms (collapse (mm2compile $kb $stmt1))))\n"
+                "      $atoms))\n"
+                "(= (compileadd-mine $kb $stmt) (compileadd $kb $stmt))\n",
+                encoding="utf-8",
+            )
+            (chainer_dir / "compile.metta").write_text(
+                "(= (index-source-implication $kb $stmt) ())\n"
+                "(= (compile $kb $stmt) (((() |- ($stmt)) ())))\n"
+                "(= (mm2compile $kb $stmt)\n"
+                "   (progn (remove-all-atoms ctx) (superpose ((mm2stmt (compile $kb $stmt)) (get-atoms ctx)))))\n",
+                encoding="utf-8",
+            )
+            (chainer_dir / "mining.metta").write_text(
+                "(= (maybe-process-on-add $kb $stmt) ())\n",
+                encoding="utf-8",
+            )
+
+            summary = profile.inspect_compileadd_bottleneck_sources(repo)
+
+        self.assertIn("chainer/compile", summary["root_imports"])
+        self.assertEqual(
+            summary["definitions"]["materialize-stmt-lambdas"]["file"],
+            "pettachainer/metta/petta_chainer.metta",
+        )
+        self.assertTrue(summary["definitions"]["materialize-stmt-lambdas"]["recursive"])
+        self.assertIn("compile", summary["definitions"]["mm2compile"]["calls"])
+        self.assertEqual(
+            [target["symbol"] for target in summary["next_instrumentation_targets"]],
+            ["materialize-stmt-lambdas", "mm2compile", "compile_"],
+        )
+        self.assertIn("no compileadd/query/runtime execution", " ".join(summary["gates"]))
+
     def test_compileadd_strategy_summary_recommends_precompiled_cache_gate(self):
         sample_profile = {
             "results": [

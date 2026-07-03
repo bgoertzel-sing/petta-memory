@@ -484,6 +484,108 @@ def inspect_pettachainer_add_api(repo_path: str | Path) -> dict[str, object]:
     }
 
 
+def _extract_metta_definition(source: str, symbol: str) -> dict[str, object] | None:
+    """Return a bounded source excerpt for a top-level MeTTa definition.
+
+    This is intentionally a source inspector, not a MeTTa evaluator.  It is used
+    to keep the current PeTTaChainer bottleneck work grounded in checked-out
+    upstream text while avoiding another noisy ``compileadd`` runtime call.
+    """
+    lines = source.splitlines()
+    pattern = re.compile(rf"^\(= \({re.escape(symbol)}(?:\s|\))")
+    start_index = next((index for index, line in enumerate(lines) if pattern.search(line)), None)
+    if start_index is None:
+        return None
+    depth = 0
+    end_index = start_index
+    for index in range(start_index, len(lines)):
+        line = lines[index]
+        depth += line.count("(") - line.count(")")
+        end_index = index
+        if index > start_index and depth <= 0:
+            break
+    snippet = "\n".join(lines[start_index : end_index + 1])
+    return {
+        "symbol": symbol,
+        "line_start": start_index + 1,
+        "line_end": end_index + 1,
+        "line_count": end_index - start_index + 1,
+        "calls": sorted(set(re.findall(r"\(([A-Za-z0-9_+*/<>=?!|.-]+)(?:\s|\))", snippet))),
+        "recursive": bool(re.search(rf"\({re.escape(symbol)}(?:\s|\))", snippet.split("\n", 1)[-1] if "\n" in snippet else "")),
+        "snippet": snippet,
+    }
+
+
+def inspect_compileadd_bottleneck_sources(repo_path: str | Path) -> dict[str, object]:
+    """Inspect source definitions on the current ``compileadd`` bottleneck path.
+
+    Runtime probes already show that ``materialize-stmt-lambdas`` and
+    ``mm2compile`` time out for the tiny promoted-belief workload while later
+    index/process hooks can complete.  This helper records the exact upstream
+    definitions and import/file locations that should be instrumented next,
+    without invoking SWI, PeTTaChainer, ``compileadd``, or query.
+    """
+    repo = Path(repo_path)
+    root_metta_path = repo / "pettachainer" / "metta" / "petta_chainer.metta"
+    compile_path = repo / "pettachainer" / "metta" / "chainer" / "compile.metta"
+    mining_path = repo / "pettachainer" / "metta" / "chainer" / "mining.metta"
+    missing = [str(path) for path in (root_metta_path, compile_path, mining_path) if not path.exists()]
+    if missing:
+        raise FileNotFoundError("missing PeTTaChainer MeTTa source files: " + ", ".join(missing))
+
+    sources = {
+        "pettachainer/metta/petta_chainer.metta": root_metta_path.read_text(encoding="utf-8"),
+        "pettachainer/metta/chainer/compile.metta": compile_path.read_text(encoding="utf-8"),
+        "pettachainer/metta/chainer/mining.metta": mining_path.read_text(encoding="utf-8"),
+    }
+    symbol_files = {
+        "compileadd": "pettachainer/metta/petta_chainer.metta",
+        "compileadd-mine": "pettachainer/metta/petta_chainer.metta",
+        "materialize-stmt-lambdas": "pettachainer/metta/petta_chainer.metta",
+        "mm2compile": "pettachainer/metta/chainer/compile.metta",
+        "compile": "pettachainer/metta/chainer/compile.metta",
+        "compile_": "pettachainer/metta/chainer/compile.metta",
+        "index-source-implication": "pettachainer/metta/chainer/compile.metta",
+        "maybe-process-on-add": "pettachainer/metta/chainer/mining.metta",
+    }
+    definitions: dict[str, object] = {}
+    for symbol, file_name in symbol_files.items():
+        definition = _extract_metta_definition(sources[file_name], symbol)
+        if definition is not None:
+            definition["file"] = file_name
+            definitions[symbol] = definition
+    root_imports = re.findall(r"!\(import! &self ([^)]+)\)", sources["pettachainer/metta/petta_chainer.metta"])
+    return {
+        "source": "pettachainer compileadd bottleneck source inspection",
+        "repo_path": str(repo),
+        "root_imports": root_imports,
+        "definitions": definitions,
+        "runtime_provenance": (
+            "Use with prior profile artifacts showing materialize-stmt-lambdas/mm2compile timeouts; "
+            "this helper does not rerun PeTTaChainer."
+        ),
+        "next_instrumentation_targets": [
+            {
+                "symbol": "materialize-stmt-lambdas",
+                "reason": "First compileadd binding; recursively traverses every term and evals |-> lambda forms before mm2compile.",
+            },
+            {
+                "symbol": "mm2compile",
+                "reason": "Second compileadd binding; clears ctx, invokes the broad compile dispatcher, then reads generated ctx atoms.",
+            },
+            {
+                "symbol": "compile_",
+                "reason": "Large upstream dispatcher beneath mm2compile; source-level line span provides the next finer instrumentation boundary.",
+            },
+        ],
+        "gates": [
+            "Source inspection only; no compileadd/query/runtime execution.",
+            "Do not adopt or modify upstream PeTTaChainer semantics from this artifact alone.",
+            "Keep petta-memory handoff cache non-live until a separate runtime gate passes.",
+        ],
+    }
+
+
 
 def summarize_compileadd_strategy(profile: dict[str, object]) -> dict[str, object]:
     """Summarize the bounded PeTTaChainer add-path decision from a profile.
