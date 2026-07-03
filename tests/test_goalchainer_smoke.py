@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from petta_memory.goalchainer_smoke import run_goalchainer_handoff_smoke
+from petta_memory.goalchainer_smoke import run_goalchainer_handoff_smoke, run_goalchainer_precompiled_handoff_smoke
 from petta_memory.store import ValidationError
 
 
@@ -55,6 +55,29 @@ def _payload():
 
 
 class GoalChainerSmokeTests(unittest.TestCase):
+    def test_precompiled_handoff_smoke_consumes_cache_without_compileadd(self):
+        repo = Path(__file__).resolve().parents[4] / "omegaclaw" / "repos" / "OmegaClaw-GoalChainer"
+        smoke = run_goalchainer_precompiled_handoff_smoke(_cache(), goalchainer_repo=repo)
+
+        self.assertEqual(smoke["schema"], "petta-memory-goalchainer-precompiled-smoke-v1")
+        self.assertEqual(smoke["mode"], "non-live-precompiled-cache-decision-payload-only")
+        self.assertIn("compileadd/query not invoked", smoke["boundary"])
+        payload = smoke["decision_payload"]
+        self.assertEqual(payload["runtime"]["reasoner"], "petta-memory-precompiled-handoff-cache")
+        self.assertEqual(payload["decisions"][0]["action_id"], "publish_redacted_summary")
+        redacted = next(item for item in payload["decisions"] if item["action_id"] == "publish_redacted_summary")
+        self.assertEqual(redacted["evidence"]["strength"], 0.91)
+        self.assertEqual(redacted["evidence"]["confidence"], 0.74)
+        self.assertTrue(smoke["checks"]["compileadd_not_invoked"])
+        self.assertTrue(smoke["checks"]["no_live_directive_or_task_claim"])
+
+    def test_precompiled_handoff_rejects_missing_stv_items(self):
+        cache = _cache()
+        cache["items"] = [cache["items"][1]]
+        repo = Path(__file__).resolve().parents[4] / "omegaclaw" / "repos" / "OmegaClaw-GoalChainer"
+        with self.assertRaisesRegex(ValidationError, "no Acceptable STV"):
+            run_goalchainer_precompiled_handoff_smoke(cache, goalchainer_repo=repo)
+
     def test_non_live_goalchainer_smoke_wraps_decision_payload_with_provenance(self):
         calls = []
 

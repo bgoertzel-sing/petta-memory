@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 from typing import Any, Callable
@@ -27,6 +28,10 @@ DEFAULT_REQUEST = (
     "Checkout is down. Engineering wants to paste raw logs into the incident room. "
     "Support says the logs may include customer emails, order IDs, and request payloads. "
     "Use the attached promoted PeTTa memory evidence only as read-only appraisal context."
+)
+
+_ACCEPTABLE_STV_RE = re.compile(
+    r"\(Acceptable\s+(?P<action>[A-Za-z0-9_:-]+)\)\s+\(STV\s+(?P<strength>[0-9.eE+-]+)\s+(?P<confidence>[0-9.eE+-]+)\)"
 )
 
 
@@ -132,6 +137,116 @@ def run_goalchainer_handoff_smoke(
     }
 
 
+def run_goalchainer_precompiled_handoff_smoke(
+    handoff_cache: dict[str, object],
+    *,
+    goalchainer_repo: str | Path = DEFAULT_GOALCHAINER_REPO,
+    request: str = DEFAULT_REQUEST,
+) -> dict[str, object]:
+    """Run GoalChainer's decision engine from a precompiled handoff cache.
+
+    This is the bounded bypass for the current PeTTaChainer ``compileadd``
+    blocker: it imports only GoalChainer's scenario/scoring/explanation code,
+    supplies a local reasoner backed by promoted STV handoff items, and never
+    invokes ``goal_chainer.cli``, PeTTaChainer ``compileadd``, directive,
+    execution, skill, or memory-write paths.
+    """
+    items = list(handoff_cache.get("items", []))
+    if not items:
+        raise ValidationError("GoalChainer precompiled smoke requires at least one handoff item")
+    selected = _select_items(items)
+    repo = Path(goalchainer_repo)
+    src = repo / "src"
+    if not (src / "goal_chainer" / "scenarios.py").exists():
+        raise ValidationError(f"GoalChainer repo not found or incomplete: {repo}")
+
+    action_evidence = _action_evidence_from_handoff(items)
+    inserted = False
+    if str(src) not in sys.path:
+        sys.path.insert(0, str(src))
+        inserted = True
+    try:
+        from goal_chainer.explain import explain_decisions
+        from goal_chainer.models import EvidenceProjection
+        from goal_chainer.scenarios import incident_response_scenario
+        from goal_chainer.scoring import DecisionEngine
+
+        class PrecompiledHandoffReasoner:
+            source = "petta-memory-precompiled-handoff-cache"
+
+            def project(self, action):
+                row = action_evidence.get(action.id)
+                if row is None:
+                    row = _default_action_evidence(action)
+                return EvidenceProjection(
+                    strength=row["strength"],
+                    confidence=row["confidence"],
+                    source=self.source,
+                    projection=row["projection"],
+                    proofs=tuple(row["proofs"]),
+                    deontic=row["deontic"],
+                    expectation=row["expectation"],
+                )
+
+        scenario = incident_response_scenario(request)
+        reasoner = PrecompiledHandoffReasoner()
+        decisions = DecisionEngine(reasoner).rank(scenario)
+        reasoner_result = {
+            "source": reasoner.source,
+            "engine": "GoalChainer scoring over PeTTa-memory precompiled handoff cache",
+            "execution": {
+                "mode": "non-live-precompiled-cache",
+                "compileadd": "not-invoked",
+                "directive": "not-invoked",
+                "memory_write": "not-invoked",
+            },
+            "action_evidence": [
+                action_evidence.get(action.id, _default_action_evidence(action))
+                for action in scenario.actions
+            ],
+        }
+        payload = {
+            "scenario": scenario.title,
+            "notes": list(scenario.notes),
+            "runtime": {"reasoner": reasoner.source},
+            "decisions": [decision.to_dict() for decision in decisions],
+            "explanation": explain_decisions(decisions, reasoner_result),
+            "motivation": None,
+        }
+    finally:
+        if inserted:
+            try:
+                sys.path.remove(str(src))
+            except ValueError:
+                pass
+
+    _validate_goalchainer_payload(payload)
+    return {
+        "schema": "petta-memory-goalchainer-precompiled-smoke-v1",
+        "mode": "non-live-precompiled-cache-decision-payload-only",
+        "goalchainer_repo": str(repo),
+        "request": request,
+        "input_cache_id": handoff_cache.get("cache_id"),
+        "input_schema": handoff_cache.get("schema"),
+        "selected_handoff_items": selected,
+        "boundary": (
+            "non-live precompiled cache smoke only; PeTTaChainer compileadd/query not invoked; "
+            "no OmegaClaw skill loaded, no task/directive claim, no memory write, no inferred-belief status"
+        ),
+        "decision_payload": payload,
+        "checks": {
+            "ranked_actions": len(payload["decisions"]) >= 2,
+            "recommended_action_present": any(
+                item.get("status") == "recommended" for item in payload["decisions"]
+            ),
+            "provenance_selected_handoff_items": bool(selected),
+            "compileadd_not_invoked": True,
+            "no_live_directive_or_task_claim": True,
+            "no_memory_write": True,
+        },
+    }
+
+
 def _select_items(items: list[object]) -> list[dict[str, object]]:
     selected: list[dict[str, object]] = []
     wanted_slots = ["acceptability-belief-evidence", "contextual-appraisal-evidence"]
@@ -155,6 +270,84 @@ def _compact_item(item: dict[str, object]) -> dict[str, object]:
         "source_kind": item.get("source_kind"),
         "atom": item.get("atom"),
         "boundary": item.get("boundary"),
+    }
+
+
+def _action_evidence_from_handoff(items: list[object]) -> dict[str, dict[str, Any]]:
+    rows: dict[str, dict[str, Any]] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if item.get("goalchainer_slot") != "acceptability-belief-evidence":
+            continue
+        atom = str(item.get("atom", ""))
+        match = _ACCEPTABLE_STV_RE.search(atom)
+        if match is None:
+            continue
+        action = match.group("action")
+        strength = _bounded_float(match.group("strength"), "strength")
+        confidence = _bounded_float(match.group("confidence"), "confidence")
+        candidate = {
+            "action_id": action,
+            "deontic": _default_deontic(action),
+            "expectation": _expectation(strength, confidence),
+            "strength": strength,
+            "confidence": confidence,
+            "opinion": _sl_opinion(strength, confidence),
+            "projection": atom,
+            "proofs": [
+                "precompiled PeTTa-memory handoff item; PeTTaChainer compileadd not invoked",
+                f"belief_id={item.get('belief_id')} cluster_id={item.get('cluster_id')} promotion_event={item.get('promotion_event')}",
+            ],
+        }
+        old = rows.get(action)
+        if old is None or candidate["confidence"] > old["confidence"]:
+            rows[action] = candidate
+    if not rows:
+        raise ValidationError("GoalChainer precompiled smoke found no Acceptable STV handoff items")
+    return rows
+
+
+def _default_action_evidence(action: Any) -> dict[str, Any]:
+    strength = float(action.default_strength)
+    confidence = float(action.default_confidence)
+    return {
+        "action_id": action.id,
+        "deontic": _default_deontic(action.id),
+        "expectation": _expectation(strength, confidence),
+        "strength": strength,
+        "confidence": confidence,
+        "opinion": _sl_opinion(strength, confidence),
+        "projection": f"scenario default for {action.id}",
+        "proofs": ["GoalChainer scenario default; no matching PeTTa-memory handoff item"],
+    }
+
+
+def _default_deontic(action_id: str) -> str:
+    return {
+        "publish_raw_log": "forbidden",
+        "publish_redacted_summary": "obligated",
+        "hold_external_update": "permitted",
+    }.get(action_id, "unregulated")
+
+
+def _bounded_float(text: str, label: str) -> float:
+    value = float(text)
+    if not 0.0 <= value <= 1.0:
+        raise ValidationError(f"GoalChainer precompiled {label} outside [0,1]: {value}")
+    return value
+
+
+def _expectation(strength: float, confidence: float) -> float:
+    return round(confidence * (strength - 0.5) + 0.5, 6)
+
+
+def _sl_opinion(strength: float, confidence: float) -> dict[str, float]:
+    return {
+        "b": round(confidence * strength, 4),
+        "d": round(confidence * (1.0 - strength), 4),
+        "u": round(1.0 - confidence, 4),
+        "a": 0.5,
     }
 
 
