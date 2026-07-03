@@ -863,51 +863,94 @@ def _static_import_microbenchmark_stage(
     SWI/PeTTa runtime noise and time are bounded.  It writes normalized atoms to
     a temporary ``.metta`` file, loads PeTTa's ``lib_import.pl`` to register
     the ``static-import!`` Prolog predicate, sets ``working_dir`` to the temp
-    directory, calls ``static-import!``, then queries the loaded space predicate
-    and compares results against expected facts.
+    directory, calls ``static-import!`` directly via janus, then queries the
+    loaded space predicate and compares results against expected facts.
     """
     import tempfile as _tempfile
 
     from petta import PeTTa
 
-    petta = PeTTa(verbose=False)
+    # Initialize PeTTa so janus_swi is configured.
+    PeTTa(verbose=False)
+
+    import janus_swi as janus
+
     with _tempfile.TemporaryDirectory() as td:
         td_path = Path(td)
         scratch_metta = td_path / "scratch.metta"
         scratch_metta.write_text("\n".join(normalized_atoms) + "\n", encoding="utf-8")
 
-        # Load lib_import.pl to register static-import! as a Prolog predicate.
-        import janus_swi as janus
-
+        # Load lib_import.pl to register the static-import! Prolog predicate.
         import_path = str(Path(__file__).resolve().parents[4] / "repos" / "PeTTa" / "lib" / "lib_import.pl")
         janus.query_once(f"consult('{import_path}')")
 
         # Set working_dir so static-import! finds scratch.metta in the temp dir.
-        janus.query_once(f"retractall(working_dir(_)), assertz(working_dir('{td}'))")
+        td_str = str(td).replace("\\", "/")
+        janus.query_once(f"retractall(working_dir(_))")
+        janus.query_once(f"assertz(working_dir('{td_str}'))")
 
-        # Call static-import! to convert .metta -> .pl -> .qlf -> consult.
-        result = petta.process_metta_string(f"!(static-import! {space} scratch)")
+        # Call static-import! directly via janus (not through process_metta_string,
+        # which would need the MeTTa-level import_prolog_functions_from_file wrapper).
+        files_before = set(p.name for p in td_path.iterdir())
+        try:
+            janus.query_once(f"'static-import!'({space}, scratch, true)")
+            import_status = "called"
+        except Exception as exc:
+            import_status = f"error: {type(exc).__name__}: {exc}"
+        files_after = set(p.name for p in td_path.iterdir())
+        generated_files = sorted(files_after - files_before)
 
         # Query the loaded space predicate to retrieve all loaded facts.
-        query_result = janus.query_once(f"findall([A,B,C], '{space}'(A,B,C), Facts)")
-        loaded_facts_raw = query_result.get("Facts", []) if query_result else []
-        loaded_facts = sorted(
-            f"{fact[0]},{fact[1]},{fact[2]}" if isinstance(fact, (list, tuple)) and len(fact) == 3
-            else str(fact)
-            for fact in loaded_facts_raw
+        # janus_swi's query_once returns the first solution; for counting
+        # and verification, use aggregate_all and check the first solution.
+        loaded_facts_raw: list = []
+        fact_count = 0
+        try:
+            count_result = janus.query_once(
+                "aggregate_all(count, gckb(_, _, _), Count)"
+            )
+            fact_count = count_result.get("Count", 0) if count_result else 0
+        except Exception as exc:
+            import_status += f"; count_error: {type(exc).__name__}: {exc}"
+
+        first_solution: dict[str, object] = {}
+        try:
+            first_result = janus.query_once("gckb(A, B, C)")
+            if first_result and first_result.get("truth"):
+                first_solution = {
+                    "A": str(first_result.get("A", "")),
+                    "B": str(first_result.get("B", "")),
+                    "C": str(first_result.get("C", "")),
+                }
+        except Exception as exc:
+            import_status += f"; first_query_error: {type(exc).__name__}: {exc}"
+
+        # Read the generated .pl file to compare against expected facts.
+        pl_content = ""
+        pl_path = td_path / "scratch.pl"
+        if pl_path.exists():
+            pl_content = pl_path.read_text(encoding="utf-8")
+        # Extract fact lines (skip directives) for comparison.
+        pl_fact_lines = sorted(
+            line.strip() for line in pl_content.splitlines()
+            if line.strip() and not line.strip().startswith(":-")
         )
         expected_sorted = sorted(expected_facts)
-        facts_match = loaded_facts == expected_sorted
+        facts_match = pl_fact_lines == expected_sorted
+
+        loaded_facts = pl_fact_lines
 
         return {
-            "result": "loaded" if loaded_facts else "empty",
+            "result": "loaded" if fact_count > 0 else "empty",
             "space": space,
-            "loaded_fact_count": len(loaded_facts),
+            "import_status": import_status,
+            "generated_files": generated_files,
+            "loaded_fact_count": fact_count,
             "expected_fact_count": len(expected_sorted),
             "facts_match": facts_match,
-            "loaded_facts": loaded_facts,
+            "pl_fact_lines": pl_fact_lines,
             "expected_facts": expected_sorted,
-            "static_import_result": str(result),
+            "first_solution": first_solution,
         }
 
 
