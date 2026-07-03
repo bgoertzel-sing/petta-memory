@@ -224,6 +224,30 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         self.assertIn("Do not use static-import! directly", summary["recommendation"])
         self.assertIn("no SWI qcompile", " ".join(summary["gates"]))
 
+    def test_design_static_import_microbenchmark_atoms_uses_safe_three_argument_facts(self):
+        summary = profile.design_static_import_microbenchmark_atoms(
+            [
+                "(: b-profile-000 (Requires MemoryTarget0 PLNReadyViews) (STV 0.70 0.55))",
+                "(EvidencePacket (Requires MemoryTarget0 PLNReadyViews) (EC 3.0 1.0) "
+                "((domain omegaclaw-memory) (promotion-rule explicit-profile-workload)) pe-profile-000)",
+            ]
+        )
+
+        self.assertTrue(summary["all_records_safe_for_current_converter"])
+        self.assertEqual(
+            summary["records"][0]["normalized_atom"],
+            "(pm_stv_statement b_profile_000 (pm_stv_payload requires_memorytarget0_plnreadyviews 0.70 0.55))",
+        )
+        self.assertEqual(
+            summary["records"][0]["converted_prolog_fact"],
+            "'gckb'(pm_stv_statement,b_profile_000,[pm_stv_payload,requires_memorytarget0_plnreadyviews,0.70,0.55]).",
+        )
+        self.assertEqual(
+            summary["records"][1]["normalized_atom"],
+            "(pm_evidence_packet requires_memorytarget0_plnreadyviews (pm_ec_payload 3.0 1.0 pe_profile_000))",
+        )
+        self.assertIn("temporary scratch", " ".join(summary["benchmark_gate"]))
+
     def test_compileadd_strategy_summary_recommends_precompiled_cache_gate(self):
         sample_profile = {
             "results": [

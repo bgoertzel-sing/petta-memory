@@ -672,6 +672,92 @@ def inspect_compile_dispatch_for_statement(repo_path: str | Path, statement: str
     }
 
 
+def _static_import_safe_symbol(text: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_]", "_", text).strip("_").lower()
+    if not safe:
+        return "atom"
+    if re.match(r"^[0-9]", safe):
+        return f"n_{safe}"
+    return safe
+
+
+def _static_import_statement_key(statement_type: object) -> str:
+    if isinstance(statement_type, tuple) and statement_type:
+        head = symbol_text(statement_type[0]) or "stmt"
+        args = [symbol_text(part) if not isinstance(part, tuple) else to_source(part) for part in statement_type[1:]]
+        return _static_import_safe_symbol("_".join([head, *[arg or "arg" for arg in args]]))
+    return _static_import_safe_symbol(to_source(statement_type))
+
+
+def design_static_import_microbenchmark_atoms(sample_atoms: Iterable[str]) -> dict[str, object]:
+    """Design Prolog-safe scratch atoms for a future PeTTa ``static-import!`` gate.
+
+    The prior source inspection showed current PeTTaChainer exports are unsafe for
+    PeTTa's line-oriented converter.  This pure helper sketches a bounded
+    alternative for a later temporary-directory benchmark: lower/underscore atom
+    names, flat three-argument top-level records matching the loader's declared
+    space-predicate arity, and enough mapping metadata to compare loaded facts
+    back to the original STV/EvidencePacket exports.  It does not run SWI,
+    qcompile, consult, or PeTTaChainer.
+    """
+    records: list[dict[str, object]] = []
+    for atom in sample_atoms:
+        form = parse_one_list(atom)
+        normalized_atom: str | None = None
+        kind = "unsupported"
+        if len(form) == 4 and symbol_text(form[0]) == ":":
+            proof_id = _static_import_safe_symbol(to_source(form[1]))
+            statement_key = _static_import_statement_key(form[2])
+            tv = form[3]
+            strength = to_source(tv[1]) if isinstance(tv, tuple) and len(tv) >= 3 else "unknown"
+            confidence = to_source(tv[2]) if isinstance(tv, tuple) and len(tv) >= 3 else "unknown"
+            normalized_atom = (
+                f"(pm_stv_statement {proof_id} "
+                f"(pm_stv_payload {statement_key} {strength} {confidence}))"
+            )
+            kind = "stv_statement"
+        elif len(form) == 5 and symbol_text(form[0]) == "EvidencePacket":
+            statement_key = _static_import_statement_key(form[1])
+            ec = form[2]
+            support = to_source(ec[1]) if isinstance(ec, tuple) and len(ec) >= 3 else "0"
+            opposition = to_source(ec[2]) if isinstance(ec, tuple) and len(ec) >= 3 else "0"
+            provenance = _static_import_safe_symbol(to_source(form[4]))
+            normalized_atom = (
+                f"(pm_evidence_packet {statement_key} "
+                f"(pm_ec_payload {support} {opposition} {provenance}))"
+            )
+            kind = "evidence_packet"
+        records.append(
+            {
+                "kind": kind,
+                "original_atom": atom,
+                "normalized_atom": normalized_atom,
+                "converted_prolog_fact": _petta_static_import_convert_line(normalized_atom) if normalized_atom else None,
+                "safe_for_current_converter": bool(
+                    normalized_atom
+                    and not re.search(r"[A-Z-]", normalized_atom)
+                    and len(parse_one_list(normalized_atom)) == 3
+                ),
+            }
+        )
+    return {
+        "source": "petta static-import microbenchmark atom design",
+        "records": records,
+        "all_records_safe_for_current_converter": all(record["safe_for_current_converter"] for record in records),
+        "benchmark_gate": [
+            "Write normalized atoms only to a temporary scratch .metta file; do not append them to petta-memory journals.",
+            "Run static-import! only in a bounded non-live runtime gate, then query the generated space predicate and compare to these expected facts.",
+            "Treat this as a loader semantics benchmark, not as PeTTaChainer compileadd/query success or inferred belief evidence.",
+        ],
+    }
+
+
+def _petta_static_import_convert_line(atom: str, space: str = "gckb") -> str:
+    inner = atom[1:-1]
+    inner = inner.replace("(", "[").replace(")", "]").replace(" ", ",")
+    return f"'{space}'({inner})."
+
+
 def inspect_petta_static_import_source(petta_repo_path: str | Path, sample_atoms: Iterable[str] | None = None) -> dict[str, object]:
     """Inspect PeTTa's ``static-import!`` bulk-load source for petta-memory use.
 
@@ -697,9 +783,7 @@ def inspect_petta_static_import_source(petta_repo_path: str | Path, sample_atoms
 
     def converted_line(atom: str, space: str = "gckb") -> str:
         # Mirrors lib_import.pl convert_line/3 for one already-line-oriented atom.
-        inner = atom[1:-1]
-        inner = inner.replace("(", "[").replace(")", "]").replace(" ", ",")
-        return f"'{space}'({inner})."
+        return _petta_static_import_convert_line(atom, space=space)
 
     def token_warnings(atom: str) -> list[str]:
         tokens = re.findall(r'"(?:[^"\\]|\\.)*"|[^\s()]+', atom)
