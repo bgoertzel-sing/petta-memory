@@ -8,7 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from petta_memory.goalchainer_smoke import run_goalchainer_handoff_smoke, run_goalchainer_precompiled_handoff_smoke
-from petta_memory.store import ValidationError
+from petta_memory.store import MediumMemoryStore, ValidationError
 
 
 def _cache():
@@ -71,6 +71,26 @@ class GoalChainerSmokeTests(unittest.TestCase):
         self.assertTrue(any("EvidencePacket EC" in proof for proof in redacted["evidence"]["proofs"]))
         self.assertTrue(smoke["checks"]["compileadd_not_invoked"])
         self.assertTrue(smoke["checks"]["no_live_directive_or_task_claim"])
+
+    def test_precompiled_handoff_conflicting_ec_fixture_lowers_but_preserves_gate(self):
+        fixture = Path(__file__).resolve().parents[1] / "fixtures" / "goalchainer_conflicting_ec_smoke.metta"
+        repo = Path(__file__).resolve().parents[4] / "omegaclaw" / "repos" / "OmegaClaw-GoalChainer"
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "journal.metta")
+            store.append_cluster(fixture.read_text(encoding="utf-8"))
+            cache = store.goalchainer_handoff_cache(cache_id="cache-conflicting-ec")
+            smoke = run_goalchainer_precompiled_handoff_smoke(cache, goalchainer_repo=repo)
+
+        payload = smoke["decision_payload"]
+        redacted = next(item for item in payload["decisions"] if item["action_id"] == "publish_redacted_summary")
+        self.assertEqual(payload["decisions"][0]["action_id"], "publish_redacted_summary")
+        self.assertEqual(redacted["status"], "recommended")
+        self.assertLess(redacted["evidence"]["strength"], 0.94)
+        self.assertEqual(redacted["evidence"]["strength"], 0.511429)
+        self.assertEqual(redacted["evidence"]["confidence"], 0.833333)
+        self.assertTrue(any("EvidencePacket EC" in proof for proof in redacted["evidence"]["proofs"]))
+        self.assertTrue(smoke["checks"]["compileadd_not_invoked"])
+        self.assertTrue(smoke["checks"]["no_memory_write"])
 
     def test_precompiled_handoff_rejects_missing_stv_items(self):
         cache = _cache()
