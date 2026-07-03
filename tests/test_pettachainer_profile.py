@@ -196,6 +196,34 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 profile.inspect_compile_dispatch_for_statement(repo, "(Requires MemoryTarget0 PLNReadyViews)")
 
+    def test_inspect_petta_static_import_source_flags_current_export_as_unsafe(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            lib_dir = repo / "lib"
+            lib_dir.mkdir(parents=True)
+            (lib_dir / "lib_import.pl").write_text(
+                "metta_file_to_prolog(Input, Space, Output) :- true.\n"
+                "convert_stream(In, Out, Space) :- read_line_to_string(In, Line), convert_line(Line, Space, Out).\n"
+                "convert_line(Line0, Space, Out) :- sub_string(Line0, 1, _, 1, Inner0), replace_all(\"(\", \"[\", Inner0, Inner1).\n"
+                "'static-import!'(Space, File, true) :- metta_file_to_prolog(MettaFile, Space, PlFile), qcompile(PlFile), consult(QlfFile).\n"
+                ":- multifile '~w'/3.\n",
+                encoding="utf-8",
+            )
+
+            summary = profile.inspect_petta_static_import_source(
+                repo,
+                ["(: b-profile-000 (Requires MemoryTarget0 PLNReadyViews) (STV 0.70 0.55))"],
+            )
+
+        self.assertTrue(summary["source_features"]["defines_static_import"])
+        self.assertTrue(summary["source_features"]["uses_qcompile"])
+        self.assertFalse(summary["sample_atoms_safe_for_current_converter"])
+        converted = summary["sample_conversions"][0]["converted_prolog_fact"]
+        self.assertEqual(converted, "'gckb'(:,b-profile-000,[Requires,MemoryTarget0,PLNReadyViews],[STV,0.70,0.55]).")
+        self.assertIn("MemoryTarget0", " ".join(summary["sample_conversions"][0]["warnings"]))
+        self.assertIn("Do not use static-import! directly", summary["recommendation"])
+        self.assertIn("no SWI qcompile", " ".join(summary["gates"]))
+
     def test_compileadd_strategy_summary_recommends_precompiled_cache_gate(self):
         sample_profile = {
             "results": [

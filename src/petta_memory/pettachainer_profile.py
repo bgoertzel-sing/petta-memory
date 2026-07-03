@@ -672,6 +672,101 @@ def inspect_compile_dispatch_for_statement(repo_path: str | Path, statement: str
     }
 
 
+def inspect_petta_static_import_source(petta_repo_path: str | Path, sample_atoms: Iterable[str] | None = None) -> dict[str, object]:
+    """Inspect PeTTa's ``static-import!`` bulk-load source for petta-memory use.
+
+    Ben pointed at ``trueagi-io/PeTTa`` ``lib/lib_import.pl`` as a possible fast
+    static atom path.  This helper keeps that exploration source-level and
+    non-live: it reads the checked-out Prolog loader, models its documented
+    line-by-line transformation for a few sample atoms, and reports whether the
+    current petta-memory/PeTTaChainer exports look safe to feed through it.
+    It does not invoke SWI, create ``.pl``/``.qlf`` files, consult code, or
+    change any memory/integration state.
+    """
+    repo = Path(petta_repo_path)
+    import_path = repo / "lib" / "lib_import.pl"
+    if not import_path.exists():
+        raise FileNotFoundError(f"missing PeTTa static import source: {import_path}")
+
+    source = import_path.read_text(encoding="utf-8")
+    default_atoms = [
+        "(: b-profile-000 (Requires MemoryTarget0 PLNReadyViews) (STV 0.70 0.55))",
+        "(EvidencePacket (Requires MemoryTarget0 PLNReadyViews) (EC 3.0 1.0) ((domain omegaclaw-memory) (promotion-rule explicit-profile-workload)) pe-profile-000)",
+    ]
+    atoms = list(sample_atoms) if sample_atoms is not None else default_atoms
+
+    def converted_line(atom: str, space: str = "gckb") -> str:
+        # Mirrors lib_import.pl convert_line/3 for one already-line-oriented atom.
+        inner = atom[1:-1]
+        inner = inner.replace("(", "[").replace(")", "]").replace(" ", ",")
+        return f"'{space}'({inner})."
+
+    def token_warnings(atom: str) -> list[str]:
+        tokens = re.findall(r'"(?:[^"\\]|\\.)*"|[^\s()]+', atom)
+        warnings: list[str] = []
+        for token in tokens:
+            if token.startswith('"'):
+                warnings.append(f"string literal {token!r} would be passed through without Prolog escaping semantics")
+            elif re.match(r"^[A-Z_]", token):
+                warnings.append(f"token {token!r} would be read by Prolog as a variable unless quoted")
+            elif re.search(r"[^A-Za-z0-9_:.]", token):
+                warnings.append(f"token {token!r} contains punctuation that is not a plain unquoted Prolog atom")
+        return warnings
+
+    source_features = {
+        "defines_static_import": bool(re.search(r"'static-import!'\s*\(", source)),
+        "uses_metta_file_to_prolog": "metta_file_to_prolog" in source,
+        "uses_qcompile": "qcompile" in source,
+        "consults_qlf": "consult(QlfFile)" in source,
+        "line_oriented_converter": "read_line_to_string" in source and "convert_line" in source,
+        "declares_space_predicate_arity_3": bool(re.search(r"multifile '~w'/3", source)),
+    }
+    conversion_limitations = [
+        "Input is documented as S-expression data only: no code and no bangs.",
+        "Conversion is line-oriented and strips the first/last character of each line, so multiline atoms/comments are not safe.",
+        "The converter replaces parentheses with Prolog lists and spaces with commas without token quoting.",
+        "Current petta-memory proof atoms contain uppercase symbols and hyphenated identifiers that are unsafe as unquoted Prolog terms.",
+        "The generated predicate stores converted atoms under a space predicate; this is a bulk data loader, not a PeTTaChainer compileadd/indexing API.",
+    ]
+    samples = [
+        {
+            "input": atom,
+            "converted_prolog_fact": converted_line(atom),
+            "warnings": token_warnings(atom),
+        }
+        for atom in atoms
+    ]
+    sample_safe = all(not sample["warnings"] for sample in samples)
+    recommendation = (
+        "Do not use static-import! directly for current petta-memory PeTTaChainer exports. "
+        "It is worth a later non-live benchmark only after either the export format or PeTTa converter quotes/escapes symbols safely "
+        "and after query/index semantics are compared against compileadd-derived atoms."
+    )
+    return {
+        "source": "PeTTa lib_import.pl static-import source inspection",
+        "repo_path": str(repo),
+        "source_file": str(import_path),
+        "source_features": source_features,
+        "sample_conversions": samples,
+        "sample_atoms_safe_for_current_converter": sample_safe,
+        "conversion_limitations": conversion_limitations,
+        "recommendation": recommendation,
+        "next_probe": {
+            "kind": "non-live static-import microbenchmark",
+            "preconditions": [
+                "Use a temporary directory only and no OmegaClaw/live memory writes.",
+                "Generate Prolog-safe quoted/lowercase normalized atoms or patch the converter in a scratch copy.",
+                "Compare loaded predicate contents and read-only query behavior against expected normalized atoms before considering PeTTaChainer integration.",
+            ],
+        },
+        "gates": [
+            "Source inspection only; no SWI qcompile/consult/static-import execution.",
+            "Do not treat static-import! as a supported PeTTaChainer precompiled-add API.",
+            "Keep compileadd/query/live OmegaClaw paths gated until a separate runtime semantics test passes.",
+        ],
+    }
+
+
 
 def summarize_compileadd_strategy(profile: dict[str, object]) -> dict[str, object]:
     """Summarize the bounded PeTTaChainer add-path decision from a profile.
