@@ -586,6 +586,64 @@ class MediumMemoryStore:
             "items": items,
         }
 
+    def goalchainer_handoff_cache(
+        self,
+        *,
+        cache_id: str = "petta-memory-goalchainer-handoff",
+        statement_checker: Optional[Callable[[str], bool]] = None,
+    ) -> dict[str, object]:
+        """Return a non-live GoalChainer-facing evidence handoff contract.
+
+        GoalChainer should not read the append-only journal directly in v0.
+        This method repackages the already bounded PeTTaChainer handoff cache as
+        appraisal/evidence inputs that a non-live GoalChainer gate can consume.
+        The output deliberately contains no directive/task claim and no inferred
+        belief: it is a read-only bridge from promoted memory evidence to a
+        future goal/norm/motivation decision layer.
+        """
+        source_cache = self.pettachainer_handoff_cache(
+            cache_id=cache_id,
+            statement_checker=statement_checker,
+        )
+        goal_items: list[dict[str, object]] = []
+        for item in source_cache["items"]:
+            item_kind = str(item["kind"])
+            if item_kind == "pettachainer-stv-statement":
+                evidence_role = "belief-strength-input"
+                goalchainer_slot = "acceptability-belief-evidence"
+            else:
+                evidence_role = "contextual-evidence-count-input"
+                goalchainer_slot = "contextual-appraisal-evidence"
+            goal_items.append(
+                {
+                    "kind": "goalchainer-evidence-input",
+                    "goalchainer_slot": goalchainer_slot,
+                    "evidence_role": evidence_role,
+                    "atom": item["atom"],
+                    "belief_id": item["belief_id"],
+                    "cluster_id": item["cluster_id"],
+                    "promotion_event": item["promotion_event"],
+                    "promotion_rule": item["promotion_rule"],
+                    "promotion_domain": item["promotion_domain"],
+                    "promotion_trust": item["promotion_trust"],
+                    "source_kind": item_kind,
+                    "source_status": item["item_status"],
+                    "boundary": "read-only evidence for appraisal; not a directive, task claim, or inferred belief",
+                }
+            )
+        return {
+            "schema": "petta-memory-goalchainer-handoff-v1",
+            "cache_id": cache_id,
+            "mode": "non-live-goalchainer-evidence-handoff",
+            "target": "OmegaClaw-GoalChainer non-live smoke gate",
+            "source_schema": source_cache["schema"],
+            "source_compileadd_gate": source_cache["compileadd_gate"],
+            "decision_gate": "disabled-no-live-omegaclaw-skill-no-task-claim",
+            "boundary": "GoalChainer may consume these as promoted evidence/appraisal inputs only; it must not write memory or claim tasks from this cache",
+            "item_count": len(goal_items),
+            "items": goal_items,
+        }
+
     def pln_view(
         self,
         *,

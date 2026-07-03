@@ -209,6 +209,25 @@ class MediumMemoryStoreTests(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "statement checker rejected b2"):
                 store.pettachainer_handoff_cache(statement_checker=lambda _atom: False)
 
+    def test_goalchainer_handoff_cache_maps_evidence_without_task_claims(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "medium_memory.metta")
+            store.append_cluster(PROMOTED_BELIEF_WITH_COUNTS_CLUSTER)
+            cache = store.goalchainer_handoff_cache()
+
+        self.assertEqual(cache["schema"], "petta-memory-goalchainer-handoff-v1")
+        self.assertEqual(cache["source_schema"], "petta-memory-pettachainer-handoff-v1")
+        self.assertEqual(cache["decision_gate"], "disabled-no-live-omegaclaw-skill-no-task-claim")
+        self.assertIn("must not write memory or claim tasks", cache["boundary"])
+        self.assertEqual(cache["item_count"], 2)
+        slots = [item["goalchainer_slot"] for item in cache["items"]]
+        self.assertEqual(slots, ["acceptability-belief-evidence", "contextual-appraisal-evidence"])
+        for item in cache["items"]:
+            self.assertEqual(item["kind"], "goalchainer-evidence-input")
+            self.assertEqual(item["belief_id"], "b2")
+            self.assertEqual(item["promotion_domain"], "memory-architecture")
+            self.assertIn("not a directive, task claim, or inferred belief", item["boundary"])
+
     def test_reject_malformed_atom_does_not_alter_file(self):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "medium_memory.metta"

@@ -49,6 +49,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     handoff.add_argument("--cache-id", default="petta-memory-pettachainer-handoff")
 
+    goalchainer = sub.add_parser(
+        "goalchainer-handoff-cache",
+        help="Print non-live JSON cache mapping promoted evidence to GoalChainer appraisal inputs",
+    )
+    goalchainer.add_argument("--cache-id", default="petta-memory-goalchainer-handoff")
+
     audit = sub.add_parser("audit-view", help="Print bounded complete MemoryCluster records for audit")
     audit.add_argument("--limit-chars", type=int, default=20000)
 
@@ -109,6 +115,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.cmd == "pettachainer-handoff-cache":
             print(json.dumps(store.pettachainer_handoff_cache(cache_id=args.cache_id), indent=2, sort_keys=True))
+            return 0
+        if args.cmd == "goalchainer-handoff-cache":
+            print(json.dumps(store.goalchainer_handoff_cache(cache_id=args.cache_id), indent=2, sort_keys=True))
             return 0
         if args.cmd == "audit-view":
             print(store.audit_view(limit_chars=args.limit_chars), end="")

@@ -100,6 +100,14 @@ class CliTests(unittest.TestCase):
             self.assertEqual(cache["items"][0]["kind"], "pettachainer-stv-statement")
             self.assertEqual(cache["items"][1]["kind"], "pettachainer-evidence-packet")
 
+            goal_handoff = self.run_cli(["--store", store, "goalchainer-handoff-cache"])
+            self.assertEqual(goal_handoff.returncode, 0, goal_handoff.stderr)
+            goal_cache = json.loads(goal_handoff.stdout)
+            self.assertEqual(goal_cache["schema"], "petta-memory-goalchainer-handoff-v1")
+            self.assertEqual(goal_cache["decision_gate"], "disabled-no-live-omegaclaw-skill-no-task-claim")
+            self.assertEqual(goal_cache["items"][0]["goalchainer_slot"], "acceptability-belief-evidence")
+            self.assertEqual(goal_cache["items"][1]["goalchainer_slot"], "contextual-appraisal-evidence")
+
     def test_audit_view_preserves_complete_records_and_rejects_negative_limit(self):
         with tempfile.TemporaryDirectory() as td:
             store = str(Path(td) / "medium_memory.metta")
