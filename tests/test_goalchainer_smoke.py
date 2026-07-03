@@ -66,8 +66,9 @@ class GoalChainerSmokeTests(unittest.TestCase):
         self.assertEqual(payload["runtime"]["reasoner"], "petta-memory-precompiled-handoff-cache")
         self.assertEqual(payload["decisions"][0]["action_id"], "publish_redacted_summary")
         redacted = next(item for item in payload["decisions"] if item["action_id"] == "publish_redacted_summary")
-        self.assertEqual(redacted["evidence"]["strength"], 0.91)
-        self.assertEqual(redacted["evidence"]["confidence"], 0.74)
+        self.assertEqual(redacted["evidence"]["strength"], 0.904703)
+        self.assertEqual(redacted["evidence"]["confidence"], 0.833333)
+        self.assertTrue(any("EvidencePacket EC" in proof for proof in redacted["evidence"]["proofs"]))
         self.assertTrue(smoke["checks"]["compileadd_not_invoked"])
         self.assertTrue(smoke["checks"]["no_live_directive_or_task_claim"])
 

@@ -24,9 +24,8 @@ Each item preserves `belief_id`, `cluster_id`, `promotion_event`, `promotion_rul
 - GoalChainer must not claim tasks, write memory, or load a live OmegaClaw skill from this cache.
 - The current PeTTaChainer `compileadd` bottleneck remains gated; this handoff supports a heuristic/non-live appraisal gate first.
 
-## Smallest next non-live gate
+## Current non-live gate
 
-1. Generate a `goalchainer-handoff-cache` from a hand-picked promoted-memory fixture.
-2. Feed one `acceptability-belief-evidence` and, if present, one `contextual-appraisal-evidence` item into a local GoalChainer incident/request harness under timeout.
-3. Require a decision payload with ranked actions, a motivation/deontic summary, and provenance pointers, but no live directive/task claim.
-4. Archive the input/output artifact before any discussion of live OmegaClaw integration.
+`goalchainer-smoke` defaults to a precompiled handoff-cache gate while the external GoalChainer CLI path remains blocked by PeTTaChainer `compileadd`. The precompiled gate imports only GoalChainer scenario/scoring/explanation modules, ranks actions from promoted `Acceptable` STV evidence, and now folds matching contextual `EvidencePacket` EC support/opposition into the appraisal as bounded derived strength/confidence. The EC path is provenance-preserving and non-live: it does not call PeTTaChainer `compileadd`/query, claim directives/tasks, load OmegaClaw skills, or write memory.
+
+A valid gate artifact must show ranked actions, a recommended action, selected handoff provenance, `compileadd_not_invoked`, `no_live_directive_or_task_claim`, and `no_memory_write` before any discussion of live OmegaClaw integration.

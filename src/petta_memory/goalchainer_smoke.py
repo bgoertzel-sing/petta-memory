@@ -33,6 +33,10 @@ DEFAULT_REQUEST = (
 _ACCEPTABLE_STV_RE = re.compile(
     r"\(Acceptable\s+(?P<action>[A-Za-z0-9_:-]+)\)\s+\(STV\s+(?P<strength>[0-9.eE+-]+)\s+(?P<confidence>[0-9.eE+-]+)\)"
 )
+_EVIDENCE_PACKET_ACCEPTABLE_RE = re.compile(
+    r"\(EvidencePacket\s+\(Acceptable\s+(?P<action>[A-Za-z0-9_:-]+)\)\s+"
+    r"\(EC\s+(?P<support>[0-9.eE+-]+)\s+(?P<opposition>[0-9.eE+-]+)\)"
+)
 
 
 def run_goalchainer_handoff_smoke(
@@ -274,38 +278,89 @@ def _compact_item(item: dict[str, object]) -> dict[str, object]:
 
 
 def _action_evidence_from_handoff(items: list[object]) -> dict[str, dict[str, Any]]:
-    rows: dict[str, dict[str, Any]] = {}
+    stv_rows: dict[str, dict[str, Any]] = {}
+    ec_rows: dict[str, list[dict[str, Any]]] = {}
     for item in items:
         if not isinstance(item, dict):
             continue
-        if item.get("goalchainer_slot") != "acceptability-belief-evidence":
-            continue
         atom = str(item.get("atom", ""))
-        match = _ACCEPTABLE_STV_RE.search(atom)
-        if match is None:
-            continue
-        action = match.group("action")
-        strength = _bounded_float(match.group("strength"), "strength")
-        confidence = _bounded_float(match.group("confidence"), "confidence")
-        candidate = {
-            "action_id": action,
-            "deontic": _default_deontic(action),
-            "expectation": _expectation(strength, confidence),
-            "strength": strength,
-            "confidence": confidence,
-            "opinion": _sl_opinion(strength, confidence),
-            "projection": atom,
-            "proofs": [
-                "precompiled PeTTa-memory handoff item; PeTTaChainer compileadd not invoked",
-                f"belief_id={item.get('belief_id')} cluster_id={item.get('cluster_id')} promotion_event={item.get('promotion_event')}",
-            ],
-        }
-        old = rows.get(action)
-        if old is None or candidate["confidence"] > old["confidence"]:
-            rows[action] = candidate
-    if not rows:
+        if item.get("goalchainer_slot") == "acceptability-belief-evidence":
+            match = _ACCEPTABLE_STV_RE.search(atom)
+            if match is None:
+                continue
+            action = match.group("action")
+            strength = _bounded_float(match.group("strength"), "strength")
+            confidence = _bounded_float(match.group("confidence"), "confidence")
+            candidate = {
+                "action_id": action,
+                "deontic": _default_deontic(action),
+                "expectation": _expectation(strength, confidence),
+                "strength": strength,
+                "confidence": confidence,
+                "opinion": _sl_opinion(strength, confidence),
+                "projection": atom,
+                "proofs": [
+                    "precompiled PeTTa-memory handoff STV item; PeTTaChainer compileadd not invoked",
+                    f"belief_id={item.get('belief_id')} cluster_id={item.get('cluster_id')} promotion_event={item.get('promotion_event')}",
+                ],
+                "contextual_evidence": [],
+            }
+            old = stv_rows.get(action)
+            if old is None or candidate["confidence"] > old["confidence"]:
+                stv_rows[action] = candidate
+        elif item.get("goalchainer_slot") == "contextual-appraisal-evidence":
+            match = _EVIDENCE_PACKET_ACCEPTABLE_RE.search(atom)
+            if match is None:
+                continue
+            action = match.group("action")
+            support = _non_negative_float(match.group("support"), "support")
+            opposition = _non_negative_float(match.group("opposition"), "opposition")
+            total = support + opposition
+            if total <= 0:
+                continue
+            ec_rows.setdefault(action, []).append(
+                {
+                    "support": support,
+                    "opposition": opposition,
+                    "strength": support / total,
+                    "confidence": total / (total + 2.0),
+                    "atom": atom,
+                    "belief_id": item.get("belief_id"),
+                    "cluster_id": item.get("cluster_id"),
+                    "promotion_event": item.get("promotion_event"),
+                }
+            )
+    if not stv_rows:
         raise ValidationError("GoalChainer precompiled smoke found no Acceptable STV handoff items")
-    return rows
+    for action, row in stv_rows.items():
+        for ec in ec_rows.get(action, []):
+            stv_weight = row["confidence"]
+            ec_weight = ec["confidence"]
+            total_weight = stv_weight + ec_weight
+            if total_weight > 0:
+                row["strength"] = round(
+                    ((row["strength"] * stv_weight) + (ec["strength"] * ec_weight)) / total_weight,
+                    6,
+                )
+                row["confidence"] = round(max(row["confidence"], ec["confidence"]), 6)
+                row["expectation"] = _expectation(row["strength"], row["confidence"])
+                row["opinion"] = _sl_opinion(row["strength"], row["confidence"])
+            row["contextual_evidence"].append(
+                {
+                    "support": ec["support"],
+                    "opposition": ec["opposition"],
+                    "derived_strength": round(ec["strength"], 6),
+                    "derived_confidence": round(ec["confidence"], 6),
+                    "belief_id": ec["belief_id"],
+                    "cluster_id": ec["cluster_id"],
+                    "promotion_event": ec["promotion_event"],
+                }
+            )
+            row["proofs"].append(
+                "contextual EvidencePacket EC support/opposition influenced precompiled appraisal; "
+                "PeTTaChainer compileadd not invoked"
+            )
+    return stv_rows
 
 
 def _default_action_evidence(action: Any) -> dict[str, Any]:
@@ -335,6 +390,13 @@ def _bounded_float(text: str, label: str) -> float:
     value = float(text)
     if not 0.0 <= value <= 1.0:
         raise ValidationError(f"GoalChainer precompiled {label} outside [0,1]: {value}")
+    return value
+
+
+def _non_negative_float(text: str, label: str) -> float:
+    value = float(text)
+    if value < 0.0:
+        raise ValidationError(f"GoalChainer precompiled {label} is negative: {value}")
     return value
 
 
