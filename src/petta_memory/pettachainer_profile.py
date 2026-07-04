@@ -215,6 +215,36 @@ def _compileadd_probe_stage(statement: str, probe: str, invocation: str = "direc
     }
 
 
+def _materialize_identity_stage(statement: str) -> dict[str, object]:
+    """Run only ``materialize-stmt-lambdas`` and compare output text.
+
+    This is narrower than the generic compileadd probe: it is meant for a
+    lambda-free statement whose source inspection predicts identity
+    materialization, so the stage records whether the runtime output contains
+    the original statement.  The caller still runs it in a bounded subprocess.
+    """
+    from pettachainer import PeTTaChainer
+
+    handler = PeTTaChainer()
+    call_text = f"!(materialize-stmt-lambdas {statement})"
+
+    def run() -> list[str]:
+        result = handler.handler.process_metta_string(call_text)
+        if isinstance(result, list):
+            return [str(item) for item in result]
+        return [str(result)]
+
+    event = _time_call("materialize_stmt_lambdas_identity", run)
+    outputs = event.get("result", [])
+    output_text = "\n".join(str(item) for item in outputs) if isinstance(outputs, list) else str(outputs)
+    return {
+        "call_text": call_text,
+        "expected_statement": statement,
+        "identity_output_present": statement in output_text,
+        "stages": [event],
+    }
+
+
 def _compileadd_probe_specs(statements: list[str]) -> list[tuple[str, str, str]]:
     if not statements:
         return []
@@ -582,6 +612,59 @@ def inspect_materialize_stmt_lambdas_for_statement(repo_path: str | Path, statem
             "Source inspection only; no PeTTaChainer runtime, compileadd, query, GoalChainer, or OmegaClaw path is invoked.",
             "Do not treat the identity expectation as an inferred belief or runtime success.",
             "Keep live writes and full add/query behind separate non-live gates.",
+        ],
+    }
+
+
+def run_materialize_identity_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 10.0,
+) -> dict[str, object]:
+    """Run a bounded non-live identity gate for ``materialize-stmt-lambdas``.
+
+    Source inspection first verifies that the statement is lambda-free.  Only
+    then does this function configure the local PeTTaChainer runtime and run the
+    single materialization form in an isolated subprocess.  It does not call
+    ``mm2compile``, ``compileadd``, query, GoalChainer, or OmegaClaw paths.
+    """
+    repo = project_root / "repos" / "PeTTaChainer"
+    inspection = inspect_materialize_stmt_lambdas_for_statement(repo, statement)
+    if not inspection["materialize_expected_identity"]:
+        return {
+            "source": "non-live materialize-stmt-lambdas identity gate",
+            "status": "skipped",
+            "reason": "statement contains |-> lambda forms; identity materialization is not expected",
+            "inspection": inspection,
+            "gates": [
+                "No runtime execution attempted because source inspection did not predict identity materialization.",
+                "Do not proceed to mm2compile/compileadd/query from a skipped identity gate.",
+            ],
+        }
+
+    _configure_local_runtime(project_root)
+    event = _run_isolated_stage(
+        "materialize_stmt_lambdas_identity",
+        _materialize_identity_stage,
+        (statement,),
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    status = "passed" if event.get("status") == "ok" and event.get("identity_output_present") else "blocked"
+    return {
+        "source": "non-live materialize-stmt-lambdas identity gate",
+        "status": status,
+        "inspection": inspection,
+        "runtime_event": event,
+        "interpretation": (
+            "Runtime materialization returned the original lambda-free statement; mm2compile can be gated separately."
+            if status == "passed"
+            else "Identity materialization did not complete with matching output under the bound; keep mm2compile/compileadd/query gated."
+        ),
+        "gates": [
+            "Single materialize-stmt-lambdas call only; no mm2compile, compileadd, query, GoalChainer, or OmegaClaw path is invoked.",
+            "Temporary/non-live probe only; no petta-memory journal writes and no inferred-belief claims.",
+            "Proceed to mm2compile instrumentation only after this identity gate passes with matching output.",
         ],
     }
 

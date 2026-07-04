@@ -137,6 +137,66 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
             "non-live materialize identity runtime gate",
         )
 
+    def test_run_materialize_identity_gate_uses_source_check_and_isolated_stage(self):
+        statement = "(: b-profile-000 (Requires MemoryTarget0 PLNReadyViews) (STV 0.70 0.55))"
+        captured = {}
+
+        def fake_inspection(repo, checked_statement):
+            captured["repo"] = repo
+            captured["checked_statement"] = checked_statement
+            return {
+                "materialize_expected_identity": True,
+                "statement_stats": {"lambda_form_count": 0},
+            }
+
+        def fake_isolated_stage(label, target, args, *, stage_timeout_sec):
+            captured["label"] = label
+            captured["target"] = target
+            captured["args"] = args
+            captured["stage_timeout_sec"] = stage_timeout_sec
+            return {
+                "label": label,
+                "status": "ok",
+                "identity_output_present": True,
+                "expected_statement": statement,
+            }
+
+        with (
+            patch.object(profile, "inspect_materialize_stmt_lambdas_for_statement", side_effect=fake_inspection),
+            patch.object(profile, "_configure_local_runtime", return_value=None),
+            patch.object(profile, "_run_isolated_stage", side_effect=fake_isolated_stage),
+        ):
+            result = profile.run_materialize_identity_gate(
+                statement,
+                project_root=Path("/project"),
+                stage_timeout_sec=4.0,
+            )
+
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(captured["repo"], Path("/project/repos/PeTTaChainer"))
+        self.assertEqual(captured["checked_statement"], statement)
+        self.assertEqual(captured["label"], "materialize_stmt_lambdas_identity")
+        self.assertEqual(captured["target"], profile._materialize_identity_stage)
+        self.assertEqual(captured["args"], (statement,))
+        self.assertEqual(captured["stage_timeout_sec"], 4.0)
+        self.assertIn("no mm2compile, compileadd, query", " ".join(result["gates"]))
+
+    def test_run_materialize_identity_gate_skips_lambda_statements(self):
+        with patch.object(
+            profile,
+            "inspect_materialize_stmt_lambdas_for_statement",
+            return_value={"materialize_expected_identity": False},
+        ), patch.object(profile, "_configure_local_runtime") as configure:
+            result = profile.run_materialize_identity_gate(
+                "(: p (|-> x x) (STV 1 0.9))",
+                project_root=Path("/project"),
+                stage_timeout_sec=4.0,
+            )
+
+        self.assertEqual(result["status"], "skipped")
+        configure.assert_not_called()
+        self.assertIn("statement contains |-> lambda forms", result["reason"])
+
     def test_inspect_compileadd_bottleneck_sources_records_target_definitions(self):
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
