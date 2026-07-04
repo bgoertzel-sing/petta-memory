@@ -337,6 +337,17 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         self.assertIn("not all normalized atoms are safe", result["reason"])
         self.assertFalse(result["design"]["all_records_safe_for_current_converter"])
 
+    def test_run_static_import_microbenchmark_rejects_unsafe_space_name(self):
+        sample = ["(: b-profile-000 (Requires MemoryTarget0 PLNReadyViews) (STV 0.70 0.55))"]
+
+        with self.assertRaises(ValueError):
+            profile.run_static_import_microbenchmark(
+                sample,
+                project_root=Path("/unused"),
+                stage_timeout_sec=5.0,
+                space="bad-space",
+            )
+
     def test_run_static_import_microbenchmark_uses_isolated_stage(self):
         """Microbenchmark should delegate to _run_isolated_stage with expected args."""
         sample = [
@@ -369,6 +380,7 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
                 sample,
                 project_root=Path("/unused"),
                 stage_timeout_sec=5.0,
+                space="pmbench",
             )
 
         self.assertEqual(result["source"], "non-live static-import microbenchmark")
@@ -382,7 +394,8 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         self.assertTrue(all("(" in atom and ")" in atom for atom in normalized))
         # Verify expected facts were passed
         expected = captured["args"][1]
-        self.assertTrue(all("gckb" in fact for fact in expected))
+        self.assertTrue(all("pmbench" in fact for fact in expected))
+        self.assertEqual(captured["args"][2], "pmbench")
         # Gates
         gates = " ".join(result["gates"])
         self.assertIn("no petta-memory journal writes", gates)

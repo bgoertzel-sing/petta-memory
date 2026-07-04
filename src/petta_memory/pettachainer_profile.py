@@ -907,7 +907,7 @@ def _static_import_microbenchmark_stage(
         fact_count = 0
         try:
             count_result = janus.query_once(
-                "aggregate_all(count, gckb(_, _, _), Count)"
+                f"aggregate_all(count, {space}(_, _, _), Count)"
             )
             fact_count = count_result.get("Count", 0) if count_result else 0
         except Exception as exc:
@@ -915,7 +915,7 @@ def _static_import_microbenchmark_stage(
 
         first_solution: dict[str, object] = {}
         try:
-            first_result = janus.query_once("gckb(A, B, C)")
+            first_result = janus.query_once(f"{space}(A, B, C)")
             if first_result and first_result.get("truth"):
                 first_solution = {
                     "A": str(first_result.get("A", "")),
@@ -959,6 +959,7 @@ def run_static_import_microbenchmark(
     *,
     project_root: Path,
     stage_timeout_sec: float = 30.0,
+    space: str = "gckb",
 ) -> dict[str, object]:
     """Run a non-live PeTTa ``static-import!`` microbenchmark over normalized atoms.
 
@@ -969,6 +970,8 @@ def run_static_import_microbenchmark(
     is bounded.  It does not append to petta-memory journals, does not invoke
     PeTTaChainer ``compileadd``/query, and does not touch OmegaClaw.
     """
+    if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", space):
+        raise ValueError("space must be a Prolog-safe predicate symbol")
     design = design_static_import_microbenchmark_atoms(sample_atoms)
     if not design["all_records_safe_for_current_converter"]:
         return {
@@ -983,13 +986,13 @@ def run_static_import_microbenchmark(
         }
 
     normalized_atoms = [r["normalized_atom"] for r in design["records"] if r["normalized_atom"]]
-    expected_facts = [r["converted_prolog_fact"] for r in design["records"] if r["converted_prolog_fact"]]
+    expected_facts = [_petta_static_import_convert_line(atom, space=space) for atom in normalized_atoms]
 
     _configure_local_runtime(project_root)
     event = _run_isolated_stage(
         "static_import_load_and_query",
         _static_import_microbenchmark_stage,
-        (normalized_atoms, expected_facts),
+        (normalized_atoms, expected_facts, space),
         stage_timeout_sec=stage_timeout_sec,
     )
     return {
