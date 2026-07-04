@@ -819,6 +819,38 @@ def materialize_nested_type_arity_matrix_rungs(statement: str) -> list[str]:
     return rungs
 
 
+def materialize_nested_type_context_matrix_rungs(statement: str) -> list[str]:
+    """Return rungs that test the blocked nested Type in nearby contexts.
+
+    The arity matrix showed that a full proof atom blocks as soon as its Type
+    field is a two-argument nested expression, even with synthetic sentinel
+    tokens.  This context matrix keeps that all-sentinel nested expression fixed
+    and moves it through minimal surrounding list shapes before returning to the
+    exact PeTTaChainer ``(: proof type tv)`` context.  The ordering distinguishes
+    a generic nested-expression-in-four-field-list problem from something more
+    specific to the PeTTaChainer ``:`` proof atom shape.
+    """
+    form = parse_one_list(statement)
+    if len(form) != 4 or symbol_text(form[0]) != ":":
+        raise ValueError("statement must be a PeTTaChainer proof atom: (: proof type tv)")
+    statement_type = form[2]
+    if not isinstance(statement_type, tuple) or len(statement_type) < 3:
+        raise ValueError("proof Type must be a nested expression with at least two arguments")
+
+    proof_id = to_source(form[1])
+    type_head = to_source(statement_type[0])
+    sentinel_args = [f"TypeArgSentinel{index}" for index in range(len(statement_type) - 1)]
+    nested_type = f"({' '.join([type_head, *sentinel_args])})"
+    sentinel_truth_value = "(STV 1.0 1.0)"
+    return [
+        nested_type,
+        f"(: {proof_id} {nested_type})",
+        f"(ProofEnvelope {proof_id} {nested_type})",
+        f"(ProofEnvelope {proof_id} {nested_type} {sentinel_truth_value})",
+        f"(: {proof_id} {nested_type} {sentinel_truth_value})",
+    ]
+
+
 def run_materialize_nested_type_arity_matrix_gate(
     statement: str,
     *,
@@ -848,6 +880,39 @@ def run_materialize_nested_type_arity_matrix_gate(
         "Nested-Type arity/token matrix only; each rung invokes materialize-stmt-lambdas in an isolated subprocess.",
         "No mm2compile, compileadd, query, GoalChainer, OmegaClaw path, journal write, or inferred-belief claim is invoked.",
         "Synthetic sentinel/mixed rungs are diagnostics for the materializer/evaluator and are not PLN premises.",
+    ]
+    return result
+
+
+def run_materialize_nested_type_context_matrix_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 10.0,
+) -> dict[str, object]:
+    """Run the nested-Type context matrix without mm2compile/add/query."""
+    rungs = materialize_nested_type_context_matrix_rungs(statement)
+    result = run_materialize_identity_ladder_gate(
+        rungs,
+        project_root=project_root,
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    result.update(
+        {
+            "source": "non-live materialize-stmt-lambdas nested-type context matrix gate",
+            "proof_statement": statement,
+            "nested_type_context_matrix_rungs": rungs,
+            "interpretation": (
+                "All context-matrix rungs materialized as identity; return to mm2compile gating."
+                if result.get("status") == "passed"
+                else "A context-matrix rung failed or timed out; keep mm2compile/compileadd/query gated and use the first blocked context to distinguish generic full-list nesting from ':' proof-shape-specific cost."
+            ),
+        }
+    )
+    result["gates"] = [
+        "Nested-Type context matrix only; each rung invokes materialize-stmt-lambdas in an isolated subprocess.",
+        "No mm2compile, compileadd, query, GoalChainer, OmegaClaw path, journal write, or inferred-belief claim is invoked.",
+        "Synthetic ProofEnvelope/context rungs are diagnostics for the materializer/evaluator and are not PLN premises.",
     ]
     return result
 
