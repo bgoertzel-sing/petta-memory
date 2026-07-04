@@ -851,6 +851,83 @@ def materialize_nested_type_context_matrix_rungs(statement: str) -> list[str]:
     ]
 
 
+def materialize_generic_four_field_context_arity_rungs(statement: str) -> list[str]:
+    """Return generic four-field wrapper rungs ordered by nested Type arity.
+
+    The context matrix showed that a two-argument nested Type is cheap alone and
+    in two/three-field contexts but blocks inside a generic four-field wrapper.
+    This helper keeps the wrapper head independent of PeTTaChainer's ``:`` proof
+    syntax and schedules empty, one-argument, then two-argument nested Type rows
+    before token-mixed/original controls.  That isolates whether the four-field
+    list context itself becomes problematic exactly at nested Type arity two, or
+    only for particular argument tokens.
+    """
+    form = parse_one_list(statement)
+    if len(form) != 4 or symbol_text(form[0]) != ":":
+        raise ValueError("statement must be a PeTTaChainer proof atom: (: proof type tv)")
+    statement_type = form[2]
+    if not isinstance(statement_type, tuple) or len(statement_type) < 3:
+        raise ValueError("proof Type must be a nested expression with at least two arguments")
+
+    proof_id = to_source(form[1])
+    type_head = to_source(statement_type[0])
+    args = [to_source(part) for part in statement_type[1:]]
+    sentinel_args = [f"TypeArgSentinel{index}" for index in range(len(args))]
+    sentinel_truth_value = "(STV 1.0 1.0)"
+
+    rungs = [
+        f"(ProofEnvelope {proof_id} ({type_head}) {sentinel_truth_value})",
+    ]
+    for width in range(1, len(args) + 1):
+        nested_type = f"({' '.join([type_head, *sentinel_args[:width]])})"
+        rungs.append(f"(ProofEnvelope {proof_id} {nested_type} {sentinel_truth_value})")
+    for index in range(len(args)):
+        mixed_args = list(sentinel_args)
+        mixed_args[index] = args[index]
+        nested_type = f"({' '.join([type_head, *mixed_args])})"
+        rung = f"(ProofEnvelope {proof_id} {nested_type} {sentinel_truth_value})"
+        if rung not in rungs:
+            rungs.append(rung)
+    original_nested_type = f"({' '.join([type_head, *args])})"
+    original_rung = f"(ProofEnvelope {proof_id} {original_nested_type} {sentinel_truth_value})"
+    if original_rung not in rungs:
+        rungs.append(original_rung)
+    return rungs
+
+
+def run_materialize_generic_four_field_context_arity_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 10.0,
+) -> dict[str, object]:
+    """Run a generic four-field nested-Type arity gate without add/query."""
+    rungs = materialize_generic_four_field_context_arity_rungs(statement)
+    result = run_materialize_identity_ladder_gate(
+        rungs,
+        project_root=project_root,
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    result.update(
+        {
+            "source": "non-live materialize-stmt-lambdas generic four-field context arity gate",
+            "proof_statement": statement,
+            "generic_four_field_context_arity_rungs": rungs,
+            "interpretation": (
+                "All generic four-field context arity rungs materialized as identity; return to PeTTaChainer ':' proof-shape gating."
+                if result.get("status") == "passed"
+                else "A generic four-field context arity rung failed or timed out; keep mm2compile/compileadd/query gated and use the first blocked rung to distinguish wrapper-arity cost from ':' proof-shape-specific cost."
+            ),
+        }
+    )
+    result["gates"] = [
+        "Generic four-field context arity matrix only; each rung invokes materialize-stmt-lambdas in an isolated subprocess.",
+        "No mm2compile, compileadd, query, GoalChainer, OmegaClaw path, journal write, or inferred-belief claim is invoked.",
+        "Synthetic ProofEnvelope/context rungs are diagnostics for the materializer/evaluator and are not PLN premises.",
+    ]
+    return result
+
+
 def run_materialize_nested_type_arity_matrix_gate(
     statement: str,
     *,
