@@ -271,6 +271,9 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
                 "(STV 0.70 0.55)",
                 "(: b-profile-000)",
                 "(: b-profile-000 (Requires MemoryTarget0 PLNReadyViews))",
+                "(: b-profile-000 ProofShapeSentinel (STV 1.0 1.0))",
+                "(: b-profile-000 (Requires MemoryTarget0 PLNReadyViews) (STV 1.0 1.0))",
+                "(: b-profile-000 ProofShapeSentinel (STV 0.70 0.55))",
                 statement,
             ],
         )

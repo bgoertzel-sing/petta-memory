@@ -711,10 +711,11 @@ def materialize_identity_proof_shape_rungs(statement: str) -> list[str]:
     The generic ladder accepts caller-selected forms.  This helper gives the
     blocked PeTTaChainer proof shape a reproducible progression: materialize the
     independent type and truth-value subforms first, then synthetic top-level
-    proof prefixes, then the exact full proof atom.  ``materialize-stmt-lambdas``
-    should be purely structural for lambda-free expressions, so prefix rungs help
-    distinguish a subform problem from a top-level list-shape/evaluator problem
-    without invoking ``mm2compile`` or ``compileadd``.
+    proof prefixes, sentinel full-arity proof atoms, then the exact full proof atom.
+    ``materialize-stmt-lambdas`` should be purely structural for lambda-free
+    expressions, so prefix and sentinel rungs help distinguish a subform problem
+    from a top-level list-shape/evaluator problem without invoking ``mm2compile``
+    or ``compileadd``.
     """
     form = parse_one_list(statement)
     if len(form) != 4 or symbol_text(form[0]) != ":":
@@ -722,11 +723,16 @@ def materialize_identity_proof_shape_rungs(statement: str) -> list[str]:
     proof_id = to_source(form[1])
     statement_type = to_source(form[2])
     truth_value = to_source(form[3])
+    sentinel_type = "ProofShapeSentinel"
+    sentinel_truth_value = "(STV 1.0 1.0)"
     return [
         statement_type,
         truth_value,
         f"(: {proof_id})",
         f"(: {proof_id} {statement_type})",
+        f"(: {proof_id} {sentinel_type} {sentinel_truth_value})",
+        f"(: {proof_id} {statement_type} {sentinel_truth_value})",
+        f"(: {proof_id} {sentinel_type} {truth_value})",
         statement,
     ]
 
