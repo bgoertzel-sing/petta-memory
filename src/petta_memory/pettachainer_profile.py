@@ -215,13 +215,46 @@ def _compileadd_probe_stage(statement: str, probe: str, invocation: str = "direc
     }
 
 
+def _sexpr_equal_allow_numeric_rendering(left: object, right: object) -> bool:
+    if isinstance(left, tuple) and isinstance(right, tuple):
+        return len(left) == len(right) and all(
+            _sexpr_equal_allow_numeric_rendering(left_item, right_item)
+            for left_item, right_item in zip(left, right)
+        )
+    if isinstance(left, tuple) or isinstance(right, tuple):
+        return False
+    if left == right:
+        return True
+    try:
+        return float(str(left)) == float(str(right))
+    except ValueError:
+        return False
+
+
+def _materialize_identity_matches(statement: str, outputs: object) -> bool:
+    output_items = outputs if isinstance(outputs, list) else [outputs]
+    output_text = "\n".join(str(item) for item in output_items)
+    if statement in output_text:
+        return True
+    expected = parse_one_list(statement)
+    for item in output_items:
+        try:
+            if _sexpr_equal_allow_numeric_rendering(expected, parse_one_list(str(item))):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 def _materialize_identity_stage(statement: str) -> dict[str, object]:
-    """Run only ``materialize-stmt-lambdas`` and compare output text.
+    """Run only ``materialize-stmt-lambdas`` and compare output structurally.
 
     This is narrower than the generic compileadd probe: it is meant for a
     lambda-free statement whose source inspection predicts identity
-    materialization, so the stage records whether the runtime output contains
-    the original statement.  The caller still runs it in a bounded subprocess.
+    materialization, so the stage records whether the runtime output matches the
+    original statement.  Numeric formatting differences such as ``0.70`` versus
+    ``0.7`` are treated as identity-preserving because PeTTa's renderer may
+    normalize floats.  The caller still runs the stage in a bounded subprocess.
     """
     from pettachainer import PeTTaChainer
 
@@ -236,11 +269,10 @@ def _materialize_identity_stage(statement: str) -> dict[str, object]:
 
     event = _time_call("materialize_stmt_lambdas_identity", run)
     outputs = event.get("result", [])
-    output_text = "\n".join(str(item) for item in outputs) if isinstance(outputs, list) else str(outputs)
     return {
         "call_text": call_text,
         "expected_statement": statement,
-        "identity_output_present": statement in output_text,
+        "identity_output_present": _materialize_identity_matches(statement, outputs),
         "stages": [event],
     }
 
@@ -644,12 +676,7 @@ def run_materialize_identity_gate(
         }
 
     _configure_local_runtime(project_root)
-    event = _run_isolated_stage(
-        "materialize_stmt_lambdas_identity",
-        _materialize_identity_stage,
-        (statement,),
-        stage_timeout_sec=stage_timeout_sec,
-    )
+    event = _run_materialize_identity_event(statement, stage_timeout_sec=stage_timeout_sec)
     status = "passed" if event.get("status") == "ok" and event.get("identity_output_present") else "blocked"
     return {
         "source": "non-live materialize-stmt-lambdas identity gate",
@@ -665,6 +692,82 @@ def run_materialize_identity_gate(
             "Single materialize-stmt-lambdas call only; no mm2compile, compileadd, query, GoalChainer, or OmegaClaw path is invoked.",
             "Temporary/non-live probe only; no petta-memory journal writes and no inferred-belief claims.",
             "Proceed to mm2compile instrumentation only after this identity gate passes with matching output.",
+        ],
+    }
+
+
+def _run_materialize_identity_event(statement: str, *, stage_timeout_sec: float) -> dict[str, object]:
+    return _run_isolated_stage(
+        "materialize_stmt_lambdas_identity",
+        _materialize_identity_stage,
+        (statement,),
+        stage_timeout_sec=stage_timeout_sec,
+    )
+
+
+def run_materialize_identity_ladder_gate(
+    statements: Iterable[str],
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 10.0,
+) -> dict[str, object]:
+    """Run materialization identity probes from small forms up to a full proof.
+
+    The previous single-statement gate showed that the tiny promoted-belief proof
+    can time out before ``mm2compile``.  This ladder keeps the same non-live
+    boundary but makes the bottleneck sharper by testing caller-supplied
+    lambda-free subforms independently before the full proof statement.  Each
+    rung is source-checked and then run as one isolated ``materialize-stmt-lambdas``
+    call; no compiled add/query or integration path is invoked.
+    """
+    items = list(statements)
+    if not items:
+        raise ValueError("materialize ladder requires at least one statement")
+    repo = project_root / "repos" / "PeTTaChainer"
+    inspections = [inspect_materialize_stmt_lambdas_for_statement(repo, item) for item in items]
+    skipped = [item for item, inspection in zip(items, inspections) if not inspection["materialize_expected_identity"]]
+    if skipped:
+        return {
+            "source": "non-live materialize-stmt-lambdas identity ladder gate",
+            "status": "skipped",
+            "reason": "one or more statements contain |-> lambda forms; identity materialization is not expected",
+            "skipped_statements": skipped,
+            "inspections": inspections,
+            "gates": [
+                "No runtime execution attempted because source inspection did not predict identity materialization for every rung.",
+                "Do not proceed to mm2compile/compileadd/query from a skipped ladder gate.",
+            ],
+        }
+
+    _configure_local_runtime(project_root)
+    events: list[dict[str, object]] = []
+    for index, item in enumerate(items):
+        event = _run_materialize_identity_event(item, stage_timeout_sec=stage_timeout_sec)
+        event["rung_index"] = index
+        event["rung_statement"] = item
+        events.append(event)
+        if event.get("status") != "ok" or not event.get("identity_output_present"):
+            break
+    all_passed = len(events) == len(items) and all(
+        event.get("status") == "ok" and event.get("identity_output_present") for event in events
+    )
+    return {
+        "source": "non-live materialize-stmt-lambdas identity ladder gate",
+        "status": "passed" if all_passed else "blocked",
+        "rung_count_requested": len(items),
+        "rung_count_executed": len(events),
+        "inspections": inspections,
+        "runtime_events": events,
+        "first_blocked_rung": None if all_passed else events[-1].get("rung_index") if events else None,
+        "interpretation": (
+            "All lambda-free materialization rungs returned identity output; mm2compile can be gated separately."
+            if all_passed
+            else "A lambda-free materialization rung failed or timed out; keep mm2compile/compileadd/query gated and instrument this rung next."
+        ),
+        "gates": [
+            "Each rung invokes only materialize-stmt-lambdas in an isolated subprocess; no mm2compile, compileadd, query, GoalChainer, or OmegaClaw path is invoked.",
+            "Temporary/non-live probe only; no petta-memory journal writes and no inferred-belief claims.",
+            "Stop at the first blocked rung to bound noisy PeTTaChainer runtime work.",
         ],
     }
 

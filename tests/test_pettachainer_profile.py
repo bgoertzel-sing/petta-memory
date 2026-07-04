@@ -72,6 +72,16 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         self.assertEqual(direct, "!(materialize-stmt-lambdas (: p (S x) (STV 1 0.9)))")
         self.assertEqual(eval_control, "!(eval (materialize-stmt-lambdas (: p (S x) (STV 1 0.9))))")
 
+    def test_materialize_identity_match_allows_numeric_rendering_changes(self):
+        self.assertTrue(profile._materialize_identity_matches("(STV 0.70 0.55)", ["(STV 0.7 0.55)"]))
+        self.assertTrue(
+            profile._materialize_identity_matches(
+                "(: b-profile-000 (Requires MemoryTarget0 PLNReadyViews) (STV 0.70 0.55))",
+                ["(: b-profile-000 (Requires MemoryTarget0 PLNReadyViews) (STV 0.7 0.55))"],
+            )
+        )
+        self.assertFalse(profile._materialize_identity_matches("(STV 0.70 0.55)", ["(STV 0.6 0.55)"]))
+
     def test_inspect_pettachainer_add_api_reports_no_precompiled_api(self):
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
@@ -196,6 +206,58 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         self.assertEqual(result["status"], "skipped")
         configure.assert_not_called()
         self.assertIn("statement contains |-> lambda forms", result["reason"])
+
+    def test_run_materialize_identity_ladder_stops_at_first_blocked_rung(self):
+        rungs = ["(Requires MemoryTarget0 PLNReadyViews)", "(: p (Requires MemoryTarget0 PLNReadyViews) (STV 1 0.9))"]
+        seen = []
+
+        def fake_inspection(repo, statement):
+            return {"repo_path": str(repo), "statement": statement, "materialize_expected_identity": True}
+
+        def fake_event(statement, *, stage_timeout_sec):
+            seen.append((statement, stage_timeout_sec))
+            if statement == rungs[0]:
+                return {"label": "materialize_stmt_lambdas_identity", "status": "ok", "identity_output_present": True}
+            return {"label": "materialize_stmt_lambdas_identity", "status": "timeout", "timeout_sec": stage_timeout_sec}
+
+        with (
+            patch.object(profile, "inspect_materialize_stmt_lambdas_for_statement", side_effect=fake_inspection),
+            patch.object(profile, "_configure_local_runtime", return_value=None),
+            patch.object(profile, "_run_materialize_identity_event", side_effect=fake_event),
+        ):
+            result = profile.run_materialize_identity_ladder_gate(
+                rungs,
+                project_root=Path("/project"),
+                stage_timeout_sec=2.5,
+            )
+
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["first_blocked_rung"], 1)
+        self.assertEqual(result["rung_count_executed"], 2)
+        self.assertEqual(seen, [(rungs[0], 2.5), (rungs[1], 2.5)])
+        self.assertIn("Stop at the first blocked rung", " ".join(result["gates"]))
+
+    def test_materialize_identity_ladder_skips_if_any_rung_has_lambda(self):
+        with patch.object(
+            profile,
+            "inspect_materialize_stmt_lambdas_for_statement",
+            side_effect=[
+                {"statement": "(Requires MemoryTarget0 PLNReadyViews)", "materialize_expected_identity": True},
+                {"statement": "(|-> x x)", "materialize_expected_identity": False},
+            ],
+        ), patch.object(profile, "_configure_local_runtime") as configure:
+            result = profile.run_materialize_identity_ladder_gate(
+                ["(Requires MemoryTarget0 PLNReadyViews)", "(|-> x x)"],
+                project_root=Path("/project"),
+            )
+
+        self.assertEqual(result["status"], "skipped")
+        configure.assert_not_called()
+        self.assertEqual(result["skipped_statements"], ["(|-> x x)"])
+
+    def test_materialize_identity_ladder_rejects_empty_input(self):
+        with self.assertRaises(ValueError):
+            profile.run_materialize_identity_ladder_gate([], project_root=Path("/project"))
 
     def test_inspect_compileadd_bottleneck_sources_records_target_definitions(self):
         with tempfile.TemporaryDirectory() as td:
