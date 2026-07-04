@@ -330,6 +330,57 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             profile.materialize_nested_type_proof_rungs("(: p PlainType (STV 1 1))")
 
+    def test_materialize_nested_type_arity_matrix_rungs_test_sentinel_arity_before_original(self):
+        statement = "(: b-profile-000 (Requires MemoryTarget0 PLNReadyViews) (STV 0.70 0.55))"
+
+        rungs = profile.materialize_nested_type_arity_matrix_rungs(statement)
+
+        self.assertEqual(
+            rungs,
+            [
+                "(: b-profile-000 (Requires) (STV 1.0 1.0))",
+                "(: b-profile-000 (Requires TypeArgSentinel0) (STV 1.0 1.0))",
+                "(: b-profile-000 (Requires TypeArgSentinel0 TypeArgSentinel1) (STV 1.0 1.0))",
+                "(: b-profile-000 (Requires MemoryTarget0 TypeArgSentinel1) (STV 1.0 1.0))",
+                "(: b-profile-000 (Requires TypeArgSentinel0 PLNReadyViews) (STV 1.0 1.0))",
+                "(: b-profile-000 (Requires MemoryTarget0 PLNReadyViews) (STV 1.0 1.0))",
+            ],
+        )
+
+    def test_materialize_nested_type_arity_matrix_gate_delegates_to_identity_ladder(self):
+        statement = "(: b-profile-000 (Requires MemoryTarget0 PLNReadyViews) (STV 0.70 0.55))"
+        captured = {}
+
+        def fake_ladder(rungs, *, project_root, stage_timeout_sec):
+            captured["rungs"] = rungs
+            captured["project_root"] = project_root
+            captured["stage_timeout_sec"] = stage_timeout_sec
+            return {
+                "source": "non-live materialize-stmt-lambdas identity ladder gate",
+                "status": "blocked",
+                "first_blocked_rung": 2,
+                "rung_count_executed": 3,
+                "gates": [],
+            }
+
+        with patch.object(profile, "run_materialize_identity_ladder_gate", side_effect=fake_ladder):
+            result = profile.run_materialize_nested_type_arity_matrix_gate(
+                statement,
+                project_root=Path("/project"),
+                stage_timeout_sec=3.0,
+            )
+
+        self.assertEqual(result["source"], "non-live materialize-stmt-lambdas nested-type arity matrix gate")
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["nested_type_arity_matrix_rungs"], captured["rungs"])
+        self.assertEqual(captured["project_root"], Path("/project"))
+        self.assertEqual(captured["stage_timeout_sec"], 3.0)
+        self.assertIn("No mm2compile, compileadd, query", " ".join(result["gates"]))
+
+    def test_materialize_nested_type_arity_matrix_rungs_reject_atom_type(self):
+        with self.assertRaises(ValueError):
+            profile.materialize_nested_type_arity_matrix_rungs("(: p PlainType (STV 1 1))")
+
     def test_materialize_proof_shape_ladder_delegates_to_identity_ladder(self):
         statement = "(: b-profile-000 (Requires MemoryTarget0 PLNReadyViews) (STV 0.70 0.55))"
         captured = {}

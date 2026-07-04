@@ -778,6 +778,80 @@ def materialize_nested_type_proof_rungs(statement: str) -> list[str]:
     return rungs
 
 
+def materialize_nested_type_arity_matrix_rungs(statement: str) -> list[str]:
+    """Return nested-Type materialization rungs ordered to test arity first.
+
+    The first nested-Type ladder stopped at the original two-argument Type before
+    reaching the all-sentinel and mixed-argument controls.  This matrix keeps the
+    same full proof shape and sentinel STV, but schedules all-sentinel arity
+    rungs before any original argument tokens.  If ``(Requires S0 S1)`` blocks,
+    the materializer problem is likely generic to two-argument nested Type
+    expressions inside proof atoms; if it passes, the mixed/original rows localize
+    the issue to a specific argument token or token combination.
+    """
+    form = parse_one_list(statement)
+    if len(form) != 4 or symbol_text(form[0]) != ":":
+        raise ValueError("statement must be a PeTTaChainer proof atom: (: proof type tv)")
+    statement_type = form[2]
+    if not isinstance(statement_type, tuple) or len(statement_type) < 2:
+        raise ValueError("proof Type must be a nested expression with at least one argument")
+
+    proof_id = to_source(form[1])
+    type_head = to_source(statement_type[0])
+    args = [to_source(part) for part in statement_type[1:]]
+    sentinel_truth_value = "(STV 1.0 1.0)"
+    sentinel_args = [f"TypeArgSentinel{index}" for index in range(len(args))]
+
+    rungs = [
+        f"(: {proof_id} ({type_head}) {sentinel_truth_value})",
+    ]
+    for width in range(1, len(args) + 1):
+        rungs.append(f"(: {proof_id} ({' '.join([type_head, *sentinel_args[:width]])}) {sentinel_truth_value})")
+    for index in range(len(args)):
+        mixed_args = list(sentinel_args)
+        mixed_args[index] = args[index]
+        rung = f"(: {proof_id} ({' '.join([type_head, *mixed_args])}) {sentinel_truth_value})"
+        if rung not in rungs:
+            rungs.append(rung)
+    original_rung = f"(: {proof_id} ({' '.join([type_head, *args])}) {sentinel_truth_value})"
+    if original_rung not in rungs:
+        rungs.append(original_rung)
+    return rungs
+
+
+def run_materialize_nested_type_arity_matrix_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 10.0,
+) -> dict[str, object]:
+    """Run the nested-Type materialization matrix without mm2compile/add/query."""
+    rungs = materialize_nested_type_arity_matrix_rungs(statement)
+    result = run_materialize_identity_ladder_gate(
+        rungs,
+        project_root=project_root,
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    result.update(
+        {
+            "source": "non-live materialize-stmt-lambdas nested-type arity matrix gate",
+            "proof_statement": statement,
+            "nested_type_arity_matrix_rungs": rungs,
+            "interpretation": (
+                "All sentinel/mixed/original nested-Type matrix rungs materialized as identity; mm2compile can be gated separately."
+                if result.get("status") == "passed"
+                else "A nested-Type arity/token matrix rung failed or timed out; keep mm2compile/compileadd/query gated and use the first blocked rung to distinguish generic arity from token-specific cost."
+            ),
+        }
+    )
+    result["gates"] = [
+        "Nested-Type arity/token matrix only; each rung invokes materialize-stmt-lambdas in an isolated subprocess.",
+        "No mm2compile, compileadd, query, GoalChainer, OmegaClaw path, journal write, or inferred-belief claim is invoked.",
+        "Synthetic sentinel/mixed rungs are diagnostics for the materializer/evaluator and are not PLN premises.",
+    ]
+    return result
+
+
 def run_materialize_nested_type_ladder_gate(
     statement: str,
     *,
