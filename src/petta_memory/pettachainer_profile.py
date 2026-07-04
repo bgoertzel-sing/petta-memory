@@ -737,6 +737,80 @@ def materialize_identity_proof_shape_rungs(statement: str) -> list[str]:
     ]
 
 
+def materialize_nested_type_proof_rungs(statement: str) -> list[str]:
+    """Return proof materialization rungs that decompose the nested Type field.
+
+    The proof-shape ladder narrowed the current timeout to a full ``(: proof
+    type tv)`` atom whose ``type`` field is itself a nested statement such as
+    ``(Requires MemoryTarget0 PLNReadyViews)``.  This ladder keeps the top-level
+    proof shape and sentinel STV fixed while gradually rebuilding the nested type
+    expression with sentinel arguments.  It helps distinguish a generic nested
+    expression/arity problem from a specific predicate or argument token problem,
+    without invoking ``mm2compile`` or ``compileadd``.
+    """
+    form = parse_one_list(statement)
+    if len(form) != 4 or symbol_text(form[0]) != ":":
+        raise ValueError("statement must be a PeTTaChainer proof atom: (: proof type tv)")
+    statement_type = form[2]
+    if not isinstance(statement_type, tuple) or len(statement_type) < 2:
+        raise ValueError("proof Type must be a nested expression with at least one argument")
+    proof_id = to_source(form[1])
+    type_head = to_source(statement_type[0])
+    args = [to_source(part) for part in statement_type[1:]]
+    sentinel_truth_value = "(STV 1.0 1.0)"
+    sentinel_args = [f"TypeArgSentinel{index}" for index in range(len(args))]
+
+    rungs = [
+        f"(: {proof_id} {type_head} {sentinel_truth_value})",
+        f"(: {proof_id} ({type_head}) {sentinel_truth_value})",
+    ]
+    for width in range(1, len(args) + 1):
+        partial_args = args[:width]
+        rungs.append(f"(: {proof_id} ({' '.join([type_head, *partial_args])}) {sentinel_truth_value})")
+    if args != sentinel_args:
+        rungs.append(f"(: {proof_id} ({' '.join([type_head, *sentinel_args])}) {sentinel_truth_value})")
+        for index in range(len(args)):
+            mixed_args = list(sentinel_args)
+            mixed_args[index] = args[index]
+            rung = f"(: {proof_id} ({' '.join([type_head, *mixed_args])}) {sentinel_truth_value})"
+            if rung not in rungs:
+                rungs.append(rung)
+    return rungs
+
+
+def run_materialize_nested_type_ladder_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 10.0,
+) -> dict[str, object]:
+    """Run a non-live materialization ladder over the nested proof Type field."""
+    rungs = materialize_nested_type_proof_rungs(statement)
+    result = run_materialize_identity_ladder_gate(
+        rungs,
+        project_root=project_root,
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    result.update(
+        {
+            "source": "non-live materialize-stmt-lambdas nested-type proof ladder gate",
+            "proof_statement": statement,
+            "nested_type_rungs": rungs,
+            "interpretation": (
+                "Nested Type materialization completed for all sentinel/partial proof rungs; return to mm2compile gating."
+                if result.get("status") == "passed"
+                else "A nested Type proof rung failed or timed out; keep mm2compile/compileadd/query gated and instrument this shape next."
+            ),
+        }
+    )
+    result["gates"] = [
+        "Nested-Type ladder only; each rung invokes materialize-stmt-lambdas in an isolated subprocess.",
+        "No mm2compile, compileadd, query, GoalChainer, OmegaClaw path, journal write, or inferred-belief claim is invoked.",
+        "Synthetic sentinel rungs are diagnostics for the materializer/evaluator and are not PLN premises.",
+    ]
+    return result
+
+
 def run_materialize_proof_shape_ladder_gate(
     statement: str,
     *,
