@@ -259,6 +259,56 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             profile.run_materialize_identity_ladder_gate([], project_root=Path("/project"))
 
+    def test_materialize_proof_shape_rungs_include_prefixes_before_full_proof(self):
+        statement = "(: b-profile-000 (Requires MemoryTarget0 PLNReadyViews) (STV 0.70 0.55))"
+
+        rungs = profile.materialize_identity_proof_shape_rungs(statement)
+
+        self.assertEqual(
+            rungs,
+            [
+                "(Requires MemoryTarget0 PLNReadyViews)",
+                "(STV 0.70 0.55)",
+                "(: b-profile-000)",
+                "(: b-profile-000 (Requires MemoryTarget0 PLNReadyViews))",
+                statement,
+            ],
+        )
+
+    def test_materialize_proof_shape_ladder_delegates_to_identity_ladder(self):
+        statement = "(: b-profile-000 (Requires MemoryTarget0 PLNReadyViews) (STV 0.70 0.55))"
+        captured = {}
+
+        def fake_ladder(rungs, *, project_root, stage_timeout_sec):
+            captured["rungs"] = rungs
+            captured["project_root"] = project_root
+            captured["stage_timeout_sec"] = stage_timeout_sec
+            return {
+                "source": "non-live materialize-stmt-lambdas identity ladder gate",
+                "status": "blocked",
+                "first_blocked_rung": 4,
+                "rung_count_executed": 5,
+                "gates": [],
+            }
+
+        with patch.object(profile, "run_materialize_identity_ladder_gate", side_effect=fake_ladder):
+            result = profile.run_materialize_proof_shape_ladder_gate(
+                statement,
+                project_root=Path("/project"),
+                stage_timeout_sec=3.0,
+            )
+
+        self.assertEqual(result["source"], "non-live materialize-stmt-lambdas proof-shape ladder gate")
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["proof_shape_rungs"], captured["rungs"])
+        self.assertEqual(captured["project_root"], Path("/project"))
+        self.assertEqual(captured["stage_timeout_sec"], 3.0)
+        self.assertIn("No mm2compile, compileadd, query", " ".join(result["gates"]))
+
+    def test_materialize_proof_shape_rungs_reject_non_proof_atom(self):
+        with self.assertRaises(ValueError):
+            profile.materialize_identity_proof_shape_rungs("(Requires MemoryTarget0 PLNReadyViews)")
+
     def test_inspect_compileadd_bottleneck_sources_records_target_definitions(self):
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)

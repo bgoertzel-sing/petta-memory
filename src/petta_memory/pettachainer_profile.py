@@ -705,6 +705,71 @@ def _run_materialize_identity_event(statement: str, *, stage_timeout_sec: float)
     )
 
 
+def materialize_identity_proof_shape_rungs(statement: str) -> list[str]:
+    """Return bounded materialization rungs for one ``(: proof type tv)`` atom.
+
+    The generic ladder accepts caller-selected forms.  This helper gives the
+    blocked PeTTaChainer proof shape a reproducible progression: materialize the
+    independent type and truth-value subforms first, then synthetic top-level
+    proof prefixes, then the exact full proof atom.  ``materialize-stmt-lambdas``
+    should be purely structural for lambda-free expressions, so prefix rungs help
+    distinguish a subform problem from a top-level list-shape/evaluator problem
+    without invoking ``mm2compile`` or ``compileadd``.
+    """
+    form = parse_one_list(statement)
+    if len(form) != 4 or symbol_text(form[0]) != ":":
+        raise ValueError("statement must be a PeTTaChainer proof atom: (: proof type tv)")
+    proof_id = to_source(form[1])
+    statement_type = to_source(form[2])
+    truth_value = to_source(form[3])
+    return [
+        statement_type,
+        truth_value,
+        f"(: {proof_id})",
+        f"(: {proof_id} {statement_type})",
+        statement,
+    ]
+
+
+def run_materialize_proof_shape_ladder_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 10.0,
+) -> dict[str, object]:
+    """Run the materialization ladder specialized for a proof atom shape.
+
+    This is a non-live instrumentation gate for the current PeTTaChainer
+    bottleneck.  It delegates every runtime call to
+    ``run_materialize_identity_ladder_gate`` and adds only the deterministic rung
+    construction/provenance around the result.
+    """
+    rungs = materialize_identity_proof_shape_rungs(statement)
+    result = run_materialize_identity_ladder_gate(
+        rungs,
+        project_root=project_root,
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    result.update(
+        {
+            "source": "non-live materialize-stmt-lambdas proof-shape ladder gate",
+            "proof_statement": statement,
+            "proof_shape_rungs": rungs,
+            "interpretation": (
+                "Proof-shape materialization completed for subforms, prefixes, and the full statement; mm2compile can be gated separately."
+                if result.get("status") == "passed"
+                else "A proof-shape materialization rung failed or timed out; keep mm2compile/compileadd/query gated and instrument the first blocked shape."
+            ),
+        }
+    )
+    result["gates"] = [
+        "Proof-shape ladder only; each rung invokes materialize-stmt-lambdas in an isolated subprocess.",
+        "No mm2compile, compileadd, query, GoalChainer, OmegaClaw path, journal write, or inferred-belief claim is invoked.",
+        "Synthetic prefix rungs are diagnostics for the materializer/evaluator and are not PLN premises.",
+    ]
+    return result
+
+
 def run_materialize_identity_ladder_gate(
     statements: Iterable[str],
     *,
