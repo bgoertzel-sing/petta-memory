@@ -326,6 +326,16 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         )
 
 
+    def test_static_import_fact_goal_strips_clause_full_stop(self):
+        fact = "'pmbench'(pm_stv_statement,b_profile_000,[pm_stv_payload,key,0.70,0.55])."
+
+        self.assertEqual(
+            profile._petta_static_import_fact_goal(fact),
+            "'pmbench'(pm_stv_statement,b_profile_000,[pm_stv_payload,key,0.70,0.55])",
+        )
+        with self.assertRaises(ValueError):
+            profile._petta_static_import_fact_goal("'pmbench'(a,b,c)")
+
     def test_run_static_import_microbenchmark_skips_unsafe_atoms(self):
         """Microbenchmark should skip when atoms are not converter-safe."""
         result = profile.run_static_import_microbenchmark(

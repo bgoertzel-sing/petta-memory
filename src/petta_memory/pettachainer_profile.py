@@ -758,6 +758,21 @@ def _petta_static_import_convert_line(atom: str, space: str = "gckb") -> str:
     return f"'{space}'({inner})."
 
 
+def _petta_static_import_fact_goal(fact: str) -> str:
+    """Return a Prolog goal for checking one generated static-import fact.
+
+    The loader benchmark already compares the generated ``scratch.pl`` text, but
+    the runtime gate should also prove that each expected fact is actually
+    consultable in SWI after ``static-import!``.  The generated facts are complete
+    Prolog clauses like ``'pmbench'(...).``; as a query goal they are the same
+    term without the trailing full stop.
+    """
+    stripped = fact.strip()
+    if not stripped.endswith("."):
+        raise ValueError("static-import fact must end with a full stop")
+    return stripped[:-1]
+
+
 def inspect_petta_static_import_source(petta_repo_path: str | Path, sample_atoms: Iterable[str] | None = None) -> dict[str, object]:
     """Inspect PeTTa's ``static-import!`` bulk-load source for petta-memory use.
 
@@ -938,7 +953,22 @@ def _static_import_microbenchmark_stage(
         expected_sorted = sorted(expected_facts)
         facts_match = pl_fact_lines == expected_sorted
 
-        loaded_facts = pl_fact_lines
+        # Verify the expected facts against the consulted runtime predicate too,
+        # not just against the generated scratch.pl text.  This catches false
+        # positives where conversion worked but qcompile/consult or the selected
+        # named space did not actually make the facts queryable.
+        runtime_fact_checks: list[dict[str, object]] = []
+        for fact in expected_sorted:
+            goal = _petta_static_import_fact_goal(fact)
+            try:
+                query_result = janus.query_once(goal)
+                present = bool(query_result and query_result.get("truth"))
+                runtime_fact_checks.append({"fact": fact, "goal": goal, "present": present})
+            except Exception as exc:
+                runtime_fact_checks.append(
+                    {"fact": fact, "goal": goal, "present": False, "error": f"{type(exc).__name__}: {exc}"}
+                )
+        runtime_expected_facts_present = all(check["present"] for check in runtime_fact_checks)
 
         return {
             "result": "loaded" if fact_count > 0 else "empty",
@@ -948,6 +978,8 @@ def _static_import_microbenchmark_stage(
             "loaded_fact_count": fact_count,
             "expected_fact_count": len(expected_sorted),
             "facts_match": facts_match,
+            "runtime_expected_facts_present": runtime_expected_facts_present,
+            "runtime_fact_checks": runtime_fact_checks,
             "pl_fact_lines": pl_fact_lines,
             "expected_facts": expected_sorted,
             "first_solution": first_solution,
