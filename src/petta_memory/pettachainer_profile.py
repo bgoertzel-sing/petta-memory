@@ -895,6 +895,38 @@ def materialize_generic_four_field_context_arity_rungs(statement: str) -> list[s
     return rungs
 
 
+def materialize_four_field_nested_position_rungs(statement: str) -> list[str]:
+    """Return four-field rungs that move the same nested Type by position.
+
+    The generic arity gate showed a two-argument nested Type blocks inside a
+    four-field ``ProofEnvelope``.  This follow-up keeps the nested expression
+    fully synthetic and moves it through each argument position of a four-field
+    wrapper before returning to the proof-like slot layout.  If the first row
+    blocks, the issue is likely any nested two-argument subexpression in a
+    four-field list; if only a later row blocks, position or neighboring payload
+    shape is implicated.  The rungs remain materializer-only diagnostics, not PLN
+    premises.
+    """
+    form = parse_one_list(statement)
+    if len(form) != 4 or symbol_text(form[0]) != ":":
+        raise ValueError("statement must be a PeTTaChainer proof atom: (: proof type tv)")
+    statement_type = form[2]
+    if not isinstance(statement_type, tuple) or len(statement_type) < 3:
+        raise ValueError("proof Type must be a nested expression with at least two arguments")
+
+    proof_id = to_source(form[1])
+    type_head = to_source(statement_type[0])
+    sentinel_args = [f"TypeArgSentinel{index}" for index in range(len(statement_type) - 1)]
+    nested_type = f"({' '.join([type_head, *sentinel_args])})"
+    sentinel_truth_value = "(STV 1.0 1.0)"
+    return [
+        f"(ProofEnvelope {nested_type} PayloadA PayloadB)",
+        f"(ProofEnvelope PayloadA {nested_type} PayloadB)",
+        f"(ProofEnvelope PayloadA PayloadB {nested_type})",
+        f"(ProofEnvelope {proof_id} {nested_type} {sentinel_truth_value})",
+    ]
+
+
 def run_materialize_generic_four_field_context_arity_gate(
     statement: str,
     *,
@@ -924,6 +956,39 @@ def run_materialize_generic_four_field_context_arity_gate(
         "Generic four-field context arity matrix only; each rung invokes materialize-stmt-lambdas in an isolated subprocess.",
         "No mm2compile, compileadd, query, GoalChainer, OmegaClaw path, journal write, or inferred-belief claim is invoked.",
         "Synthetic ProofEnvelope/context rungs are diagnostics for the materializer/evaluator and are not PLN premises.",
+    ]
+    return result
+
+
+def run_materialize_four_field_nested_position_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 10.0,
+) -> dict[str, object]:
+    """Run a four-field nested-expression position gate without add/query."""
+    rungs = materialize_four_field_nested_position_rungs(statement)
+    result = run_materialize_identity_ladder_gate(
+        rungs,
+        project_root=project_root,
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    result.update(
+        {
+            "source": "non-live materialize-stmt-lambdas four-field nested-position gate",
+            "proof_statement": statement,
+            "four_field_nested_position_rungs": rungs,
+            "interpretation": (
+                "All four-field nested-position rungs materialized as identity; return to PeTTaChainer ':' proof-shape gating."
+                if result.get("status") == "passed"
+                else "A four-field nested-position rung failed or timed out; keep mm2compile/compileadd/query gated and use the first blocked rung to distinguish any-position four-field nesting cost from proof-slot-specific cost."
+            ),
+        }
+    )
+    result["gates"] = [
+        "Four-field nested-position matrix only; each rung invokes materialize-stmt-lambdas in an isolated subprocess.",
+        "No mm2compile, compileadd, query, GoalChainer, OmegaClaw path, journal write, or inferred-belief claim is invoked.",
+        "Synthetic ProofEnvelope/Payload rungs are diagnostics for the materializer/evaluator and are not PLN premises.",
     ]
     return result
 
