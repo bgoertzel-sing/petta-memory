@@ -517,6 +517,75 @@ def _extract_metta_definition(source: str, symbol: str) -> dict[str, object] | N
     }
 
 
+def _sexpr_walk(value: object) -> Iterable[object]:
+    yield value
+    if isinstance(value, tuple):
+        for item in value:
+            yield from _sexpr_walk(item)
+
+
+def inspect_materialize_stmt_lambdas_for_statement(repo_path: str | Path, statement: str) -> dict[str, object]:
+    """Source-level analysis of ``materialize-stmt-lambdas`` for one statement.
+
+    Runtime probes show the first ``compileadd`` binding can time out even for
+    the tiny petta-memory promoted-belief statement.  This helper keeps the next
+    probe bounded and non-live: it reads the checked-out source definition and
+    statically checks whether the statement contains any ``|->`` lambda forms
+    that would trigger the definition's only ``eval`` branch.  For lambda-free
+    statements, the source definition should act as a structural identity walk,
+    so a runtime timeout points at evaluator/recursive traversal overhead rather
+    than user lambda execution.
+    """
+    repo = Path(repo_path)
+    root_metta_path = repo / "pettachainer" / "metta" / "petta_chainer.metta"
+    if not root_metta_path.exists():
+        raise FileNotFoundError(f"missing PeTTaChainer source file: {root_metta_path}")
+
+    form = parse_one_list(statement)
+    walked = list(_sexpr_walk(form))
+    expr_count = sum(1 for item in walked if isinstance(item, tuple))
+    atom_count = len(walked) - expr_count
+    lambda_forms = [to_source(item) for item in walked if isinstance(item, tuple) and item and symbol_text(item[0]) == "|->"]
+    source = root_metta_path.read_text(encoding="utf-8")
+    definition = _extract_metta_definition(source, "materialize-stmt-lambdas")
+    if definition is not None:
+        definition["file"] = "pettachainer/metta/petta_chainer.metta"
+    return {
+        "source": "pettachainer materialize-stmt-lambdas source statement inspection",
+        "repo_path": str(repo),
+        "statement": statement,
+        "statement_stats": {
+            "expression_nodes": expr_count,
+            "atom_nodes": atom_count,
+            "total_nodes": len(walked),
+            "lambda_form_count": len(lambda_forms),
+            "lambda_forms": lambda_forms,
+        },
+        "materialize_expected_identity": not lambda_forms,
+        "expected_materialized_statement": statement if not lambda_forms else None,
+        "definition": definition,
+        "interpretation": (
+            "No |-> lambda forms occur in this statement, so source-level materialization should only walk and rebuild the same tree; "
+            "the observed timeout is therefore more likely in the PeTTa/MeTTa evaluator recursion/materialization machinery than in user lambda execution."
+            if not lambda_forms
+            else "Statement contains |-> lambda forms, so materialize-stmt-lambdas may invoke eval and must be runtime-gated separately."
+        ),
+        "next_probe": {
+            "kind": "non-live materialize identity runtime gate",
+            "preconditions": [
+                "Use an isolated subprocess and short stage timeout.",
+                "Compare materialized output to the original statement for lambda-free promoted beliefs.",
+                "Do not proceed to mm2compile/compileadd unless this identity gate completes cleanly.",
+            ],
+        },
+        "gates": [
+            "Source inspection only; no PeTTaChainer runtime, compileadd, query, GoalChainer, or OmegaClaw path is invoked.",
+            "Do not treat the identity expectation as an inferred belief or runtime success.",
+            "Keep live writes and full add/query behind separate non-live gates.",
+        ],
+    }
+
+
 def inspect_compileadd_bottleneck_sources(repo_path: str | Path) -> dict[str, object]:
     """Inspect source definitions on the current ``compileadd`` bottleneck path.
 

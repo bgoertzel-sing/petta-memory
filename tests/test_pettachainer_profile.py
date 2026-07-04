@@ -106,6 +106,37 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         self.assertEqual(summary["add_method_compile_calls"]["add_atom"], ["compileadd"])
         self.assertIn("no public precompiled-add API found", summary["recommended_boundary"])
 
+    def test_inspect_materialize_stmt_lambdas_for_statement_marks_lambda_free_identity(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            metta_dir = repo / "pettachainer" / "metta"
+            metta_dir.mkdir(parents=True)
+            (metta_dir / "petta_chainer.metta").write_text(
+                "(= (materialize-stmt-lambdas $term)\n"
+                "   (if (is-var $term) $term\n"
+                "      (if (is-expr $term)\n"
+                "         (if (== (car-atom $term) |->) (eval $term)\n"
+                "            (cons (materialize-stmt-lambdas (car-atom $term))\n"
+                "               (map-flat materialize-stmt-lambdas (cdr-atom $term))))\n"
+                "         $term)))\n",
+                encoding="utf-8",
+            )
+
+            summary = profile.inspect_materialize_stmt_lambdas_for_statement(
+                repo,
+                "(: b-profile-000 (Requires MemoryTarget0 PLNReadyViews) (STV 0.70 0.55))",
+            )
+
+        self.assertTrue(summary["materialize_expected_identity"])
+        self.assertEqual(summary["statement_stats"]["lambda_form_count"], 0)
+        self.assertGreater(summary["statement_stats"]["expression_nodes"], 1)
+        self.assertIn("eval", summary["definition"]["calls"])
+        self.assertIn("runtime success", " ".join(summary["gates"]))
+        self.assertEqual(
+            summary["next_probe"]["kind"],
+            "non-live materialize identity runtime gate",
+        )
+
     def test_inspect_compileadd_bottleneck_sources_records_target_definitions(self):
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
