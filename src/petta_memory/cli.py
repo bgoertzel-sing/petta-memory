@@ -9,7 +9,9 @@ from .goalchainer_smoke import run_goalchainer_handoff_smoke, run_goalchainer_pr
 from .patham9_pln import (
     patham9_pln_handoff_sentences,
     run_patham9_pln_derivation_smoke,
+    run_patham9_pln_derivation_ec_projection_smoke,
     run_patham9_pln_ec_projection_smoke,
+    run_patham9_pln_ec_projection_conflicting_smoke,
     run_patham9_pln_query_smoke,
 )
 from .store import MediumMemoryStore, ValidationError
@@ -94,6 +96,26 @@ def build_parser() -> argparse.ArgumentParser:
     ec_projection.add_argument("--pln-repo", default="../patham9-pln", help="Path to local patham9/PLN checkout")
     ec_projection.add_argument("--env-script", help="Path to local PeTTa/SWI environment activation script")
     ec_projection.add_argument("--timeout-sec", type=float, default=30.0)
+
+    ec_conflicting = sub.add_parser(
+        "patham9-pln-ec-conflicting-smoke",
+        help="Run a bounded non-live conflicting-EC projection comparison smoke (strong STV + opposing EC)",
+    )
+    ec_conflicting.add_argument("--cache-id", default="petta-memory-patham9-pln-ec-conflicting-smoke")
+    ec_conflicting.add_argument("--pln-repo", default="../patham9-pln", help="Path to local patham9/PLN checkout")
+    ec_conflicting.add_argument("--env-script", help="Path to local PeTTa/SWI environment activation script")
+    ec_conflicting.add_argument("--timeout-sec", type=float, default=30.0)
+    ec_conflicting.add_argument("--support", type=float, default=1.0, help="Conflicting EC support count")
+    ec_conflicting.add_argument("--opposition", type=float, default=9.0, help="Conflicting EC opposition count")
+
+    derivation_ec = sub.add_parser(
+        "patham9-pln-derivation-ec-smoke",
+        help="Run a bounded non-live derivation EC projection comparison smoke (direct vs projected)",
+    )
+    derivation_ec.add_argument("--cache-id", default="petta-memory-patham9-pln-derivation-ec-smoke")
+    derivation_ec.add_argument("--pln-repo", default="../patham9-pln", help="Path to local patham9/PLN checkout")
+    derivation_ec.add_argument("--env-script", help="Path to local PeTTa/SWI environment activation script")
+    derivation_ec.add_argument("--timeout-sec", type=float, default=30.0)
 
     goal_smoke = sub.add_parser(
         "goalchainer-smoke",
@@ -200,6 +222,24 @@ def main(argv: list[str] | None = None) -> int:
             if args.env_script:
                 kwargs["env_script"] = args.env_script
             print(json.dumps(run_patham9_pln_ec_projection_smoke(handoff, **kwargs), indent=2, sort_keys=True))
+            return 0
+        if args.cmd == "patham9-pln-ec-conflicting-smoke":
+            cache = store.pettachainer_handoff_cache(cache_id=args.cache_id)
+            handoff = patham9_pln_handoff_sentences(cache)
+            kwargs = {"pln_repo": args.pln_repo, "timeout_sec": args.timeout_sec}
+            if args.env_script:
+                kwargs["env_script"] = args.env_script
+            kwargs["conflicting_support"] = args.support
+            kwargs["conflicting_opposition"] = args.opposition
+            print(json.dumps(run_patham9_pln_ec_projection_conflicting_smoke(handoff, **kwargs), indent=2, sort_keys=True))
+            return 0
+        if args.cmd == "patham9-pln-derivation-ec-smoke":
+            cache = store.pettachainer_handoff_cache(cache_id=args.cache_id)
+            handoff = patham9_pln_handoff_sentences(cache)
+            kwargs = {"pln_repo": args.pln_repo, "timeout_sec": args.timeout_sec}
+            if args.env_script:
+                kwargs["env_script"] = args.env_script
+            print(json.dumps(run_patham9_pln_derivation_ec_projection_smoke(handoff, **kwargs), indent=2, sort_keys=True))
             return 0
         if args.cmd == "goalchainer-smoke":
             cache = store.goalchainer_handoff_cache(cache_id=args.cache_id)

@@ -629,6 +629,330 @@ def run_patham9_pln_ec_projection_smoke(
     }
 
 
+def patham9_pln_ec_projection_conflicting_smoke_program(
+    handoff: dict[str, Any],
+    *,
+    item_index: int = 0,
+    conflicting_support: float = 1.0,
+    conflicting_opposition: float = 9.0,
+) -> dict[str, Any]:
+    """Build a conflicting-EC projection comparison smoke for patham9/PLN.
+
+    Like the basic EC projection smoke but the contextual EvidencePacket carries
+    opposing EC counts (default 1 support / 9 opposition) against a strong base
+    STV.  This verifies the wrapper formula lowers projected strength below the
+    base strength when contextual evidence contradicts the base STV.
+    """
+    if handoff.get("schema") != "petta-memory-patham9-pln-handoff-v1":
+        raise ValueError("expected petta-memory-patham9-pln-handoff-v1 handoff")
+    items = list(handoff.get("items", []))
+    if not items:
+        raise ValueError("patham9/PLN handoff has no Sentence items")
+    if item_index < 0 or item_index >= len(items):
+        raise ValueError(f"item_index {item_index} out of range for {len(items)} item(s)")
+    item = items[item_index]
+    term = str(item["term"])
+    base_strength = float(item["stv"]["strength"])
+    base_confidence = float(item["stv"]["confidence"])
+    conflicting_packets = [{"support": conflicting_support, "opposition": conflicting_opposition}]
+    projection = ec_projected_stv(base_strength, base_confidence, conflicting_packets)
+    projected_strength = projection["projected_strength"]
+    projected_confidence = projection["projected_confidence"]
+
+    runtime_stamp = _numeric_stamp(item_index)
+    source_evidence_id = str(item.get("evidence_id", ""))
+
+    direct_sentence = f"(Sentence ({term} (stv {item['stv']['strength']} {item['stv']['confidence']})) {runtime_stamp})"
+    direct_expected = f"((stv {item['stv']['strength']} {item['stv']['confidence']}) {runtime_stamp})"
+    direct_program = "\n".join(
+        [
+            "!(import! &self PLN)",
+            "!(PLN.Init ())",
+            f"!(Test (PLN.Query ({direct_sentence})",
+            f"                  {term}",
+            "                  1 3 5)",
+            f"       {direct_expected})",
+            "",
+        ]
+    )
+
+    projected_sentence = f"(Sentence ({term} (stv {projected_strength} {projected_confidence})) {runtime_stamp})"
+    projected_expected = f"((stv {projected_strength} {projected_confidence}) {runtime_stamp})"
+    projected_program = "\n".join(
+        [
+            "!(import! &self PLN)",
+            "!(PLN.Init ())",
+            f"!(Test (PLN.Query ({projected_sentence})",
+            f"                  {term}",
+            "                  1 3 5)",
+            f"       {projected_expected})",
+            "",
+        ]
+    )
+
+    # Verify the formula actually lowers strength
+    strength_lowered = projected_strength < base_strength
+
+    return {
+        "schema": "petta-memory-patham9-pln-ec-projection-conflicting-smoke-program-v1",
+        "mode": "read-only-ec-projection-conflicting-comparison-smoke",
+        "query_term": term,
+        "conflicting_ec": {"support": conflicting_support, "opposition": conflicting_opposition},
+        "strength_lowered": strength_lowered,
+        "direct": {
+            "program": direct_program,
+            "runtime_sentence": direct_sentence,
+            "expected_result": direct_expected,
+            "stv": {"strength": item["stv"]["strength"], "confidence": item["stv"]["confidence"]},
+        },
+        "projected": {
+            "program": projected_program,
+            "runtime_sentence": projected_sentence,
+            "expected_result": projected_expected,
+            "stv": {"strength": str(projected_strength), "confidence": str(projected_confidence)},
+        },
+        "ec_projection": projection,
+        "runtime_stamp": runtime_stamp,
+        "source_evidence_id": source_evidence_id,
+        "boundary": "non-live read-only comparison of direct vs projected STV query smokes with conflicting EC; no memory append, no inferred-belief promotion, no OmegaClaw/GoalChainer live path",
+    }
+
+
+def run_patham9_pln_ec_projection_conflicting_smoke(
+    handoff: dict[str, Any],
+    *,
+    pln_repo: str | Path,
+    env_script: str | Path | None = None,
+    timeout_sec: float = 30.0,
+    item_index: int = 0,
+    conflicting_support: float = 1.0,
+    conflicting_opposition: float = 9.0,
+) -> dict[str, Any]:
+    """Run the conflicting-EC projection comparison smoke in isolated temp files."""
+    smoke = patham9_pln_ec_projection_conflicting_smoke_program(
+        handoff,
+        item_index=item_index,
+        conflicting_support=conflicting_support,
+        conflicting_opposition=conflicting_opposition,
+    )
+
+    direct_rc, direct_out, direct_err = _run_patham9_program(
+        smoke["direct"]["program"],
+        pln_repo=pln_repo,
+        env_script=env_script,
+        timeout_sec=timeout_sec,
+        filename="ec_conflicting_direct.metta",
+    )
+    direct_output = f"{direct_out}\n{direct_err}"
+    direct_parsed = parse_metta_test_output(direct_output)
+    direct_classified = classify_smoke_result(
+        {"test": "ec-conflicting-direct", "returncode": direct_rc, "output": direct_output}
+    )
+
+    projected_rc, projected_out, projected_err = _run_patham9_program(
+        smoke["projected"]["program"],
+        pln_repo=pln_repo,
+        env_script=env_script,
+        timeout_sec=timeout_sec,
+        filename="ec_conflicting_projected.metta",
+    )
+    projected_output = f"{projected_out}\n{projected_err}"
+    projected_parsed = parse_metta_test_output(projected_output)
+    projected_classified = classify_smoke_result(
+        {"test": "ec-conflicting-projected", "returncode": projected_rc, "output": projected_output}
+    )
+
+    return {
+        "schema": "petta-memory-patham9-pln-ec-projection-conflicting-smoke-result-v1",
+        "status": "passed" if direct_classified["status"] == "passed" and projected_classified["status"] == "passed" else "failed",
+        "strength_lowered": smoke["strength_lowered"],
+        "direct": {
+            "classification": direct_classified,
+            "semantic_markers": direct_parsed,
+            "returncode": direct_rc,
+            "stdout_tail": direct_out[-2000:],
+            "stderr_tail": direct_err[-2000:],
+        },
+        "projected": {
+            "classification": projected_classified,
+            "semantic_markers": projected_parsed,
+            "returncode": projected_rc,
+            "stdout_tail": projected_out[-2000:],
+            "stderr_tail": projected_err[-2000:],
+        },
+        "ec_projection": smoke["ec_projection"],
+        "conflicting_ec": smoke["conflicting_ec"],
+        "program": smoke,
+        "boundary": "non-live read-only comparison with conflicting EC; no memory append, no inferred-belief promotion, no OmegaClaw/GoalChainer live path",
+    }
+
+
+def patham9_pln_derivation_ec_projection_smoke_program(
+    handoff: dict[str, Any],
+    *,
+    item_index: int = 0,
+) -> dict[str, Any]:
+    """Build a direct-vs-projected two-premise derivation EC projection smoke.
+
+    Produves two derivation programs: one using the original (direct) STV and
+    one using the wrapper-projected STV after folding in contextual EC counts.
+    Both use the same synthetic bridge implication so the only variable is
+    whether the source sentence STV was pre-projected.  This verifies the EC
+    projection formula influences derived results, not just direct recall.
+    """
+    if handoff.get("schema") != "petta-memory-patham9-pln-handoff-v1":
+        raise ValueError("expected petta-memory-patham9-pln-handoff-v1 handoff")
+    items = list(handoff.get("items", []))
+    if not items:
+        raise ValueError("patham9/PLN handoff has no Sentence items")
+    if item_index < 0 or item_index >= len(items):
+        raise ValueError(f"item_index {item_index} out of range for {len(items)} item(s)")
+    item = items[item_index]
+    term = str(item["term"])
+    base_strength = float(item["stv"]["strength"])
+    base_confidence = float(item["stv"]["confidence"])
+    raw_packets = item.get("pi_pln_extension", {}).get("contextual_evidence_packets", [])
+    projection = ec_projected_stv(base_strength, base_confidence, raw_packets)
+    projected_strength = projection["projected_strength"]
+    projected_confidence = projection["projected_confidence"]
+
+    source_stamp = _numeric_stamp(item_index)
+    bridge_stamp = _numeric_stamp(item_index + 1)
+    derived_term = f"(PMDerivedFromHandoff {term})"
+    bridge_strength = "1.0"
+    bridge_confidence = "0.90"
+
+    def _build_derivation_program(strength_str: str, confidence_str: str) -> str:
+        source_sentence = f"(Sentence ({term} (stv {strength_str} {confidence_str})) {source_stamp})"
+        bridge_sentence = (
+            f"(Sentence ((Implication {term} {derived_term}) "
+            f"(stv {bridge_strength} {bridge_confidence})) {bridge_stamp})"
+        )
+        expected_strength = str(float(strength_str) * float(bridge_strength) + 0.02 * (1.0 - float(strength_str)))
+        expected_confidence = str(float(confidence_str) * float(bridge_confidence))
+        expected = f"((stv {expected_strength} {expected_confidence}) ({item_index} {item_index + 1}))"
+        program = "\n".join(
+            [
+                "!(import! &self PLN)",
+                "!(PLN.Init ())",
+                f"!(Test (PLN.Query ({source_sentence}",
+                f"                   {bridge_sentence})",
+                f"                  {derived_term}",
+                "                  2 5 8)",
+                f"       {expected})",
+                "",
+            ]
+        )
+        return program
+
+    direct_strength_str = item["stv"]["strength"]
+    direct_confidence_str = item["stv"]["confidence"]
+    direct_program = _build_derivation_program(direct_strength_str, direct_confidence_str)
+    direct_expected_strength = str(float(direct_strength_str) * float(bridge_strength) + 0.02 * (1.0 - float(direct_strength_str)))
+    direct_expected_confidence = str(float(direct_confidence_str) * float(bridge_confidence))
+    direct_expected = f"((stv {direct_expected_strength} {direct_expected_confidence}) ({item_index} {item_index + 1}))"
+
+    projected_program = _build_derivation_program(str(projected_strength), str(projected_confidence))
+    projected_expected_strength = str(projected_strength * float(bridge_strength) + 0.02 * (1.0 - projected_strength))
+    projected_expected_confidence = str(projected_confidence * float(bridge_confidence))
+    projected_expected = f"((stv {projected_expected_strength} {projected_expected_confidence}) ({item_index} {item_index + 1}))"
+
+    # Verify projected derivation differs from direct
+    direct_expected_strength_float = float(direct_expected_strength)
+    projected_expected_strength_float = float(projected_expected_strength)
+    projected_expected_confidence_float = float(projected_expected_confidence)
+    direct_expected_confidence_float = float(direct_expected_confidence)
+    results_differ = (
+        abs(projected_expected_strength_float - direct_expected_strength_float) > 1e-9
+        or abs(projected_expected_confidence_float - direct_expected_confidence_float) > 1e-9
+    )
+
+    return {
+        "schema": "petta-memory-patham9-pln-derivation-ec-projection-smoke-program-v1",
+        "mode": "read-only-derivation-ec-projection-comparison-smoke",
+        "source_term": term,
+        "derived_term": derived_term,
+        "direct": {
+            "program": direct_program,
+            "expected_result": direct_expected,
+            "stv": {"strength": direct_strength_str, "confidence": direct_confidence_str},
+        },
+        "projected": {
+            "program": projected_program,
+            "expected_result": projected_expected,
+            "stv": {"strength": str(projected_strength), "confidence": str(projected_confidence)},
+        },
+        "ec_projection": projection,
+        "results_differ": results_differ,
+        "stamp_sidecar": {
+            source_stamp: {"kind": "petta-memory-source-sentence", "source_evidence_id": str(item.get("evidence_id", "")), "source_item": item},
+            bridge_stamp: {"kind": "synthetic-non-live-bridge-implication", "source_item_index": item_index, "rule": "PMDerivedFromHandoff implication smoke"},
+        },
+        "boundary": "non-live read-only comparison of direct vs projected two-premise derivation smokes; no memory append, no inferred-belief promotion, no OmegaClaw/GoalChainer live path",
+    }
+
+
+def run_patham9_pln_derivation_ec_projection_smoke(
+    handoff: dict[str, Any],
+    *,
+    pln_repo: str | Path,
+    env_script: str | Path | None = None,
+    timeout_sec: float = 30.0,
+    item_index: int = 0,
+) -> dict[str, Any]:
+    """Run the derivation EC projection comparison smoke in isolated temp files."""
+    smoke = patham9_pln_derivation_ec_projection_smoke_program(handoff, item_index=item_index)
+
+    direct_rc, direct_out, direct_err = _run_patham9_program(
+        smoke["direct"]["program"],
+        pln_repo=pln_repo,
+        env_script=env_script,
+        timeout_sec=timeout_sec,
+        filename="derivation_ec_direct.metta",
+    )
+    direct_output = f"{direct_out}\n{direct_err}"
+    direct_parsed = parse_metta_test_output(direct_output)
+    direct_classified = classify_smoke_result(
+        {"test": "derivation-ec-direct", "returncode": direct_rc, "output": direct_output}
+    )
+
+    projected_rc, projected_out, projected_err = _run_patham9_program(
+        smoke["projected"]["program"],
+        pln_repo=pln_repo,
+        env_script=env_script,
+        timeout_sec=timeout_sec,
+        filename="derivation_ec_projected.metta",
+    )
+    projected_output = f"{projected_out}\n{projected_err}"
+    projected_parsed = parse_metta_test_output(projected_output)
+    projected_classified = classify_smoke_result(
+        {"test": "derivation-ec-projected", "returncode": projected_rc, "output": projected_output}
+    )
+
+    return {
+        "schema": "petta-memory-patham9-pln-derivation-ec-projection-smoke-result-v1",
+        "status": "passed" if direct_classified["status"] == "passed" and projected_classified["status"] == "passed" else "failed",
+        "results_differ": smoke["results_differ"],
+        "direct": {
+            "classification": direct_classified,
+            "semantic_markers": direct_parsed,
+            "returncode": direct_rc,
+            "stdout_tail": direct_out[-2000:],
+            "stderr_tail": direct_err[-2000:],
+        },
+        "projected": {
+            "classification": projected_classified,
+            "semantic_markers": projected_parsed,
+            "returncode": projected_rc,
+            "stdout_tail": projected_out[-2000:],
+            "stderr_tail": projected_err[-2000:],
+        },
+        "ec_projection": smoke["ec_projection"],
+        "program": smoke,
+        "boundary": "non-live read-only derivation EC projection comparison; no memory append, no inferred-belief promotion, no OmegaClaw/GoalChainer live path",
+    }
+
+
 def patham9_pi_pln_boundary_plan(handoff: dict[str, Any]) -> dict[str, Any]:
     """Describe the first reviewed pi-PLN extension boundary for patham9/PLN.
 

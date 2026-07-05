@@ -11,6 +11,8 @@ from petta_memory.patham9_pln import (
     ec_projected_stv,
     parse_metta_test_output,
     patham9_pln_ec_projection_smoke_program,
+    patham9_pln_ec_projection_conflicting_smoke_program,
+    patham9_pln_derivation_ec_projection_smoke_program,
     patham9_pi_pln_boundary_plan,
     patham9_pln_derivation_smoke_program,
     patham9_pln_handoff_sentences,
@@ -272,6 +274,96 @@ class Patham9PlnSmokeGateTests(unittest.TestCase):
     def test_patham9_pln_ec_projection_smoke_program_rejects_wrong_schema(self):
         with self.assertRaisesRegex(ValueError, "expected petta-memory-patham9-pln-handoff-v1"):
             patham9_pln_ec_projection_smoke_program({"schema": "other", "items": []})
+
+    def test_ec_projected_stv_with_conflicting_ec_lowers_strength(self):
+        """Strong base STV (0.90, 0.70) with opposing EC (1, 9) should lower strength."""
+        result = ec_projected_stv(0.90, 0.70, [{"support": 1.0, "opposition": 9.0}])
+        self.assertEqual(result["base_strength"], 0.90)
+        self.assertEqual(result["base_confidence"], 0.70)
+        self.assertEqual(result["packet_count"], 1)
+        # ec_strength = 1/10 = 0.1, ec_confidence = 10/12 ≈ 0.833333
+        self.assertAlmostEqual(result["packets"][0]["ec_strength"], 0.1, places=6)
+        # Weighted blend should be lower than base 0.90
+        self.assertLess(result["projected_strength"], 0.90)
+        # Confidence is max(0.70, 0.833333) = 0.833333
+        self.assertAlmostEqual(result["projected_confidence"], round(10.0 / 12.0, 6), places=5)
+
+    def test_patham9_pln_ec_projection_conflicting_smoke_program_lowers_strength(self):
+        handoff = self._patham9_handoff()
+        smoke = patham9_pln_ec_projection_conflicting_smoke_program(handoff)
+        self.assertEqual(smoke["schema"], "petta-memory-patham9-pln-ec-projection-conflicting-smoke-program-v1")
+        self.assertTrue(smoke["strength_lowered"], "Projected strength should be lower than base with opposing EC")
+        self.assertIn("(PLN.Query", smoke["direct"]["program"])
+        self.assertIn("(PLN.Query", smoke["projected"]["program"])
+        # Direct uses original STV
+        self.assertIn("(stv 0.90 0.70)", smoke["direct"]["runtime_sentence"])
+        # Projected STV should be different and lower
+        self.assertNotIn("(stv 0.90 0.70)", smoke["projected"]["runtime_sentence"])
+        projected_stv = smoke["projected"]["stv"]
+        self.assertLess(float(projected_stv["strength"]), 0.90)
+        self.assertEqual(smoke["conflicting_ec"], {"support": 1.0, "opposition": 9.0})
+        self.assertIn("no inferred-belief promotion", smoke["boundary"])
+
+    def test_patham9_pln_ec_projection_conflicting_smoke_program_rejects_wrong_schema(self):
+        with self.assertRaisesRegex(ValueError, "expected petta-memory-patham9-pln-handoff-v1"):
+            patham9_pln_ec_projection_conflicting_smoke_program({"schema": "other", "items": []})
+
+    def test_patham9_pln_ec_projection_conflicting_smoke_program_custom_ec(self):
+        handoff = self._patham9_handoff()
+        smoke = patham9_pln_ec_projection_conflicting_smoke_program(
+            handoff, conflicting_support=2.0, conflicting_opposition=8.0
+        )
+        self.assertEqual(smoke["conflicting_ec"], {"support": 2.0, "opposition": 8.0})
+        self.assertTrue(smoke["strength_lowered"])
+        # With 2/8 = 0.25 ec_strength, still lower than 0.90
+        self.assertLess(float(smoke["projected"]["stv"]["strength"]), 0.90)
+
+    def test_patham9_pln_derivation_ec_projection_smoke_program_builds_direct_and_projected(self):
+        handoff = self._patham9_handoff()
+        smoke = patham9_pln_derivation_ec_projection_smoke_program(handoff)
+        self.assertEqual(smoke["schema"], "petta-memory-patham9-pln-derivation-ec-projection-smoke-program-v1")
+        self.assertIn("PMDerivedFromHandoff", smoke["derived_term"])
+        # Both programs have PLN.Query and two sentences
+        self.assertIn("(PLN.Query", smoke["direct"]["program"])
+        self.assertIn("(PLN.Query", smoke["projected"]["program"])
+        self.assertIn("(Implication", smoke["direct"]["program"])
+        self.assertIn("(Implication", smoke["projected"]["program"])
+        # Direct uses original STV
+        self.assertIn("(stv 0.90 0.70)", smoke["direct"]["program"])
+        # Projected uses different STV
+        self.assertNotIn("(stv 0.90 0.70)", smoke["projected"]["program"])
+        # Results should differ because EC projection changes the STV
+        self.assertTrue(smoke["results_differ"], "Direct and projected derivation results should differ")
+        # Expected results differ
+        self.assertNotEqual(smoke["direct"]["expected_result"], smoke["projected"]["expected_result"])
+        # Boundary
+        self.assertIn("no inferred-belief promotion", smoke["boundary"])
+        # Stamp sidecar
+        self.assertIn("(0)", smoke["stamp_sidecar"])
+        self.assertIn("(1)", smoke["stamp_sidecar"])
+        self.assertEqual(smoke["stamp_sidecar"]["(1)"]["kind"], "synthetic-non-live-bridge-implication")
+
+    def test_patham9_pln_derivation_ec_projection_smoke_program_rejects_wrong_schema(self):
+        with self.assertRaisesRegex(ValueError, "expected petta-memory-patham9-pln-handoff-v1"):
+            patham9_pln_derivation_ec_projection_smoke_program({"schema": "other", "items": []})
+
+    def test_patham9_pln_derivation_ec_projection_smoke_program_no_packets_results_same(self):
+        """When there are no contextual EC packets, projected == direct."""
+        handoff = {
+            "schema": "petta-memory-patham9-pln-handoff-v1",
+            "items": [
+                {
+                    "atom": "(Sentence (Test) (stv 0.80 0.60) ((PMEvidence b3 mc3 pe3 rule domain)))",
+                    "term": "(Test)",
+                    "stv": {"strength": "0.80", "confidence": "0.60"},
+                    "evidence_id": "(PMEvidence b3 mc3 pe3 rule domain)",
+                    "pi_pln_extension": {"contextual_evidence_packets": []},
+                }
+            ],
+        }
+        smoke = patham9_pln_derivation_ec_projection_smoke_program(handoff)
+        self.assertFalse(smoke["results_differ"], "With no EC packets, projected should equal direct")
+        self.assertEqual(smoke["direct"]["expected_result"], smoke["projected"]["expected_result"])
 
 
 if __name__ == "__main__":
