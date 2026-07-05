@@ -9,6 +9,7 @@ from petta_memory.patham9_pln import (
     classify_smoke_result,
     classify_smoke_result_with_retry,
     parse_metta_test_output,
+    patham9_pln_handoff_sentences,
     summarize_smoke_results,
     summarize_smoke_results_file,
 )
@@ -108,6 +109,52 @@ class Patham9PlnSmokeGateTests(unittest.TestCase):
 
         self.assertEqual(summary["status"], "passed")
         self.assertEqual(summary["results"][0]["attempt"], "retry")
+
+    def test_patham9_pln_handoff_sentences_preserve_stv_and_contextual_packets(self):
+        cache = {
+            "schema": "petta-memory-pettachainer-handoff-v1",
+            "cache_id": "pm-cache-test",
+            "items": [
+                {
+                    "kind": "pettachainer-stv-statement",
+                    "atom": "(: b2 (Requires MediumPeTTaMemory PLNReadyViews) (STV 0.90 0.70))",
+                    "belief_id": "b2",
+                    "cluster_id": "mc3",
+                    "promotion_event": "pe1",
+                    "promotion_rule": "explicit-test-promotion",
+                    "promotion_domain": "memory-architecture",
+                    "item_status": "pln-ready-input-not-inferred-belief",
+                },
+                {
+                    "kind": "pettachainer-evidence-packet",
+                    "atom": "(EvidencePacket (Requires MediumPeTTaMemory PLNReadyViews) (EC 8.0 2.0) ((domain memory-architecture) (promotion-rule explicit-test-promotion)) pe1)",
+                    "belief_id": "b2",
+                    "cluster_id": "mc3",
+                    "promotion_rule": "explicit-test-promotion",
+                    "promotion_domain": "memory-architecture",
+                },
+            ],
+        }
+
+        handoff = patham9_pln_handoff_sentences(cache)
+
+        self.assertEqual(handoff["schema"], "petta-memory-patham9-pln-handoff-v1")
+        self.assertEqual(handoff["item_count"], 1)
+        item = handoff["items"][0]
+        self.assertEqual(
+            item["atom"],
+            "(Sentence (Requires MediumPeTTaMemory PLNReadyViews) (stv 0.90 0.70) "
+            "((PMEvidence b2 mc3 pe1 explicit-test-promotion memory-architecture)))",
+        )
+        self.assertEqual(item["stv"], {"strength": "0.90", "confidence": "0.70"})
+        packets = item["pi_pln_extension"]["contextual_evidence_packets"]
+        self.assertEqual(packets[0]["support"], "8.0")
+        self.assertEqual(packets[0]["opposition"], "2.0")
+        self.assertIn("not appended to memory", handoff["boundary"])
+
+    def test_patham9_pln_handoff_sentences_reject_wrong_schema(self):
+        with self.assertRaisesRegex(ValueError, "expected petta-memory-pettachainer-handoff-v1"):
+            patham9_pln_handoff_sentences({"schema": "other", "items": []})
 
 
 if __name__ == "__main__":

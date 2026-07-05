@@ -5,6 +5,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from .sexpr import SExpressionSyntaxError, parse_one_list, to_source
+
 PASSED_TRUE_RE = re.compile(r"\(Passed:\s*(?:#t|True|true)\)")
 PASSED_FALSE_RE = re.compile(r"\(Passed:\s*(?:#f|False|false)\)")
 ERROR_RE = re.compile(r"\(Error\b|Exception caught|Traceback \(most recent call last\)")
@@ -137,3 +139,101 @@ def summarize_smoke_results_file(path: str | Path, *, include_retries: bool = Fa
     if not isinstance(records, list):
         raise ValueError("patham9/PLN results artifact must contain a JSON list")
     return summarize_smoke_results(records, include_retries=include_retries)
+
+
+def _parse_pettachainer_stv_statement(atom: str) -> tuple[str, str, str, str]:
+    """Return belief id, statement term, strength, confidence from `(: id term (STV s c))`."""
+    try:
+        expr = parse_one_list(atom)
+    except SExpressionSyntaxError as exc:
+        raise ValueError(f"invalid PeTTaChainer STV statement atom: {exc}") from exc
+    if len(expr) != 4 or expr[0] != ":" or not isinstance(expr[1], str):
+        raise ValueError("expected PeTTaChainer STV statement shaped as (: belief-id statement (STV strength confidence))")
+    tv = expr[3]
+    if not isinstance(tv, tuple) or len(tv) != 3 or tv[0] != "STV" or not isinstance(tv[1], str) or not isinstance(tv[2], str):
+        raise ValueError("expected PeTTaChainer STV truth value shaped as (STV strength confidence)")
+    return expr[1], to_source(expr[2]), tv[1], tv[2]
+
+
+def _parse_evidence_packet(atom: str) -> dict[str, str]:
+    """Parse the petta-memory EvidencePacket subset used in handoff caches."""
+    try:
+        expr = parse_one_list(atom)
+    except SExpressionSyntaxError as exc:
+        raise ValueError(f"invalid EvidencePacket atom: {exc}") from exc
+    if len(expr) != 5 or expr[0] != "EvidencePacket" or not isinstance(expr[4], str):
+        raise ValueError("expected EvidencePacket shaped as (EvidencePacket statement (EC support opposition) metadata promotion-event)")
+    ec = expr[2]
+    if not isinstance(ec, tuple) or len(ec) != 3 or ec[0] != "EC" or not isinstance(ec[1], str) or not isinstance(ec[2], str):
+        raise ValueError("expected EvidencePacket EC counts shaped as (EC support opposition)")
+    return {
+        "statement": to_source(expr[1]),
+        "support": ec[1],
+        "opposition": ec[2],
+        "metadata": to_source(expr[3]),
+        "promotion_event": expr[4],
+    }
+
+
+def patham9_pln_handoff_sentences(handoff_cache: dict[str, Any]) -> dict[str, Any]:
+    """Map petta-memory's non-live handoff cache into patham9/PLN Sentence inputs.
+
+    This is an artifact-level bridge, not a live PLN runner.  It preserves the
+    existing STV truth values as `Sentence` atoms and attaches π-PLN extension
+    metadata for contextual EvidencePacket/EC/provenance handling so later work
+    can implement truth-value formulas without losing source boundaries.
+    """
+    if handoff_cache.get("schema") != "petta-memory-pettachainer-handoff-v1":
+        raise ValueError("expected petta-memory-pettachainer-handoff-v1 cache")
+    packets_by_statement: dict[str, list[dict[str, str]]] = {}
+    for item in handoff_cache.get("items", []):
+        if item.get("kind") != "pettachainer-evidence-packet":
+            continue
+        packet = _parse_evidence_packet(str(item.get("atom", "")))
+        packet["belief_id"] = str(item.get("belief_id", ""))
+        packet["cluster_id"] = str(item.get("cluster_id", ""))
+        packet["promotion_rule"] = str(item.get("promotion_rule", ""))
+        packet["promotion_domain"] = str(item.get("promotion_domain", ""))
+        packets_by_statement.setdefault(packet["statement"], []).append(packet)
+
+    sentences: list[dict[str, Any]] = []
+    for item in handoff_cache.get("items", []):
+        if item.get("kind") != "pettachainer-stv-statement":
+            continue
+        belief_id, term, strength, confidence = _parse_pettachainer_stv_statement(str(item.get("atom", "")))
+        evidence_id = (
+            f"(PMEvidence {belief_id} {item.get('cluster_id')} {item.get('promotion_event')} "
+            f"{item.get('promotion_rule')} {item.get('promotion_domain')})"
+        )
+        sentence_atom = f"(Sentence {term} (stv {strength} {confidence}) ({evidence_id}))"
+        packets = packets_by_statement.get(term, [])
+        sentences.append(
+            {
+                "kind": "patham9-pln-sentence-input",
+                "atom": sentence_atom,
+                "term": term,
+                "stv": {"strength": strength, "confidence": confidence},
+                "evidence_id": evidence_id,
+                "belief_id": belief_id,
+                "cluster_id": item.get("cluster_id"),
+                "promotion_event": item.get("promotion_event"),
+                "promotion_rule": item.get("promotion_rule"),
+                "promotion_domain": item.get("promotion_domain"),
+                "source_status": item.get("item_status"),
+                "pi_pln_extension": {
+                    "contextual_evidence_packets": packets,
+                    "ec_projection_policy": "preserve packets first; later project EC support/opposition through reviewed pi-PLN truth-value formulas",
+                    "context_selection": "not-run; no generated contexts in this handoff gate",
+                },
+            }
+        )
+    return {
+        "schema": "petta-memory-patham9-pln-handoff-v1",
+        "source_schema": handoff_cache.get("schema"),
+        "source_cache_id": handoff_cache.get("cache_id"),
+        "mode": "non-live-patham9-pln-sentence-handoff",
+        "boundary": "read-only PLN input artifact; not an inferred belief, not appended to memory, and no PLN.Query/Derive run here",
+        "sentence_format": "(Sentence $Term (stv S C) ($EvidenceID))",
+        "item_count": len(sentences),
+        "items": sentences,
+    }

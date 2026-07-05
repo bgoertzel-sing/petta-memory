@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 
 from .goalchainer_smoke import run_goalchainer_handoff_smoke, run_goalchainer_precompiled_handoff_smoke
+from .patham9_pln import patham9_pln_handoff_sentences
 from .store import MediumMemoryStore, ValidationError
 
 
@@ -55,6 +56,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print non-live JSON cache mapping promoted evidence to GoalChainer appraisal inputs",
     )
     goalchainer.add_argument("--cache-id", default="petta-memory-goalchainer-handoff")
+
+    patham9_pln = sub.add_parser(
+        "patham9-pln-handoff",
+        help="Print non-live patham9/PLN Sentence inputs from promoted handoff evidence",
+    )
+    patham9_pln.add_argument("--cache-id", default="petta-memory-patham9-pln-handoff")
 
     goal_smoke = sub.add_parser(
         "goalchainer-smoke",
@@ -133,6 +140,10 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.cmd == "goalchainer-handoff-cache":
             print(json.dumps(store.goalchainer_handoff_cache(cache_id=args.cache_id), indent=2, sort_keys=True))
+            return 0
+        if args.cmd == "patham9-pln-handoff":
+            cache = store.pettachainer_handoff_cache(cache_id=args.cache_id)
+            print(json.dumps(patham9_pln_handoff_sentences(cache), indent=2, sort_keys=True))
             return 0
         if args.cmd == "goalchainer-smoke":
             cache = store.goalchainer_handoff_cache(cache_id=args.cache_id)

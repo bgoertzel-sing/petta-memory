@@ -108,6 +108,14 @@ class CliTests(unittest.TestCase):
             self.assertEqual(goal_cache["items"][0]["goalchainer_slot"], "acceptability-belief-evidence")
             self.assertEqual(goal_cache["items"][1]["goalchainer_slot"], "contextual-appraisal-evidence")
 
+            patham9_handoff = self.run_cli(["--store", store, "patham9-pln-handoff"])
+            self.assertEqual(patham9_handoff.returncode, 0, patham9_handoff.stderr)
+            pln_cache = json.loads(patham9_handoff.stdout)
+            self.assertEqual(pln_cache["schema"], "petta-memory-patham9-pln-handoff-v1")
+            self.assertEqual(pln_cache["sentence_format"], "(Sentence $Term (stv S C) ($EvidenceID))")
+            self.assertIn("(Sentence (Requires MediumPeTTaMemory CLI) (stv 0.80 0.60)", pln_cache["items"][0]["atom"])
+            self.assertEqual(pln_cache["items"][0]["pi_pln_extension"]["contextual_evidence_packets"][0]["support"], "3.0")
+
     def test_audit_view_preserves_complete_records_and_rejects_negative_limit(self):
         with tempfile.TemporaryDirectory() as td:
             store = str(Path(td) / "medium_memory.metta")
