@@ -959,6 +959,70 @@ def materialize_four_field_neighbor_shape_rungs(statement: str) -> list[str]:
     ]
 
 
+def materialize_four_field_right_payload_arity_rungs(statement: str) -> list[str]:
+    """Return rungs that vary the right payload beside a nested Type.
+
+    The neighbor-shape gate showed that the left sibling can remain generic
+    while ``PayloadA / nested-Type / (STV 1.0 1.0)`` blocks.  This follow-up
+    keeps the two-argument nested Type in the second slot with a generic left
+    payload, then grows the right sibling by arity under a non-STV head before
+    repeating the same arities under ``STV``.  This distinguishes a general
+    right-nested-payload arity problem from something specific to the STV head.
+    """
+    form = parse_one_list(statement)
+    if len(form) != 4 or symbol_text(form[0]) != ":":
+        raise ValueError("statement must be a PeTTaChainer proof atom: (: proof type tv)")
+    statement_type = form[2]
+    if not isinstance(statement_type, tuple) or len(statement_type) < 3:
+        raise ValueError("proof Type must be a nested expression with at least two arguments")
+
+    type_head = to_source(statement_type[0])
+    sentinel_args = [f"TypeArgSentinel{index}" for index in range(len(statement_type) - 1)]
+    nested_type = f"({' '.join([type_head, *sentinel_args])})"
+    return [
+        f"(ProofEnvelope PayloadA {nested_type} PayloadB)",
+        f"(ProofEnvelope PayloadA {nested_type} (RightPayload))",
+        f"(ProofEnvelope PayloadA {nested_type} (RightPayload 1.0))",
+        f"(ProofEnvelope PayloadA {nested_type} (RightPayload 1.0 1.0))",
+        f"(ProofEnvelope PayloadA {nested_type} (STV))",
+        f"(ProofEnvelope PayloadA {nested_type} (STV 1.0))",
+        f"(ProofEnvelope PayloadA {nested_type} (STV 1.0 1.0))",
+    ]
+
+
+def run_materialize_four_field_right_payload_arity_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 10.0,
+) -> dict[str, object]:
+    """Run a four-field right-payload arity/head gate without add/query."""
+    rungs = materialize_four_field_right_payload_arity_rungs(statement)
+    result = run_materialize_identity_ladder_gate(
+        rungs,
+        project_root=project_root,
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    result.update(
+        {
+            "source": "non-live materialize-stmt-lambdas four-field right-payload arity gate",
+            "proof_statement": statement,
+            "four_field_right_payload_arity_rungs": rungs,
+            "interpretation": (
+                "All four-field right-payload arity rungs materialized as identity; return to proof-id/STV proof-shape gating."
+                if result.get("status") == "passed"
+                else "A four-field right-payload arity rung failed or timed out; keep mm2compile/compileadd/query gated and use the first blocked rung to distinguish generic right-payload arity from STV-head-specific cost."
+            ),
+        }
+    )
+    result["gates"] = [
+        "Four-field right-payload arity/head matrix only; each rung invokes materialize-stmt-lambdas in an isolated subprocess.",
+        "No mm2compile, compileadd, query, GoalChainer, OmegaClaw path, journal write, or inferred-belief claim is invoked.",
+        "Synthetic ProofEnvelope/Payload/RightPayload/STV rungs are diagnostics for the materializer/evaluator and are not PLN premises.",
+    ]
+    return result
+
+
 def run_materialize_generic_four_field_context_arity_gate(
     statement: str,
     *,
