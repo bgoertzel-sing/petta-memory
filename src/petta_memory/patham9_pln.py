@@ -6,7 +6,7 @@ import re
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List
 
 from .sexpr import SExpressionSyntaxError, parse_one_list, to_source
 
@@ -1082,4 +1082,348 @@ def patham9_pln_handoff_sentences(handoff_cache: dict[str, Any]) -> dict[str, An
         "sentence_format": "(Sentence $Term (stv S C) ($EvidenceID))",
         "item_count": len(sentences),
         "items": sentences,
+    }
+
+
+def _read_metta_source(pln_repo: str | Path, relative_path: str) -> str:
+    """Read a .metta source file from the patham9/PLN checkout."""
+    path = Path(pln_repo) / relative_path
+    if not path.exists():
+        raise FileNotFoundError(f"patham9/PLN source file not found: {path}")
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def _extract_def_lines(source: str) -> List[Dict[str, str]]:
+    """Extract (name . definition-line) entries from MeTTa source text."""
+    entries: List[Dict[str, str]] = []
+    for line in source.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith(";"):
+            continue
+        # Match (= (Name ...)  or (: (Name ...)
+        if stripped.startswith("(= ") or stripped.startswith("(: "):
+            # Extract the head name
+            inner = stripped[3:].strip()
+            paren_depth = 0
+            name_end = 0
+            for i, ch in enumerate(inner):
+                if ch == "(":
+                    paren_depth += 1
+                elif ch == ")":
+                    if paren_depth == 0:
+                        name_end = i
+                        break
+                    paren_depth -= 1
+                elif ch == " " and paren_depth == 0:
+                    name_end = i
+                    break
+            head = inner[:name_end].strip() if name_end else inner.split()[0]
+            entries.append({"head": head, "line": stripped})
+    return entries
+
+
+def patham9_pln_api_surface(pln_repo: str | Path) -> Dict[str, Any]:
+    """Map the patham9/PLN API surface from checked-out source files.
+
+    This is a source-level, no-runtime inspection that documents the public
+    MeTTa-level API of patham9/PLN and identifies extension points for pi-PLN
+    semantics (EvidencePacket, EC counts, context selection, provenance
+    lineage, STV projection).
+
+    The inspection covers:
+      - PLN.Query and PLN.Derive: signatures, defaults, and queue mechanics
+      - Sentence: the data boundary between petta-memory and the chainer
+      - Truth-value formulas: Deduction, Induction, Abduction, Modus Ponens,
+        Revision, Negation, Inversion, transitive similarity, evaluation implication
+      - Inference rules: the `|-` pattern matcher and guard predicates
+      - StampDisjoint: evidence overlap prevention
+      - PriorityRank / ConfidenceRank: task and result queue ordering
+      - LimitSize: bounded priority queue functionality
+      - Config: default step/queue sizes
+      - Translator: implication-to-function translation during PLN.Init
+      - Python entrypoint (examples/PLN.py): PLN.Init registration
+
+    Extension points for pi-PLN are identified at the wrapper boundary:
+      - Sentence construction (wrapper pre-projects STV before loading)
+      - Stamp assignment (numeric stamps with sidecar provenance)
+      - Queue priority (confidence-based; wrapper may adjust via projection)
+      - Truth-value formulas (can be extended or replaced via wrapper-fed STV)
+      - Inference rules (|- patterns; wrapper can add Sentences with new link types)
+      - Context selection (not yet in patham9/PLN; wrapper owns context filtering)
+    """
+    repo = Path(pln_repo)
+    if not repo.exists():
+        raise FileNotFoundError(f"patham9/PLN checkout not found at {repo}")
+
+    # Read all source files
+    pln_metta = _read_metta_source(repo, "PLN.metta")
+    config_src = _read_metta_source(repo, "src/Config.metta")
+    constraints_src = _read_metta_source(repo, "src/Constraints.metta")
+    deriver_src = _read_metta_source(repo, "src/Deriver.metta")
+    formulas_src = _read_metta_source(repo, "src/Formulas.metta")
+    rules_src = _read_metta_source(repo, "src/Rules.metta")
+    utils_src = _read_metta_source(repo, "src/Utils.metta")
+    translator_src = _read_metta_source(repo, "src/Translator.metta")
+
+    python_entrypoint = ""
+    py_path = repo / "examples" / "PLN.py"
+    if py_path.exists():
+        python_entrypoint = py_path.read_text(encoding="utf-8", errors="replace")
+
+    # Extract API definitions by category
+
+    # PLN.Derive signatures
+    derive_defs: List[Dict[str, str]] = []
+    for line in deriver_src.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("(= (PLN.Derive"):
+            derive_defs.append({"definition": stripped})
+
+    # PLN.Query signatures
+    query_defs: List[Dict[str, str]] = []
+    for line in deriver_src.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("(= (PLN.Query"):
+            query_defs.append({"definition": stripped})
+
+    # StampDisjoint
+    stamp_disjoint_defs: List[Dict[str, str]] = []
+    for line in utils_src.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("(= (StampDisjoint"):
+            stamp_disjoint_defs.append({"definition": stripped})
+
+    # PriorityRank / ConfidenceRank
+    priority_defs: List[Dict[str, str]] = []
+    for line in utils_src.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("(= (PriorityRank") or stripped.startswith("(= (ConfidenceRank"):
+            priority_defs.append({"definition": stripped})
+
+    # LimitSize
+    limit_size_defs: List[Dict[str, str]] = []
+    for line in utils_src.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("(= (LimitSize"):
+            limit_size_defs.append({"definition": stripped})
+
+    # BestCandidate
+    best_candidate_defs: List[Dict[str, str]] = []
+    for line in utils_src.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("(= (BestCandidate"):
+            best_candidate_defs.append({"definition": stripped})
+
+    # Truth-value formulas
+    truth_formula_names = [
+        "Truth_Deduction", "Truth_Induction", "Truth_Abduction",
+        "Truth_ModusPonens", "Truth_SymmetricModusPonens", "Truth_Revision",
+        "Truth_Negation", "Truth_inversion", "Truth_equivalenceToImplication",
+        "Truth_transitiveSimilarity", "Truth_evaluationImplication",
+        "Truth_Identity", "Truth_c2w", "Truth_w2c",
+        "simpleDeductionStrength", "TransitiveSimilarityStrength",
+    ]
+    truth_formulas: List[Dict[str, str]] = []
+    for name in truth_formula_names:
+        for line in formulas_src.splitlines():
+            stripped = line.strip()
+            if stripped.startswith(f"(= ({name}") or stripped.startswith(f"(: ({name}"):
+                truth_formulas.append({"name": name, "definition": stripped})
+
+    # Inference rules (|- pattern)
+    inference_rules: List[Dict[str, str]] = []
+    for line in rules_src.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("(= (|-"):
+            inference_rules.append({"definition": stripped})
+
+    # Guard predicates
+    guard_defs: List[Dict[str, str]] = []
+    for line in rules_src.splitlines():
+        stripped = line.strip()
+        if "RuleGuard" in stripped and stripped.startswith("(= "):
+            guard_defs.append({"definition": stripped})
+
+    # Config defaults
+    config_defs: List[Dict[str, str]] = []
+    for line in config_src.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("(= (PLN.Config."):
+            config_defs.append({"definition": stripped})
+
+    # Constraint helpers
+    constraint_defs = _extract_def_lines(constraints_src)
+
+    # Translator definitions
+    translator_defs = _extract_def_lines(translator_src)
+
+    # Utility helpers
+    utility_defs = _extract_def_lines(utils_src)
+
+    # Python entrypoint summary
+    python_summary: Dict[str, Any] = {}
+    if python_entrypoint:
+        python_summary = {
+            "file": "examples/PLN.py",
+            "registers": "PLN.Init atom via hyperon ext register_atoms",
+            "init_function": "call_plninit",
+            "init_steps": [
+                "cd PLN checkout && sh build.sh",
+                "cp src/Translator.metta as TRANSLATE.metta with superpose query appended",
+                "cat PLN.metta > TRANSLATED.metta; run metta TRANSLATE.metta >> TRANSLATED.metta",
+                "strip # from variable names in translated output",
+                "copy translated file to metta-morph extend/ as plnblob.metta",
+                "import! &self mettamorph; compile! plnblob.metta",
+                "define (sentence $A $B) = (Sentence $A $B)",
+            ],
+            "dependency": "metta-morph (mettamorphpath) must be installed",
+            "note": "PLN.Init builds and translates the PLN rulebase into a compiled metta-morph module; not a lightweight startup",
+        }
+
+    return {
+        "schema": "petta-memory-patham9-pln-api-surface-v1",
+        "mode": "source-level-no-runtime-inspection",
+        "pln_repo": str(repo),
+        "source_files": {
+            "PLN.metta": f"{len(pln_metta.splitlines())} lines",
+            "src/Config.metta": f"{len(config_src.splitlines())} lines",
+            "src/Constraints.metta": f"{len(constraints_src.splitlines())} lines",
+            "src/Deriver.metta": f"{len(deriver_src.splitlines())} lines",
+            "src/Formulas.metta": f"{len(formulas_src.splitlines())} lines",
+            "src/Rules.metta": f"{len(rules_src.splitlines())} lines",
+            "src/Utils.metta": f"{len(utils_src.splitlines())} lines",
+            "src/Translator.metta": f"{len(translator_src.splitlines())} lines",
+            "examples/PLN.py": f"{len(python_entrypoint.splitlines())} lines" if python_entrypoint else "not found",
+        },
+        "core_api": {
+            "PLN.Derive": {
+                "description": "Priority-queue based task ranking deriver with belief buffer",
+                "signatures": derive_defs,
+                "full_signatures": [
+                    "(PLN.Derive $Tasks $Beliefs $steps $maxsteps $taskqueuesize $beliefqueuesize)",
+                    "(PLN.Derive $Tasks $Beliefs $maxsteps $taskqueuesize $beliefqueuesize)",
+                    "(PLN.Derive $Tasks $Beliefs $maxsteps)",
+                    "(PLN.Derive $Tasks $Beliefs)",
+                ],
+                "defaults": {
+                    "maxsteps": "PLN.Config.MaxSteps (20)",
+                    "taskqueuesize": "PLN.Config.TaskQueueSize (20)",
+                    "beliefqueuesize": "PLN.Config.BeliefQueueSize (200)",
+                },
+                "mechanics": [
+                    "Selects highest-confidence task via BestCandidate/PriorityRank",
+                    "Matches selected task against all beliefs via |- rules",
+                    "Checks StampDisjoint to avoid counting same evidence twice",
+                    "Merges derived results into task and belief queues via Unique + LimitSize",
+                    "Recurses until maxsteps or empty task queue",
+                    "Traces SELECTED/DERIVED for debugging via trace!",
+                ],
+            },
+            "PLN.Query": {
+                "description": "Pose a query term to the system; returns best-confidence result",
+                "signatures": query_defs,
+                "full_signatures": [
+                    "(PLN.Query $Tasks $Beliefs $term $maxsteps $taskqueuesize $beliefqueuesize)",
+                    "(PLN.Query $kb $term $maxsteps $taskqueuesize $beliefqueuesize)",
+                    "(PLN.Query $kb $term $maxsteps)",
+                    "(PLN.Query $kb $term)",
+                ],
+                "defaults": {
+                    "maxsteps": "PLN.Config.MaxSteps (20)",
+                    "taskqueuesize": "PLN.Config.TaskQueueSize (20)",
+                    "beliefqueuesize": "PLN.Config.BeliefQueueSize (200)",
+                },
+                "mechanics": [
+                    "Runs PLN.Derive with Tasks=Beliefs=kb",
+                    "After derivation, searches belief results for matching term",
+                    "Returns (TV Ev) tuple from the highest-confidence matching Sentence",
+                    "Uses BestCandidate/ConfidenceRank for result selection",
+                ],
+            },
+            "Sentence": {
+                "description": "Data boundary: (Sentence ($Term (stv S C)) $Evidence)",
+                "structure": "(Sentence ($term (stv $strength $confidence)) $evidence_stamp)",
+                "notes": [
+                    "$term can be any MeTTa expression (Concept, Evaluation, Implication, etc.)",
+                    "$evidence_stamp is a tuple of sortable stamps; StampDisjoint checks overlap",
+                    "Current implementation uses simple numeric stamps for sorting compatibility",
+                    "petta-memory wrapper uses numeric stamps with PMEvidence provenance in sidecar",
+                ],
+            },
+            "StampDisjoint": {
+                "description": "Check whether two evidence tuples share any element",
+                "signatures": stamp_disjoint_defs,
+                "mechanics": [
+                    "Expands both evidence tuples via superpose",
+                    "Checks pairwise equality with case (== $x $y)",
+                    "Returns True if no overlap (empty intersection), False otherwise",
+                ],
+                "extension_note": "Rich symbolic stamps (PMEvidence) can trip the sorter; wrapper uses numeric stamps and maps back to provenance in a sidecar",
+            },
+            "PriorityRank": {
+                "description": "Task queue priority: confidence of the Sentence",
+                "signatures": priority_defs,
+                "formula": "(PriorityRank (Sentence ($x (stv $f $c)) $Ev1)) = $c",
+                "fallback": "(PriorityRank ()) = -99999.0",
+            },
+            "ConfidenceRank": {
+                "description": "Query result ranking: confidence of the TV",
+                "formula": "(ConfidenceRank ((stv $f $c) $Ev)) = $c",
+                "fallback": "(ConfidenceRank ()) = 0",
+            },
+            "LimitSize": {
+                "description": "Bounded priority queue: evicts lowest-priority items when over capacity",
+                "signatures": limit_size_defs,
+                "mechanics": [
+                    "If tuple count < size, return as-is",
+                    "Otherwise find lowest-priority item via BestCandidate/PriorityRankNeg",
+                    "Remove it and recurse",
+                ],
+            },
+            "BestCandidate": {
+                "description": "Linear scan to find highest-scoring item in a tuple",
+                "signatures": best_candidate_defs,
+                "mechanics": [
+                    "Walks tuple element by element",
+                    "Compares each element's score (via evaluation function) against current best",
+                    "Returns the best candidate",
+                ],
+            },
+        },
+        "truth_value_formulas": truth_formulas,
+        "inference_rules": inference_rules,
+        "guard_predicates": guard_defs,
+        "config_defaults": config_defs,
+        "constraint_helpers": constraint_defs,
+        "translator": {
+            "description": "Translates nested implications into function compositions during PLN.Init",
+            "definitions": translator_defs,
+            "notes": [
+                "Handles Implication chains and Not negation patterns",
+                "Generates buildlink calls that compose Truth_Negation and Truth_Identity",
+                "Also translates concept STV assertions via (sentence ($C $TV) $Y)",
+            ],
+        },
+        "utility_helpers": utility_defs,
+        "python_entrypoint": python_summary,
+        "pi_pln_extension_points": {
+            "wrapper_boundary": {
+                "sentence_construction": "Wrapper builds Sentence atoms with pre-projected STV before loading into chainer; no patham9 source change needed",
+                "stamp_assignment": "Wrapper assigns numeric runtime stamps; PMEvidence/provenance preserved in sidecar JSON, not in the chainer",
+                "stv_pre_projection": "ec_projected_stv() computes confidence-weighted blend of base STV and EC-derived evidence; wrapper feeds projected STV as the Sentence truth value",
+                "context_selection": "Not present in patham9/PLN; wrapper owns context filtering and EvidencePacket-to-STV projection before invocation",
+                "queue_priority": "PriorityRank uses confidence; wrapper can only influence priority through the STV confidence it assigns to Sentences",
+                "truth_value_formulas": "Patham9 formulas are MeTTa-level and unmodified; wrapper can pre-project or post-process results but cannot add new formulas without source changes",
+                "inference_rules": "|- pattern matcher is open for new rules via MeTTa definitions; wrapper could inject additional Sentences or implications but should not patch rules without review",
+                "provenance_lineage": "StampDisjoint prevents double-counting evidence; wrapper ensures numeric stamps are disjoint and maps back to PMEvidence in sidecar",
+            },
+            "internal_extensions": {
+                "context_indexed_evidence": "Would require adding context-parameterized Sentence or EvidencePacket atoms and modifying StampDisjoint/PLN.Derive; not yet needed if wrapper pre-projects",
+                "ec_aware_truth_formulas": "Would require new Truth_* formulas that accept EC counts; current wrapper pre-projects into a single STV instead",
+                "inference_control": "Would require meta-level control predicates (cf. trueagi-io/chaining pln-inf-ctl.metta); deferred to roadmap item 4",
+                "custom_link_types": "Would require adding |- rules for petta-memory-specific link types (e.g., EvidencePacket, PromotionRule); not yet needed",
+            },
+            "revisit_trigger": "If wrapper-level projection cannot express required pi-PLN semantics, consider narrowly scoped patham9/PLN internal extension with regression tests over StampDisjoint, queue priority, and proof provenance",
+        },
+        "boundary": "source-level inspection only; no SWI/PeTTa/MeTTa runtime invoked; no memory append; no inferred-belief promotion; no OmegaClaw/GoalChainer live path",
     }

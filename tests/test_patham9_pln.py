@@ -10,6 +10,7 @@ from petta_memory.patham9_pln import (
     classify_smoke_result_with_retry,
     ec_projected_stv,
     parse_metta_test_output,
+    patham9_pln_api_surface,
     patham9_pln_ec_projection_smoke_program,
     patham9_pln_ec_projection_conflicting_smoke_program,
     patham9_pln_derivation_ec_projection_smoke_program,
@@ -364,6 +365,88 @@ class Patham9PlnSmokeGateTests(unittest.TestCase):
         smoke = patham9_pln_derivation_ec_projection_smoke_program(handoff)
         self.assertFalse(smoke["results_differ"], "With no EC packets, projected should equal direct")
         self.assertEqual(smoke["direct"]["expected_result"], smoke["projected"]["expected_result"])
+
+
+class Patham9PlnApiSurfaceTests(unittest.TestCase):
+    def test_api_surface_returns_source_level_mapping(self):
+        repo = Path(__file__).resolve().parents[2] / "patham9-pln"
+        if not repo.exists():
+            self.skipTest(f"patham9/PLN checkout not found at {repo}")
+        surface = patham9_pln_api_surface(repo)
+        self.assertEqual(surface["schema"], "petta-memory-patham9-pln-api-surface-v1")
+        self.assertEqual(surface["mode"], "source-level-no-runtime-inspection")
+        self.assertEqual(surface["boundary"], "source-level inspection only; no SWI/PeTTa/MeTTa runtime invoked; no memory append; no inferred-belief promotion; no OmegaClaw/GoalChainer live path")
+
+        # Core API entries
+        core = surface["core_api"]
+        self.assertIn("PLN.Derive", core)
+        self.assertIn("PLN.Query", core)
+        self.assertIn("Sentence", core)
+        self.assertIn("StampDisjoint", core)
+        self.assertIn("PriorityRank", core)
+        self.assertIn("ConfidenceRank", core)
+        self.assertIn("LimitSize", core)
+        self.assertIn("BestCandidate", core)
+
+        # PLN.Derive has 4 arity overloads
+        self.assertEqual(len(core["PLN.Derive"]["full_signatures"]), 4)
+        self.assertEqual(len(core["PLN.Derive"]["signatures"]), 4)
+
+        # PLN.Query has 4 arity overloads
+        self.assertEqual(len(core["PLN.Query"]["full_signatures"]), 4)
+        self.assertEqual(len(core["PLN.Query"]["signatures"]), 4)
+
+        # Defaults reference PLN.Config
+        self.assertIn("PLN.Config.MaxSteps", core["PLN.Derive"]["defaults"]["maxsteps"])
+
+        # Sentence structure documented
+        self.assertIn("stv", core["Sentence"]["structure"])
+
+        # Truth-value formulas captured
+        formula_names = {f["name"] for f in surface["truth_value_formulas"]}
+        self.assertIn("Truth_Deduction", formula_names)
+        self.assertIn("Truth_ModusPonens", formula_names)
+        self.assertIn("Truth_Revision", formula_names)
+        self.assertIn("Truth_Negation", formula_names)
+
+        # Inference rules captured
+        self.assertTrue(len(surface["inference_rules"]) >= 10,
+                        f"expected at least 10 inference rules, got {len(surface['inference_rules'])}")
+
+        # Guard predicates captured
+        guard_text = " ".join(g["definition"] for g in surface["guard_predicates"])
+        self.assertIn("SyllogisticRuleGuard", guard_text)
+        self.assertIn("SymmetricModusPonensRuleGuard", guard_text)
+
+        # Config defaults
+        config_text = " ".join(c["definition"] for c in surface["config_defaults"])
+        self.assertIn("PLN.Config.MaxSteps", config_text)
+        self.assertIn("PLN.Config.TaskQueueSize", config_text)
+        self.assertIn("PLN.Config.BeliefQueueSize", config_text)
+
+        # Source files documented
+        self.assertIn("PLN.metta", surface["source_files"])
+        self.assertIn("src/Deriver.metta", surface["source_files"])
+        self.assertIn("src/Formulas.metta", surface["source_files"])
+        self.assertIn("src/Rules.metta", surface["source_files"])
+
+        # pi-PLN extension points
+        ext = surface["pi_pln_extension_points"]
+        self.assertIn("wrapper_boundary", ext)
+        self.assertIn("internal_extensions", ext)
+        self.assertIn("sentence_construction", ext["wrapper_boundary"])
+        self.assertIn("stv_pre_projection", ext["wrapper_boundary"])
+        self.assertIn("context_selection", ext["wrapper_boundary"])
+        self.assertIn("revisit_trigger", ext)
+
+        # No runtime evidence in the result
+        self.assertNotIn("stdout", surface)
+        self.assertNotIn("stderr", surface)
+        self.assertNotIn("returncode", surface)
+
+    def test_api_surface_raises_for_missing_repo(self):
+        with self.assertRaises(FileNotFoundError):
+            patham9_pln_api_surface("/nonexistent/path/to/pln")
 
 
 if __name__ == "__main__":
