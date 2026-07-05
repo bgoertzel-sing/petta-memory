@@ -9,6 +9,7 @@ from petta_memory.patham9_pln import (
     classify_smoke_result,
     classify_smoke_result_with_retry,
     parse_metta_test_output,
+    patham9_pln_derivation_smoke_program,
     patham9_pln_handoff_sentences,
     patham9_pln_query_smoke_program,
     summarize_smoke_results,
@@ -157,8 +158,8 @@ class Patham9PlnSmokeGateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "expected petta-memory-pettachainer-handoff-v1"):
             patham9_pln_handoff_sentences({"schema": "other", "items": []})
 
-    def test_patham9_pln_query_smoke_program_uses_numeric_stamp_and_preserves_provenance(self):
-        handoff = {
+    def _patham9_handoff(self):
+        return {
             "schema": "petta-memory-patham9-pln-handoff-v1",
             "items": [
                 {
@@ -171,7 +172,8 @@ class Patham9PlnSmokeGateTests(unittest.TestCase):
             ],
         }
 
-        program = patham9_pln_query_smoke_program(handoff)
+    def test_patham9_pln_query_smoke_program_uses_numeric_stamp_and_preserves_provenance(self):
+        program = patham9_pln_query_smoke_program(self._patham9_handoff())
 
         self.assertIn("(Sentence ((Requires MediumPeTTaMemory PLNReadyViews) (stv 0.90 0.70)) (0))", program["program"])
         self.assertIn("(PLN.Query", program["program"])
@@ -179,6 +181,20 @@ class Patham9PlnSmokeGateTests(unittest.TestCase):
         self.assertEqual(program["runtime_stamp"], "(0)")
         self.assertEqual(program["source_evidence_id"], "(PMEvidence b2 mc3 pe1 rule domain)")
         self.assertEqual(program["source_item"]["pi_pln_extension"]["contextual_evidence_packets"][0]["support"], "8")
+
+    def test_patham9_pln_derivation_smoke_program_uses_two_premises_and_stamp_sidecar(self):
+        program = patham9_pln_derivation_smoke_program(self._patham9_handoff())
+
+        self.assertEqual(program["schema"], "petta-memory-patham9-pln-derivation-smoke-program-v1")
+        self.assertIn("PMDerivedFromHandoff", program["derived_term"])
+        self.assertIn("(Sentence ((Requires MediumPeTTaMemory PLNReadyViews) (stv 0.90 0.70)) (0))", program["program"])
+        self.assertIn("(Implication (Requires MediumPeTTaMemory PLNReadyViews) (PMDerivedFromHandoff", program["program"])
+        self.assertIn("(Sentence ((Implication", program["program"])
+        self.assertIn("(1))", program["program"])
+        self.assertEqual(program["expected_result"], "((stv 0.902 0.63) (0 1))")
+        self.assertEqual(program["stamp_sidecar"]["(0)"]["source_evidence_id"], "(PMEvidence b2 mc3 pe1 rule domain)")
+        self.assertEqual(program["stamp_sidecar"]["(1)"]["kind"], "synthetic-non-live-bridge-implication")
+        self.assertIn("no inferred-belief promotion", program["boundary"])
 
 
 if __name__ == "__main__":

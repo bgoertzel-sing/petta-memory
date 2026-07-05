@@ -232,24 +232,85 @@ def patham9_pln_query_smoke_program(handoff: dict[str, Any], *, item_index: int 
     }
 
 
-def run_patham9_pln_query_smoke(
-    handoff: dict[str, Any],
+def patham9_pln_derivation_smoke_program(handoff: dict[str, Any], *, item_index: int = 0) -> dict[str, Any]:
+    """Build a tiny two-premise patham9/PLN derivation smoke.
+
+    The first premise is one promoted petta-memory handoff Sentence.  The second
+    premise is a synthetic bridge implication from that term to a derived
+    `PMDerivedFromHandoff` term.  Numeric runtime stamps keep patham9/PLN's stamp
+    sorter happy; the sidecar maps each numeric stamp back to petta-memory
+    provenance so this remains a non-live derivation gate rather than a memory
+    promotion.
+    """
+    if handoff.get("schema") != "petta-memory-patham9-pln-handoff-v1":
+        raise ValueError("expected petta-memory-patham9-pln-handoff-v1 handoff")
+    items = list(handoff.get("items", []))
+    if not items:
+        raise ValueError("patham9/PLN handoff has no Sentence items")
+    if item_index < 0 or item_index >= len(items):
+        raise ValueError(f"item_index {item_index} out of range for {len(items)} item(s)")
+    item = items[item_index]
+    term = str(item["term"])
+    strength = str(item["stv"]["strength"])
+    confidence = str(item["stv"]["confidence"])
+    source_stamp = _numeric_stamp(item_index)
+    bridge_stamp = _numeric_stamp(item_index + 1)
+    derived_term = f"(PMDerivedFromHandoff {term})"
+    bridge_strength = "1.0"
+    bridge_confidence = "0.90"
+    expected_strength = str(float(strength) * float(bridge_strength) + 0.02 * (1.0 - float(strength)))
+    expected_confidence = str(float(confidence) * float(bridge_confidence))
+    expected = f"((stv {expected_strength} {expected_confidence}) ({item_index} {item_index + 1}))"
+    source_sentence = f"(Sentence ({term} (stv {strength} {confidence})) {source_stamp})"
+    bridge_sentence = (
+        f"(Sentence ((Implication {term} {derived_term}) "
+        f"(stv {bridge_strength} {bridge_confidence})) {bridge_stamp})"
+    )
+    program = "\n".join(
+        [
+            "!(import! &self PLN)",
+            "!(PLN.Init ())",
+            f"!(Test (PLN.Query ({source_sentence}",
+            f"                   {bridge_sentence})",
+            f"                  {derived_term}",
+            "                  2 5 8)",
+            f"       {expected})",
+            "",
+        ]
+    )
+    return {
+        "schema": "petta-memory-patham9-pln-derivation-smoke-program-v1",
+        "mode": "read-only-two-premise-derivation-smoke",
+        "program": program,
+        "source_term": term,
+        "derived_term": derived_term,
+        "runtime_sentences": [source_sentence, bridge_sentence],
+        "expected_result": expected,
+        "runtime_stamp_policy": "numeric patham9/PLN stamps used for chainer compatibility; source evidence and synthetic bridge provenance preserved in sidecar",
+        "stamp_sidecar": {
+            source_stamp: {"kind": "petta-memory-source-sentence", "source_evidence_id": str(item.get("evidence_id", "")), "source_item": item},
+            bridge_stamp: {"kind": "synthetic-non-live-bridge-implication", "source_item_index": item_index, "rule": "PMDerivedFromHandoff implication smoke"},
+        },
+        "boundary": "loads one generated Sentence plus one synthetic bridge implication into local patham9/PLN for a bounded derivation smoke; no memory append, no inferred-belief promotion, no OmegaClaw/GoalChainer live path",
+    }
+
+
+def _run_patham9_program(
+    program_text: str,
     *,
     pln_repo: str | Path,
-    env_script: str | Path | None = None,
-    timeout_sec: float = 30.0,
-    item_index: int = 0,
-) -> dict[str, Any]:
-    """Run the tiny patham9/PLN handoff query smoke in an isolated temp file."""
-    program = patham9_pln_query_smoke_program(handoff, item_index=item_index)
+    env_script: str | Path | None,
+    timeout_sec: float,
+    filename: str,
+) -> tuple[int, str, str]:
     repo = Path(pln_repo)
     if env_script is None:
         env_script = repo.parents[1] / "local" / "pettachainer-env.sh"
     env_path = Path(env_script)
     try:
         with tempfile.TemporaryDirectory(prefix="petta-patham9-pln-") as td:
-            metta_path = Path(td) / "handoff_query_smoke.metta"
-            metta_path.write_text(program["program"], encoding="utf-8")
+            metta_path = Path(td) / filename
+            metta_path.write_text(program_text, encoding="utf-8")
             command = (
                 "set -euo pipefail; "
                 f"source {str(env_path)!r}; "
@@ -263,25 +324,79 @@ def run_patham9_pln_query_smoke(
                 timeout=timeout_sec,
                 env=os.environ.copy(),
             )
-        returncode = completed.returncode
-        stdout = completed.stdout
-        stderr = completed.stderr
+        return completed.returncode, completed.stdout, completed.stderr
     except subprocess.TimeoutExpired as exc:
-        returncode = -1
         stdout = exc.stdout if isinstance(exc.stdout, str) else ""
         stderr = exc.stderr if isinstance(exc.stderr, str) else ""
-        stderr = f"{stderr}\nTimeoutExpired after {timeout_sec}s".strip()
+        return -1, stdout, f"{stderr}\nTimeoutExpired after {timeout_sec}s".strip()
+
+
+def run_patham9_pln_query_smoke(
+    handoff: dict[str, Any],
+    *,
+    pln_repo: str | Path,
+    env_script: str | Path | None = None,
+    timeout_sec: float = 30.0,
+    item_index: int = 0,
+) -> dict[str, Any]:
+    """Run the tiny patham9/PLN handoff query smoke in an isolated temp file."""
+    program = patham9_pln_query_smoke_program(handoff, item_index=item_index)
+    returncode, stdout, stderr = _run_patham9_program(
+        program["program"],
+        pln_repo=pln_repo,
+        env_script=env_script,
+        timeout_sec=timeout_sec,
+        filename="handoff_query_smoke.metta",
+    )
     output = f"{stdout}\n{stderr}"
     parsed = parse_metta_test_output(output)
     classified = classify_smoke_result(
         {
             "test": "patham9-pln-handoff-query-smoke",
-            "returncode": completed.returncode,
+            "returncode": returncode,
             "output": output,
         }
     )
     return {
         "schema": "petta-memory-patham9-pln-query-smoke-result-v1",
+        "status": classified["status"],
+        "classification": classified,
+        "semantic_markers": parsed,
+        "program": program,
+        "returncode": returncode,
+        "stdout_tail": stdout[-4000:],
+        "stderr_tail": stderr[-4000:],
+    }
+
+
+def run_patham9_pln_derivation_smoke(
+    handoff: dict[str, Any],
+    *,
+    pln_repo: str | Path,
+    env_script: str | Path | None = None,
+    timeout_sec: float = 30.0,
+    item_index: int = 0,
+) -> dict[str, Any]:
+    """Run the two-premise patham9/PLN derivation smoke in an isolated temp file."""
+    program = patham9_pln_derivation_smoke_program(handoff, item_index=item_index)
+    returncode, stdout, stderr = _run_patham9_program(
+        program["program"],
+        pln_repo=pln_repo,
+        env_script=env_script,
+        timeout_sec=timeout_sec,
+        filename="handoff_derivation_smoke.metta",
+    )
+    output = f"{stdout}\n{stderr}"
+    parsed = parse_metta_test_output(output)
+    classified = classify_smoke_result(
+        {
+            "test": "patham9-pln-handoff-derivation-smoke",
+            "returncode": returncode,
+            "output": output,
+        }
+    )
+    return {
+        "schema": "petta-memory-patham9-pln-derivation-smoke-result-v1",
         "status": classified["status"],
         "classification": classified,
         "semantic_markers": parsed,
