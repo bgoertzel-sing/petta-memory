@@ -927,6 +927,38 @@ def materialize_four_field_nested_position_rungs(statement: str) -> list[str]:
     ]
 
 
+def materialize_four_field_neighbor_shape_rungs(statement: str) -> list[str]:
+    """Return rungs that isolate proof-like neighbors around a nested Type.
+
+    The nested-position gate showed that a two-argument nested Type can sit in
+    each generic four-field argument slot when its siblings are simple Payload
+    atoms, but the proof-like ``proof-id / nested-Type / STV`` neighbor shape
+    still blocks.  This matrix keeps the nested Type fixed in the second payload
+    slot and introduces the left proof id, right STV-like expression, and STV
+    head stepwise.  The goal is to distinguish whether the blocker is caused by
+    the left proof-id neighbor, any right nested truth-value payload, or the
+    specific ``(STV strength confidence)`` payload shape.
+    """
+    form = parse_one_list(statement)
+    if len(form) != 4 or symbol_text(form[0]) != ":":
+        raise ValueError("statement must be a PeTTaChainer proof atom: (: proof type tv)")
+    statement_type = form[2]
+    if not isinstance(statement_type, tuple) or len(statement_type) < 3:
+        raise ValueError("proof Type must be a nested expression with at least two arguments")
+
+    proof_id = to_source(form[1])
+    type_head = to_source(statement_type[0])
+    sentinel_args = [f"TypeArgSentinel{index}" for index in range(len(statement_type) - 1)]
+    nested_type = f"({' '.join([type_head, *sentinel_args])})"
+    return [
+        f"(ProofEnvelope PayloadA {nested_type} PayloadB)",
+        f"(ProofEnvelope {proof_id} {nested_type} PayloadB)",
+        f"(ProofEnvelope PayloadA {nested_type} (STV 1.0 1.0))",
+        f"(ProofEnvelope {proof_id} {nested_type} (TruthValuePayload 1.0 1.0))",
+        f"(ProofEnvelope {proof_id} {nested_type} (STV 1.0 1.0))",
+    ]
+
+
 def run_materialize_generic_four_field_context_arity_gate(
     statement: str,
     *,
@@ -989,6 +1021,39 @@ def run_materialize_four_field_nested_position_gate(
         "Four-field nested-position matrix only; each rung invokes materialize-stmt-lambdas in an isolated subprocess.",
         "No mm2compile, compileadd, query, GoalChainer, OmegaClaw path, journal write, or inferred-belief claim is invoked.",
         "Synthetic ProofEnvelope/Payload rungs are diagnostics for the materializer/evaluator and are not PLN premises.",
+    ]
+    return result
+
+
+def run_materialize_four_field_neighbor_shape_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 10.0,
+) -> dict[str, object]:
+    """Run a four-field neighbor-shape gate without add/query."""
+    rungs = materialize_four_field_neighbor_shape_rungs(statement)
+    result = run_materialize_identity_ladder_gate(
+        rungs,
+        project_root=project_root,
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    result.update(
+        {
+            "source": "non-live materialize-stmt-lambdas four-field neighbor-shape gate",
+            "proof_statement": statement,
+            "four_field_neighbor_shape_rungs": rungs,
+            "interpretation": (
+                "All four-field neighbor-shape rungs materialized as identity; return to PeTTaChainer ':' proof-shape gating."
+                if result.get("status") == "passed"
+                else "A four-field neighbor-shape rung failed or timed out; keep mm2compile/compileadd/query gated and use the first blocked rung to distinguish proof-id neighbor cost, right truth-value payload cost, and STV-head-specific cost."
+            ),
+        }
+    )
+    result["gates"] = [
+        "Four-field neighbor-shape matrix only; each rung invokes materialize-stmt-lambdas in an isolated subprocess.",
+        "No mm2compile, compileadd, query, GoalChainer, OmegaClaw path, journal write, or inferred-belief claim is invoked.",
+        "Synthetic ProofEnvelope/Payload/TruthValuePayload rungs are diagnostics for the materializer/evaluator and are not PLN premises.",
     ]
     return result
 
