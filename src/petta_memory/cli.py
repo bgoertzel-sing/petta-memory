@@ -7,11 +7,13 @@ import sys
 
 from .goalchainer_smoke import run_goalchainer_handoff_smoke, run_goalchainer_precompiled_handoff_smoke
 from .patham9_pln import (
+    patham9_pi_pln_extension_spec,
     patham9_pln_handoff_sentences,
     run_patham9_pln_derivation_smoke,
     run_patham9_pln_derivation_ec_projection_smoke,
     run_patham9_pln_ec_projection_smoke,
     run_patham9_pln_ec_projection_conflicting_smoke,
+    run_patham9_pln_multi_sentence_derivation_smoke,
     run_patham9_pln_query_smoke,
 )
 from .store import MediumMemoryStore, ValidationError
@@ -116,6 +118,22 @@ def build_parser() -> argparse.ArgumentParser:
     derivation_ec.add_argument("--pln-repo", default="../patham9-pln", help="Path to local patham9/PLN checkout")
     derivation_ec.add_argument("--env-script", help="Path to local PeTTa/SWI environment activation script")
     derivation_ec.add_argument("--timeout-sec", type=float, default=30.0)
+
+    multi_derivation = sub.add_parser(
+        "patham9-pln-multi-derivation-smoke",
+        help="Run a bounded non-live multi-Sentence derivation smoke from all promoted handoff items",
+    )
+    multi_derivation.add_argument("--cache-id", default="petta-memory-patham9-pln-multi-derivation-smoke")
+    multi_derivation.add_argument("--pln-repo", default="../patham9-pln", help="Path to local patham9/PLN checkout")
+    multi_derivation.add_argument("--env-script", help="Path to local PeTTa/SWI environment activation script")
+    multi_derivation.add_argument("--timeout-sec", type=float, default=30.0)
+    multi_derivation.add_argument("--bridge-term", help="Custom derived term for the bridge implication")
+
+    pi_pln_spec = sub.add_parser(
+        "patham9-pi-pln-spec",
+        help="Print the concrete pi-PLN extension layer specification from handoff evidence",
+    )
+    pi_pln_spec.add_argument("--cache-id", default="petta-memory-patham9-pi-pln-spec")
 
     goal_smoke = sub.add_parser(
         "goalchainer-smoke",
@@ -240,6 +258,21 @@ def main(argv: list[str] | None = None) -> int:
             if args.env_script:
                 kwargs["env_script"] = args.env_script
             print(json.dumps(run_patham9_pln_derivation_ec_projection_smoke(handoff, **kwargs), indent=2, sort_keys=True))
+            return 0
+        if args.cmd == "patham9-pln-multi-derivation-smoke":
+            cache = store.pettachainer_handoff_cache(cache_id=args.cache_id)
+            handoff = patham9_pln_handoff_sentences(cache)
+            kwargs = {"pln_repo": args.pln_repo, "timeout_sec": args.timeout_sec}
+            if args.env_script:
+                kwargs["env_script"] = args.env_script
+            if args.bridge_term:
+                kwargs["bridge_term"] = args.bridge_term
+            print(json.dumps(run_patham9_pln_multi_sentence_derivation_smoke(handoff, **kwargs), indent=2, sort_keys=True))
+            return 0
+        if args.cmd == "patham9-pi-pln-spec":
+            cache = store.pettachainer_handoff_cache(cache_id=args.cache_id)
+            handoff = patham9_pln_handoff_sentences(cache)
+            print(json.dumps(patham9_pi_pln_extension_spec(handoff), indent=2, sort_keys=True))
             return 0
         if args.cmd == "goalchainer-smoke":
             cache = store.goalchainer_handoff_cache(cache_id=args.cache_id)

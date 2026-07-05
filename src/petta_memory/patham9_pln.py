@@ -1021,6 +1021,264 @@ def patham9_pi_pln_boundary_plan(handoff: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def patham9_pi_pln_extension_spec(
+    handoff: dict[str, Any],
+    *,
+    pln_repo: str | Path | None = None,
+) -> dict[str, Any]:
+    """Produce a concrete π-PLN extension layer specification.
+
+    This formalizes what the wrapper-first boundary does, what formulas it
+    applies, and what policies govern sentence construction, stamp assignment,
+    provenance sidecars, context selection, and inference-control hooks.
+    The spec is derived from the already-mapped patham9/PLN API surface and
+    the tested EC projection smokes.  It is a design artifact, not a runtime
+    invocation.
+
+    The spec covers:
+      1. Sentence construction protocol (STV + numeric stamps)
+      2. EC projection formula (confidence-weighted blend, already tested)
+      3. Provenance sidecar policy (PMEvidence preserved outside chainer)
+      4. Context selection policy (wrapper-owned, not yet live)
+      5. Inference control hooks (deferred, mapped to trueagi-io/chaining patterns)
+      6. Read/write boundaries (no memory append, no inferred-belief promotion)
+      7. Revisit triggers for internal patham9/PLN extensions
+    """
+    if handoff.get("schema") != "petta-memory-patham9-pln-handoff-v1":
+        raise ValueError("expected petta-memory-patham9-pln-handoff-v1 handoff")
+    items = list(handoff.get("items", []))
+
+    # Summarize each item's projection inputs
+    projection_inputs: list[dict[str, Any]] = []
+    for index, item in enumerate(items):
+        packets = item.get("pi_pln_extension", {}).get("contextual_evidence_packets", [])
+        base_strength = float(item["stv"]["strength"])
+        base_confidence = float(item["stv"]["confidence"])
+        projection = ec_projected_stv(base_strength, base_confidence, packets)
+        projection_inputs.append(
+            {
+                "item_index": index,
+                "term": item.get("term"),
+                "base_stv": item.get("stv"),
+                "projected_stv": {
+                    "strength": projection["projected_strength"],
+                    "confidence": projection["projected_confidence"],
+                },
+                "contextual_packet_count": len(packets),
+                "source_evidence_id": item.get("evidence_id"),
+            }
+        )
+
+    return {
+        "schema": "petta-memory-patham9-pi-pln-extension-spec-v1",
+        "mode": "design-specification-no-runtime",
+        "version": "0.1",
+        "boundary_decision": "wrapper-first: keep checked-out patham9/PLN unmodified; petta-memory owns wrapper layer",
+        "sentence_construction_protocol": {
+            "format": "(Sentence ($Term (stv S C)) $Stamp)",
+            "stv_source": "base STV from promoted handoff item, or projected STV after ec_projected_stv() when contextual EC packets are present",
+            "stamp_policy": "numeric runtime stamps (0), (1), ... for patham9/PLN StampDisjoint compatibility; symbolic PMEvidence preserved in sidecar only",
+            "term_policy": "use the promoted BeliefContent term directly as the Sentence term; no rewriting or normalization",
+        },
+        "ec_projection_formula": {
+            "name": "confidence-weighted blend",
+            "formula": "projected_strength = sum(s_i * w_i) / sum(w_i); projected_confidence = max(all confidences)",
+            "inputs": [
+                "base STV (strength, confidence) from promoted handoff item",
+                "contextual EvidencePacket EC counts (support, opposition)",
+            ],
+            "per_packet": {
+                "ec_strength": "support / (support + opposition)",
+                "ec_confidence": "(support + opposition) / (support + opposition + 2)  # Laplace-smoothed",
+                "weight": "ec_confidence",
+            },
+            "properties": [
+                "cannot inflate confidence beyond base",
+                "weak evidence has little effect (low confidence = low weight)",
+                "zero-total packets are skipped",
+                "conflicting EC lowers projected strength",
+            ],
+            "tested_in": [
+                "test_ec_projected_stv_blends_confidence_weighted",
+                "test_ec_projected_stv_with_conflicting_ec_lowers_strength",
+                "test_patham9_pln_derivation_ec_projection_smoke_program_builds_direct_and_projected",
+            ],
+            "status": "reviewed and implemented as ec_projected_stv()",
+        },
+        "provenance_sidecar_policy": {
+            "location": "JSON result sidecar, not inside patham9/PLN chainer",
+            "contents": [
+                "source PMEvidence identifier (belief_id, cluster_id, promotion_event, promotion_rule, promotion_domain)",
+                "runtime stamp to source evidence mapping",
+                "synthetic bridge provenance for derivation smokes",
+                "contextual EvidencePacket metadata (support, opposition, domain, promotion_rule)",
+            ],
+            "boundary": "sidecar is artifact-only; not appended to memory, not promoted as inferred belief",
+        },
+        "context_selection_policy": {
+            "current_state": "not-live; wrapper does not yet filter or generate contexts",
+            "design": "wrapper will own context filtering before invocation: select relevant EvidencePackets by domain, cluster, or promotion_rule, then pre-project STV",
+            "patham9_support": "patham9/PLN has no built-in context selection; wrapper owns this entirely",
+            "revisit_trigger": "when context filtering logic is complex enough to warrant its own test suite",
+        },
+        "inference_control_hooks": {
+            "current_state": "deferred (roadmap item 4)",
+            "reference_patterns": [
+                "trueagi-io/chaining pln-inf-ctl.metta: PLN-based inference controller that estimates query viability before committing to recursive search",
+                "trueagi-io/chaining inf-ctl-month-bc-cont-xp.metta: continuation predicates per branch type",
+                "trueagi-io/chaining prob-chaining: probabilistic pruning of axiom/rule selection",
+            ],
+            "design_direction": "after basic multi-Sentence derivation is validated, explore wrapper-level inference control that pre-filters or re-orders Sentences before PLN.Query/PLN.Derive",
+            "revisit_trigger": "after multi-Sentence derivation smoke passes and before broad profiling",
+        },
+        "read_write_boundaries": {
+            "no_memory_append": "PLN output is artifact-only; never appended to petta-memory journal",
+            "no_inferred_belief_promotion": "derived results are not promoted as DerivedBelief without separate review gate",
+            "no_omegaclaw_live": "no OmegaClaw/GoalChainer live integration before non-live artifact gate passes",
+            "no_patham9_source_patch": "checked-out patham9/PLN source remains unmodified",
+        },
+        "revisit_triggers": {
+            "internal_extension": "if wrapper-level EC/context projection cannot express required pi-PLN semantics, consider narrowly scoped patham9/PLN internal extension with regression tests over StampDisjoint, queue priority, and proof provenance",
+            "inference_control": "after multi-Sentence derivation is validated and basic profiling is done",
+            "context_selection": "when context filtering logic is complex enough to warrant its own test suite",
+        },
+        "projection_inputs": projection_inputs,
+        "item_count": len(items),
+        "boundary": "design specification artifact; no runtime invoked; no memory append; no inferred-belief promotion; no OmegaClaw/GoalChainer live path",
+    }
+
+
+def patham9_pln_multi_sentence_derivation_smoke_program(
+    handoff: dict[str, Any],
+    *,
+    bridge_term: str | None = None,
+) -> dict[str, Any]:
+    """Build a multi-Sentence derivation smoke for patham9/PLN.
+
+    Loads ALL handoff Sentences (not just one) plus a synthetic bridge
+    implication from the first term to a derived `PMDerivedFromHandoff`
+    term.  This validates the wrapper boundary with multiple premises,
+    exercising StampDisjoint across several numeric stamps and testing
+    that PLN.Query can find a derivation path through multiple loaded
+    beliefs.
+
+    The smoke is non-live: it produces a MeTTa program artifact and
+    expected result metadata, but does not invoke the runtime itself.
+    Use `run_patham9_pln_multi_sentence_derivation_smoke()` to execute it.
+    """
+    if handoff.get("schema") != "petta-memory-patham9-pln-handoff-v1":
+        raise ValueError("expected petta-memory-patham9-pln-handoff-v1 handoff")
+    items = list(handoff.get("items", []))
+    if not items:
+        raise ValueError("patham9/PLN handoff has no Sentence items")
+
+    # Build runtime sentences for all handoff items
+    runtime_sentences: list[str] = []
+    stamp_sidecar: dict[str, dict[str, Any]] = {}
+    for index, item in enumerate(items):
+        term = str(item["term"])
+        strength = str(item["stv"]["strength"])
+        confidence = str(item["stv"]["confidence"])
+        stamp = _numeric_stamp(index)
+        runtime_sentences.append(f"(Sentence ({term} (stv {strength} {confidence})) {stamp})")
+        stamp_sidecar[stamp] = {
+            "kind": "petta-memory-source-sentence",
+            "source_evidence_id": str(item.get("evidence_id", "")),
+            "source_item_index": index,
+            "term": term,
+        }
+
+    # Synthetic bridge implication from first term to derived term
+    first_item = items[0]
+    first_term = str(first_item["term"])
+    derived_term = bridge_term or f"(PMDerivedFromMultiHandoff {first_term})"
+    bridge_stamp = _numeric_stamp(len(items))
+    bridge_strength = "1.0"
+    bridge_confidence = "0.90"
+    bridge_sentence = (
+        f"(Sentence ((Implication {first_term} {derived_term}) "
+        f"(stv {bridge_strength} {bridge_confidence})) {bridge_stamp})"
+    )
+    stamp_sidecar[bridge_stamp] = {
+        "kind": "synthetic-non-live-bridge-implication",
+        "source_item_index": 0,
+        "rule": "PMDerivedFromMultiHandoff implication smoke",
+    }
+
+    # Compute expected result (same formula as single derivation smoke)
+    base_strength = float(first_item["stv"]["strength"])
+    base_confidence = float(first_item["stv"]["confidence"])
+    expected_strength = base_strength * float(bridge_strength) + 0.02 * (1.0 - base_strength)
+    expected_confidence = base_confidence * float(bridge_confidence)
+    expected = f"((stv {expected_strength} {expected_confidence}) (0 {len(items)}))"
+
+    # Build the MeTTa program
+    all_sentences = ", ".join(runtime_sentences + [bridge_sentence])
+    program_lines = [
+        "!(import! &self PLN)",
+        "!(PLN.Init ())",
+        f"!(Test (PLN.Query ({all_sentences})",
+        f"                  {derived_term}",
+        f"                  {len(items) + 1} {len(items) + 4} {len(items) + 8})",
+        f"       {expected})",
+        "",
+    ]
+    program = "\n".join(program_lines)
+
+    return {
+        "schema": "petta-memory-patham9-pln-multi-sentence-derivation-smoke-program-v1",
+        "mode": "read-only-multi-sentence-derivation-smoke",
+        "program": program,
+        "source_term": first_term,
+        "derived_term": derived_term,
+        "runtime_sentences": runtime_sentences + [bridge_sentence],
+        "sentence_count": len(runtime_sentences) + 1,
+        "handoff_sentence_count": len(runtime_sentences),
+        "expected_result": expected,
+        "runtime_stamp_policy": "numeric patham9/PLN stamps for chainer compatibility; source evidence and synthetic bridge provenance preserved in sidecar",
+        "stamp_sidecar": stamp_sidecar,
+        "boundary": "loads all generated Sentences plus one synthetic bridge implication into local patham9/PLN for a bounded multi-sentence derivation smoke; no memory append, no inferred-belief promotion, no OmegaClaw/GoalChainer live path",
+    }
+
+
+def run_patham9_pln_multi_sentence_derivation_smoke(
+    handoff: dict[str, Any],
+    *,
+    pln_repo: str | Path,
+    env_script: str | Path | None = None,
+    timeout_sec: float = 30.0,
+    bridge_term: str | None = None,
+) -> dict[str, Any]:
+    """Run the multi-Sentence derivation smoke in an isolated temp file."""
+    program = patham9_pln_multi_sentence_derivation_smoke_program(handoff, bridge_term=bridge_term)
+    returncode, stdout, stderr = _run_patham9_program(
+        program["program"],
+        pln_repo=pln_repo,
+        env_script=env_script,
+        timeout_sec=timeout_sec,
+        filename="multi_sentence_derivation_smoke.metta",
+    )
+    output = f"{stdout}\n{stderr}"
+    parsed = parse_metta_test_output(output)
+    classified = classify_smoke_result(
+        {
+            "test": "patham9-pln-multi-sentence-derivation-smoke",
+            "returncode": returncode,
+            "output": output,
+        }
+    )
+    return {
+        "schema": "petta-memory-patham9-pln-multi-sentence-derivation-smoke-result-v1",
+        "status": classified["status"],
+        "classification": classified,
+        "semantic_markers": parsed,
+        "program": program,
+        "returncode": returncode,
+        "stdout_tail": stdout[-4000:],
+        "stderr_tail": stderr[-4000:],
+    }
+
+
 def patham9_pln_handoff_sentences(handoff_cache: dict[str, Any]) -> dict[str, Any]:
     """Map petta-memory's non-live handoff cache into patham9/PLN Sentence inputs.
 

@@ -15,8 +15,10 @@ from petta_memory.patham9_pln import (
     patham9_pln_ec_projection_conflicting_smoke_program,
     patham9_pln_derivation_ec_projection_smoke_program,
     patham9_pi_pln_boundary_plan,
+    patham9_pi_pln_extension_spec,
     patham9_pln_derivation_smoke_program,
     patham9_pln_handoff_sentences,
+    patham9_pln_multi_sentence_derivation_smoke_program,
     patham9_pln_query_smoke_program,
     summarize_smoke_results,
     summarize_smoke_results_file,
@@ -447,6 +449,178 @@ class Patham9PlnApiSurfaceTests(unittest.TestCase):
     def test_api_surface_raises_for_missing_repo(self):
         with self.assertRaises(FileNotFoundError):
             patham9_pln_api_surface("/nonexistent/path/to/pln")
+
+
+class Patham9PiPlnExtensionSpecTests(unittest.TestCase):
+    def _patham9_handoff(self, num_items: int = 2):
+        items = []
+        for i in range(num_items):
+            items.append({
+                "atom": f"(Sentence (Term{i}) (stv 0.{90 - i} 0.{70 - i}) ((PMEvidence b{i} mc{i} pe{i} rule{i} domain{i})))",
+                "term": f"(Term{i})",
+                "stv": {"strength": f"0.{90 - i}", "confidence": f"0.{70 - i}"},
+                "evidence_id": f"(PMEvidence b{i} mc{i} pe{i} rule{i} domain{i})",
+                "pi_pln_extension": {"contextual_evidence_packets": [{"support": str(8 - i), "opposition": str(2 + i)}]},
+            })
+        return {"schema": "petta-memory-patham9-pln-handoff-v1", "items": items}
+
+    def test_extension_spec_returns_design_specification(self):
+        handoff = self._patham9_handoff(2)
+        spec = patham9_pi_pln_extension_spec(handoff)
+        self.assertEqual(spec["schema"], "petta-memory-patham9-pi-pln-extension-spec-v1")
+        self.assertEqual(spec["mode"], "design-specification-no-runtime")
+        self.assertEqual(spec["version"], "0.1")
+        self.assertEqual(spec["boundary_decision"], "wrapper-first: keep checked-out patham9/PLN unmodified; petta-memory owns wrapper layer")
+
+    def test_extension_spec_documents_sentence_construction_protocol(self):
+        spec = patham9_pi_pln_extension_spec(self._patham9_handoff(1))
+        protocol = spec["sentence_construction_protocol"]
+        self.assertIn("(Sentence ($Term (stv S C)) $Stamp)", protocol["format"])
+        self.assertIn("ec_projected_stv", protocol["stv_source"])
+        self.assertIn("numeric runtime stamps", protocol["stamp_policy"])
+
+    def test_extension_spec_documents_ec_projection_formula(self):
+        spec = patham9_pi_pln_extension_spec(self._patham9_handoff(2))
+        formula = spec["ec_projection_formula"]
+        self.assertEqual(formula["name"], "confidence-weighted blend")
+        self.assertIn("sum(s_i * w_i)", formula["formula"])
+        self.assertTrue(len(formula["tested_in"]) >= 3, "should reference at least 3 test names")
+        self.assertEqual(formula["status"], "reviewed and implemented as ec_projected_stv()")
+
+    def test_extension_spec_documents_provenance_sidecar_policy(self):
+        spec = patham9_pi_pln_extension_spec(self._patham9_handoff(1))
+        sidecar = spec["provenance_sidecar_policy"]
+        contents_text = " ".join(sidecar["contents"])
+        self.assertIn("PMEvidence", contents_text)
+        self.assertIn("not appended to memory", sidecar["boundary"])
+
+    def test_extension_spec_documents_context_selection_policy(self):
+        spec = patham9_pi_pln_extension_spec(self._patham9_handoff(1))
+        context = spec["context_selection_policy"]
+        self.assertEqual(context["current_state"], "not-live; wrapper does not yet filter or generate contexts")
+        self.assertIn("wrapper owns this entirely", context["patham9_support"])
+
+    def test_extension_spec_documents_inference_control_hooks(self):
+        spec = patham9_pi_pln_extension_spec(self._patham9_handoff(1))
+        hooks = spec["inference_control_hooks"]
+        self.assertEqual(hooks["current_state"], "deferred (roadmap item 4)")
+        self.assertTrue(len(hooks["reference_patterns"]) >= 2, "should reference at least 2 patterns")
+        self.assertIn("pln-inf-ctl.metta", " ".join(hooks["reference_patterns"]))
+
+    def test_extension_spec_documents_read_write_boundaries(self):
+        spec = patham9_pi_pln_extension_spec(self._patham9_handoff(1))
+        boundaries = spec["read_write_boundaries"]
+        self.assertIn("no_memory_append", boundaries)
+        self.assertIn("no_inferred_belief_promotion", boundaries)
+        self.assertIn("no_omegaclaw_live", boundaries)
+        self.assertIn("no_patham9_source_patch", boundaries)
+
+    def test_extension_spec_documents_revisit_triggers(self):
+        spec = patham9_pi_pln_extension_spec(self._patham9_handoff(1))
+        triggers = spec["revisit_triggers"]
+        self.assertIn("internal_extension", triggers)
+        self.assertIn("inference_control", triggers)
+        self.assertIn("context_selection", triggers)
+
+    def test_extension_spec_includes_projection_inputs(self):
+        spec = patham9_pi_pln_extension_spec(self._patham9_handoff(3))
+        self.assertEqual(spec["item_count"], 3)
+        self.assertEqual(len(spec["projection_inputs"]), 3)
+        first = spec["projection_inputs"][0]
+        self.assertEqual(first["item_index"], 0)
+        self.assertIn("base_stv", first)
+        self.assertIn("projected_stv", first)
+        self.assertEqual(first["contextual_packet_count"], 1)
+
+    def test_extension_spec_rejects_wrong_schema(self):
+        with self.assertRaisesRegex(ValueError, "expected petta-memory-patham9-pln-handoff-v1"):
+            patham9_pi_pln_extension_spec({"schema": "other", "items": []})
+
+    def test_extension_spec_boundary_text(self):
+        spec = patham9_pi_pln_extension_spec(self._patham9_handoff(1))
+        self.assertIn("no runtime invoked", spec["boundary"])
+        self.assertIn("no memory append", spec["boundary"])
+
+
+class Patham9PlnMultiSentenceDerivationTests(unittest.TestCase):
+    def _multi_item_handoff(self, num_items: int = 3):
+        items = []
+        for i in range(num_items):
+            items.append({
+                "atom": f"(Sentence (Requires Target{i} PLNReadyViews) (stv 0.{80 + i} 0.6{i}) ((PMEvidence b{i} mc{i} pe{i} rule{i} domain{i})))",
+                "term": f"(Requires Target{i} PLNReadyViews)",
+                "stv": {"strength": f"0.{80 + i}", "confidence": f"0.6{i}"},
+                "evidence_id": f"(PMEvidence b{i} mc{i} pe{i} rule{i} domain{i})",
+                "pi_pln_extension": {"contextual_evidence_packets": []},
+            })
+        return {"schema": "petta-memory-patham9-pln-handoff-v1", "items": items}
+
+    def test_multi_sentence_program_loads_all_handoff_items(self):
+        handoff = self._multi_item_handoff(3)
+        smoke = patham9_pln_multi_sentence_derivation_smoke_program(handoff)
+        self.assertEqual(smoke["schema"], "petta-memory-patham9-pln-multi-sentence-derivation-smoke-program-v1")
+        self.assertEqual(smoke["handoff_sentence_count"], 3)
+        self.assertEqual(smoke["sentence_count"], 4)  # 3 handoff + 1 bridge
+        # All 3 handoff terms appear in the program
+        for i in range(3):
+            self.assertIn(f"Target{i}", smoke["program"])
+        # Bridge implication appears
+        self.assertIn("Implication", smoke["program"])
+        self.assertIn("PMDerivedFromMultiHandoff", smoke["program"])
+        # PLN.Query and Test appear
+        self.assertIn("(PLN.Query", smoke["program"])
+        self.assertIn("!(Test", smoke["program"])
+
+    def test_multi_sentence_program_stamp_sidecar_maps_all_items(self):
+        handoff = self._multi_item_handoff(3)
+        smoke = patham9_pln_multi_sentence_derivation_smoke_program(handoff)
+        sidecar = smoke["stamp_sidecar"]
+        # 3 source stamps + 1 bridge stamp
+        self.assertEqual(len(sidecar), 4)
+        self.assertIn("(0)", sidecar)
+        self.assertIn("(1)", sidecar)
+        self.assertIn("(2)", sidecar)
+        self.assertIn("(3)", sidecar)
+        self.assertEqual(sidecar["(0)"]["kind"], "petta-memory-source-sentence")
+        self.assertEqual(sidecar["(0)"]["source_item_index"], 0)
+        self.assertEqual(sidecar["(3)"]["kind"], "synthetic-non-live-bridge-implication")
+
+    def test_multi_sentence_program_expected_result_uses_first_item(self):
+        handoff = self._multi_item_handoff(3)
+        smoke = patham9_pln_multi_sentence_derivation_smoke_program(handoff)
+        # Expected result references stamp 0 and last stamp (bridge)
+        self.assertIn("(0 3)", smoke["expected_result"])
+        self.assertIn("(stv ", smoke["expected_result"])
+
+    def test_multi_sentence_program_custom_bridge_term(self):
+        handoff = self._multi_item_handoff(2)
+        smoke = patham9_pln_multi_sentence_derivation_smoke_program(
+            handoff, bridge_term="(CustomDerived Term)"
+        )
+        self.assertIn("(CustomDerived Term)", smoke["derived_term"])
+        self.assertIn("(CustomDerived Term)", smoke["program"])
+
+    def test_multi_sentence_program_boundary_text(self):
+        handoff = self._multi_item_handoff(1)
+        smoke = patham9_pln_multi_sentence_derivation_smoke_program(handoff)
+        self.assertIn("no memory append", smoke["boundary"])
+        self.assertIn("no inferred-belief promotion", smoke["boundary"])
+        self.assertIn("no OmegaClaw/GoalChainer live path", smoke["boundary"])
+
+    def test_multi_sentence_program_rejects_wrong_schema(self):
+        with self.assertRaisesRegex(ValueError, "expected petta-memory-patham9-pln-handoff-v1"):
+            patham9_pln_multi_sentence_derivation_smoke_program({"schema": "other", "items": []})
+
+    def test_multi_sentence_program_rejects_empty_handoff(self):
+        with self.assertRaisesRegex(ValueError, "no Sentence items"):
+            patham9_pln_multi_sentence_derivation_smoke_program({"schema": "petta-memory-patham9-pln-handoff-v1", "items": []})
+
+    def test_multi_sentence_program_single_item_works(self):
+        handoff = self._multi_item_handoff(1)
+        smoke = patham9_pln_multi_sentence_derivation_smoke_program(handoff)
+        self.assertEqual(smoke["handoff_sentence_count"], 1)
+        self.assertEqual(smoke["sentence_count"], 2)  # 1 handoff + 1 bridge
+        self.assertIn("(0 1)", smoke["expected_result"])
 
 
 if __name__ == "__main__":
