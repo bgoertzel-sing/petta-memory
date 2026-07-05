@@ -8,7 +8,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from petta_memory.patham9_pln import (
     classify_smoke_result,
     classify_smoke_result_with_retry,
+    ec_projected_stv,
     parse_metta_test_output,
+    patham9_pln_ec_projection_smoke_program,
     patham9_pi_pln_boundary_plan,
     patham9_pln_derivation_smoke_program,
     patham9_pln_handoff_sentences,
@@ -214,6 +216,62 @@ class Patham9PlnSmokeGateTests(unittest.TestCase):
     def test_patham9_pi_pln_boundary_plan_rejects_wrong_schema(self):
         with self.assertRaisesRegex(ValueError, "expected petta-memory-patham9-pln-handoff-v1"):
             patham9_pi_pln_boundary_plan({"schema": "other", "items": []})
+
+    def test_ec_projected_stv_blends_confidence_weighted(self):
+        result = ec_projected_stv(0.90, 0.70, [{"support": 8.0, "opposition": 2.0}])
+        self.assertEqual(result["base_strength"], 0.90)
+        self.assertEqual(result["base_confidence"], 0.70)
+        self.assertEqual(result["packet_count"], 1)
+        # ec_strength = 8/10 = 0.8, ec_confidence = 10/12 ≈ 0.833333
+        self.assertAlmostEqual(result["packets"][0]["ec_strength"], 0.8, places=6)
+        self.assertAlmostEqual(result["packets"][0]["ec_confidence"], 10.0 / 12.0, places=6)
+        # weighted: (0.90*0.70 + 0.8*0.833333) / (0.70 + 0.833333)
+        expected_strength = (0.90 * 0.70 + 0.8 * (10.0 / 12.0)) / (0.70 + 10.0 / 12.0)
+        self.assertAlmostEqual(result["projected_strength"], round(expected_strength, 6), places=5)
+        # projected confidence = max(0.70, 0.833333) = 0.833333
+        self.assertAlmostEqual(result["projected_confidence"], round(10.0 / 12.0, 6), places=5)
+
+    def test_ec_projected_stv_with_no_packets_returns_base(self):
+        result = ec_projected_stv(0.91, 0.74, [])
+        self.assertEqual(result["projected_strength"], 0.91)
+        self.assertEqual(result["projected_confidence"], 0.74)
+        self.assertEqual(result["packet_count"], 0)
+
+    def test_ec_projected_stv_rejects_out_of_range(self):
+        with self.assertRaises(ValueError):
+            ec_projected_stv(1.5, 0.5, [])
+        with self.assertRaises(ValueError):
+            ec_projected_stv(0.5, -0.1, [])
+        with self.assertRaises(ValueError):
+            ec_projected_stv(0.5, 0.5, [{"support": -1, "opposition": 0}])
+
+    def test_ec_projected_stv_skips_zero_total_packets(self):
+        result = ec_projected_stv(0.80, 0.60, [{"support": 0, "opposition": 0}, {"support": 6, "opposition": 2}])
+        self.assertEqual(result["packet_count"], 1)
+        self.assertAlmostEqual(result["packets"][0]["ec_strength"], 0.75, places=5)
+
+    def test_patham9_pln_ec_projection_smoke_program_builds_direct_and_projected(self):
+        handoff = self._patham9_handoff()
+        smoke = patham9_pln_ec_projection_smoke_program(handoff)
+        self.assertEqual(smoke["schema"], "petta-memory-patham9-pln-ec-projection-smoke-program-v1")
+        self.assertIn("(PLN.Query", smoke["direct"]["program"])
+        self.assertIn("(PLN.Query", smoke["projected"]["program"])
+        # Direct uses original STV
+        self.assertIn("(stv 0.90 0.70)", smoke["direct"]["runtime_sentence"])
+        # Projected uses different STV (blended with EC 8/2)
+        self.assertNotIn("(stv 0.90 0.70)", smoke["projected"]["runtime_sentence"])
+        self.assertIn("(stv ", smoke["projected"]["runtime_sentence"])
+        # EC projection metadata
+        self.assertEqual(smoke["ec_projection"]["packet_count"], 1)
+        self.assertAlmostEqual(smoke["ec_projection"]["packets"][0]["positive_ratio"], 0.8, places=5)
+        # Boundary
+        self.assertIn("no inferred-belief promotion", smoke["boundary"])
+        # Both use same query term
+        self.assertEqual(smoke["direct"]["expected_result"].split()[0], smoke["projected"]["expected_result"].split()[0])
+
+    def test_patham9_pln_ec_projection_smoke_program_rejects_wrong_schema(self):
+        with self.assertRaisesRegex(ValueError, "expected petta-memory-patham9-pln-handoff-v1"):
+            patham9_pln_ec_projection_smoke_program({"schema": "other", "items": []})
 
 
 if __name__ == "__main__":

@@ -407,6 +407,228 @@ def run_patham9_pln_derivation_smoke(
     }
 
 
+def ec_projected_stv(
+    base_strength: float,
+    base_confidence: float,
+    contextual_packets: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Compute a wrapper-level projected STV from base STV and contextual EC packets.
+
+    This is the first reviewed pi-PLN wrapper formula.  It blends the base STV
+    with EC-derived evidence using a confidence-weighted average, mirroring the
+    formula already used in the non-live GoalChainer precompiled EC smoke but
+    made explicit and self-contained for the patham9/PLN wrapper boundary.
+
+    For each EvidencePacket with support s and opposition o:
+      ec_strength  = s / (s + o)
+      ec_confidence = (s + o) / (s + o + 2)        # Laplace-smoothed
+
+    Blended across all packets and the base STV:
+      projected_strength   = weighted_mean(strengths, confidences)
+      projected_confidence = max(base_confidence, max(ec_confidences))
+
+    The formula is conservative: it cannot inflate confidence beyond the base
+    and uses confidence as the blending weight so weak evidence has little
+    effect.  No truth-changing happens inside patham9/PLN; the wrapper
+    pre-projects and feeds a plain Sentence with the projected STV.
+    """
+    if base_strength < 0 or base_strength > 1:
+        raise ValueError(f"base_strength {base_strength} out of [0, 1]")
+    if base_confidence < 0 or base_confidence > 1:
+        raise ValueError(f"base_confidence {base_confidence} out of [0, 1]")
+
+    weights: list[float] = [base_confidence]
+    strengths: list[float] = [base_strength]
+    confidences: list[float] = [base_confidence]
+    packet_summaries: list[dict[str, Any]] = []
+
+    for packet in contextual_packets:
+        support = float(packet.get("support", 0))
+        opposition = float(packet.get("opposition", 0))
+        if support < 0 or opposition < 0:
+            raise ValueError(f"EC counts must be non-negative; got support={support} opposition={opposition}")
+        total = support + opposition
+        if total <= 0:
+            continue
+        ec_strength = support / total
+        ec_confidence = total / (total + 2.0)
+        weights.append(ec_confidence)
+        strengths.append(ec_strength)
+        confidences.append(ec_confidence)
+        packet_summaries.append(
+            {
+                "support": support,
+                "opposition": opposition,
+                "total_evidence": total,
+                "positive_ratio": ec_strength,
+                "ec_strength": round(ec_strength, 6),
+                "ec_confidence": round(ec_confidence, 6),
+            }
+        )
+
+    total_weight = sum(weights)
+    if total_weight <= 0:
+        projected_strength = base_strength
+        projected_confidence = base_confidence
+    else:
+        projected_strength = sum(s * w for s, w in zip(strengths, weights)) / total_weight
+        projected_confidence = max(confidences)
+
+    return {
+        "projected_strength": round(projected_strength, 6),
+        "projected_confidence": round(projected_confidence, 6),
+        "base_strength": base_strength,
+        "base_confidence": base_confidence,
+        "packet_count": len(packet_summaries),
+        "packets": packet_summaries,
+        "formula": "confidence-weighted blend: projected_strength = sum(s_i * w_i) / sum(w_i); projected_confidence = max(all confidences)",
+    }
+
+
+def patham9_pln_ec_projection_smoke_program(
+    handoff: dict[str, Any],
+    *,
+    item_index: int = 0,
+) -> dict[str, Any]:
+    """Build a non-live EC projection comparison smoke for patham9/PLN.
+
+    Produces two query smoke programs: one with the original (direct) STV and
+    one with the wrapper-projected STV after folding in contextual EvidencePacket
+    EC counts.  Both use numeric runtime stamps and the same query term so the
+    results can be compared artifact-only without promoting either as an
+    inferred belief.
+    """
+    if handoff.get("schema") != "petta-memory-patham9-pln-handoff-v1":
+        raise ValueError("expected petta-memory-patham9-pln-handoff-v1 handoff")
+    items = list(handoff.get("items", []))
+    if not items:
+        raise ValueError("patham9/PLN handoff has no Sentence items")
+    if item_index < 0 or item_index >= len(items):
+        raise ValueError(f"item_index {item_index} out of range for {len(items)} item(s)")
+    item = items[item_index]
+    term = str(item["term"])
+    base_strength = float(item["stv"]["strength"])
+    base_confidence = float(item["stv"]["confidence"])
+    raw_packets = item.get("pi_pln_extension", {}).get("contextual_evidence_packets", [])
+    projection = ec_projected_stv(base_strength, base_confidence, raw_packets)
+    projected_strength = projection["projected_strength"]
+    projected_confidence = projection["projected_confidence"]
+
+    runtime_stamp = _numeric_stamp(item_index)
+    source_evidence_id = str(item.get("evidence_id", ""))
+
+    direct_sentence = f"(Sentence ({term} (stv {item['stv']['strength']} {item['stv']['confidence']})) {runtime_stamp})"
+    direct_expected = f"((stv {item['stv']['strength']} {item['stv']['confidence']}) {runtime_stamp})"
+    direct_program = "\n".join(
+        [
+            "!(import! &self PLN)",
+            "!(PLN.Init ())",
+            f"!(Test (PLN.Query ({direct_sentence})",
+            f"                  {term}",
+            "                  1 3 5)",
+            f"       {direct_expected})",
+            "",
+        ]
+    )
+
+    projected_sentence = f"(Sentence ({term} (stv {projected_strength} {projected_confidence})) {runtime_stamp})"
+    projected_expected = f"((stv {projected_strength} {projected_confidence}) {runtime_stamp})"
+    projected_program = "\n".join(
+        [
+            "!(import! &self PLN)",
+            "!(PLN.Init ())",
+            f"!(Test (PLN.Query ({projected_sentence})",
+            f"                  {term}",
+            "                  1 3 5)",
+            f"       {projected_expected})",
+            "",
+        ]
+    )
+
+    return {
+        "schema": "petta-memory-patham9-pln-ec-projection-smoke-program-v1",
+        "mode": "read-only-ec-projection-comparison-smoke",
+        "query_term": term,
+        "direct": {
+            "program": direct_program,
+            "runtime_sentence": direct_sentence,
+            "expected_result": direct_expected,
+            "stv": {"strength": item["stv"]["strength"], "confidence": item["stv"]["confidence"]},
+        },
+        "projected": {
+            "program": projected_program,
+            "runtime_sentence": projected_sentence,
+            "expected_result": projected_expected,
+            "stv": {"strength": str(projected_strength), "confidence": str(projected_confidence)},
+        },
+        "ec_projection": projection,
+        "runtime_stamp": runtime_stamp,
+        "runtime_stamp_policy": "numeric patham9/PLN stamp used for chainer compatibility; source evidence preserved in sidecar",
+        "source_evidence_id": source_evidence_id,
+        "boundary": "non-live read-only comparison of direct vs projected STV query smokes; no memory append, no inferred-belief promotion, no OmegaClaw/GoalChainer live path",
+    }
+
+
+def run_patham9_pln_ec_projection_smoke(
+    handoff: dict[str, Any],
+    *,
+    pln_repo: str | Path,
+    env_script: str | Path | None = None,
+    timeout_sec: float = 30.0,
+    item_index: int = 0,
+) -> dict[str, Any]:
+    """Run the EC projection comparison smoke in isolated temp files."""
+    smoke = patham9_pln_ec_projection_smoke_program(handoff, item_index=item_index)
+
+    direct_rc, direct_out, direct_err = _run_patham9_program(
+        smoke["direct"]["program"],
+        pln_repo=pln_repo,
+        env_script=env_script,
+        timeout_sec=timeout_sec,
+        filename="ec_projection_direct.metta",
+    )
+    direct_output = f"{direct_out}\n{direct_err}"
+    direct_parsed = parse_metta_test_output(direct_output)
+    direct_classified = classify_smoke_result(
+        {"test": "ec-projection-direct", "returncode": direct_rc, "output": direct_output}
+    )
+
+    projected_rc, projected_out, projected_err = _run_patham9_program(
+        smoke["projected"]["program"],
+        pln_repo=pln_repo,
+        env_script=env_script,
+        timeout_sec=timeout_sec,
+        filename="ec_projection_projected.metta",
+    )
+    projected_output = f"{projected_out}\n{projected_err}"
+    projected_parsed = parse_metta_test_output(projected_output)
+    projected_classified = classify_smoke_result(
+        {"test": "ec-projection-projected", "returncode": projected_rc, "output": projected_output}
+    )
+
+    return {
+        "schema": "petta-memory-patham9-pln-ec-projection-smoke-result-v1",
+        "status": "passed" if direct_classified["status"] == "passed" and projected_classified["status"] == "passed" else "failed",
+        "direct": {
+            "classification": direct_classified,
+            "semantic_markers": direct_parsed,
+            "returncode": direct_rc,
+            "stdout_tail": direct_out[-2000:],
+            "stderr_tail": direct_err[-2000:],
+        },
+        "projected": {
+            "classification": projected_classified,
+            "semantic_markers": projected_parsed,
+            "returncode": projected_rc,
+            "stdout_tail": projected_out[-2000:],
+            "stderr_tail": projected_err[-2000:],
+        },
+        "ec_projection": smoke["ec_projection"],
+        "program": smoke,
+        "boundary": "non-live read-only comparison; no memory append, no inferred-belief promotion, no OmegaClaw/GoalChainer live path",
+    }
+
+
 def patham9_pi_pln_boundary_plan(handoff: dict[str, Any]) -> dict[str, Any]:
     """Describe the first reviewed pi-PLN extension boundary for patham9/PLN.
 

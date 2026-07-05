@@ -9,6 +9,7 @@ from .goalchainer_smoke import run_goalchainer_handoff_smoke, run_goalchainer_pr
 from .patham9_pln import (
     patham9_pln_handoff_sentences,
     run_patham9_pln_derivation_smoke,
+    run_patham9_pln_ec_projection_smoke,
     run_patham9_pln_query_smoke,
 )
 from .store import MediumMemoryStore, ValidationError
@@ -84,6 +85,15 @@ def build_parser() -> argparse.ArgumentParser:
     patham9_derivation.add_argument("--pln-repo", default="../patham9-pln", help="Path to local patham9/PLN checkout")
     patham9_derivation.add_argument("--env-script", help="Path to local PeTTa/SWI environment activation script")
     patham9_derivation.add_argument("--timeout-sec", type=float, default=30.0)
+
+    ec_projection = sub.add_parser(
+        "patham9-pln-ec-projection-smoke",
+        help="Run a bounded non-live EC projection comparison smoke (direct vs projected STV)",
+    )
+    ec_projection.add_argument("--cache-id", default="petta-memory-patham9-pln-ec-projection-smoke")
+    ec_projection.add_argument("--pln-repo", default="../patham9-pln", help="Path to local patham9/PLN checkout")
+    ec_projection.add_argument("--env-script", help="Path to local PeTTa/SWI environment activation script")
+    ec_projection.add_argument("--timeout-sec", type=float, default=30.0)
 
     goal_smoke = sub.add_parser(
         "goalchainer-smoke",
@@ -182,6 +192,14 @@ def main(argv: list[str] | None = None) -> int:
             if args.env_script:
                 kwargs["env_script"] = args.env_script
             print(json.dumps(run_patham9_pln_derivation_smoke(handoff, **kwargs), indent=2, sort_keys=True))
+            return 0
+        if args.cmd == "patham9-pln-ec-projection-smoke":
+            cache = store.pettachainer_handoff_cache(cache_id=args.cache_id)
+            handoff = patham9_pln_handoff_sentences(cache)
+            kwargs = {"pln_repo": args.pln_repo, "timeout_sec": args.timeout_sec}
+            if args.env_script:
+                kwargs["env_script"] = args.env_script
+            print(json.dumps(run_patham9_pln_ec_projection_smoke(handoff, **kwargs), indent=2, sort_keys=True))
             return 0
         if args.cmd == "goalchainer-smoke":
             cache = store.goalchainer_handoff_cache(cache_id=args.cache_id)
