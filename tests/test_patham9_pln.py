@@ -10,6 +10,7 @@ from petta_memory.patham9_pln import (
     classify_smoke_result_with_retry,
     parse_metta_test_output,
     patham9_pln_handoff_sentences,
+    patham9_pln_query_smoke_program,
     summarize_smoke_results,
     summarize_smoke_results_file,
 )
@@ -155,6 +156,29 @@ class Patham9PlnSmokeGateTests(unittest.TestCase):
     def test_patham9_pln_handoff_sentences_reject_wrong_schema(self):
         with self.assertRaisesRegex(ValueError, "expected petta-memory-pettachainer-handoff-v1"):
             patham9_pln_handoff_sentences({"schema": "other", "items": []})
+
+    def test_patham9_pln_query_smoke_program_uses_numeric_stamp_and_preserves_provenance(self):
+        handoff = {
+            "schema": "petta-memory-patham9-pln-handoff-v1",
+            "items": [
+                {
+                    "atom": "(Sentence (Requires MediumPeTTaMemory PLNReadyViews) (stv 0.90 0.70) ((PMEvidence b2 mc3 pe1 rule domain)))",
+                    "term": "(Requires MediumPeTTaMemory PLNReadyViews)",
+                    "stv": {"strength": "0.90", "confidence": "0.70"},
+                    "evidence_id": "(PMEvidence b2 mc3 pe1 rule domain)",
+                    "pi_pln_extension": {"contextual_evidence_packets": [{"support": "8", "opposition": "2"}]},
+                }
+            ],
+        }
+
+        program = patham9_pln_query_smoke_program(handoff)
+
+        self.assertIn("(Sentence ((Requires MediumPeTTaMemory PLNReadyViews) (stv 0.90 0.70)) (0))", program["program"])
+        self.assertIn("(PLN.Query", program["program"])
+        self.assertIn("!(Test", program["program"])
+        self.assertEqual(program["runtime_stamp"], "(0)")
+        self.assertEqual(program["source_evidence_id"], "(PMEvidence b2 mc3 pe1 rule domain)")
+        self.assertEqual(program["source_item"]["pi_pln_extension"]["contextual_evidence_packets"][0]["support"], "8")
 
 
 if __name__ == "__main__":

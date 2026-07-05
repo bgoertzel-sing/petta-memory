@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -172,6 +175,120 @@ def _parse_evidence_packet(atom: str) -> dict[str, str]:
         "opposition": ec[2],
         "metadata": to_source(expr[3]),
         "promotion_event": expr[4],
+    }
+
+
+def _numeric_stamp(index: int) -> str:
+    return f"({index})"
+
+
+def patham9_pln_query_smoke_program(handoff: dict[str, Any], *, item_index: int = 0) -> dict[str, Any]:
+    """Build a tiny patham9/PLN query smoke from generated handoff Sentences.
+
+    patham9/PLN's current stamp utilities expect sortable evidence stamps; rich
+    symbolic provenance such as `(PMEvidence ...)` can trip lower-level sorting
+    code.  This gate therefore loads the selected Sentence with a numeric runtime
+    stamp while preserving the full petta-memory evidence/provenance mapping in
+    the returned sidecar metadata.
+    """
+    if handoff.get("schema") != "petta-memory-patham9-pln-handoff-v1":
+        raise ValueError("expected petta-memory-patham9-pln-handoff-v1 handoff")
+    items = list(handoff.get("items", []))
+    if not items:
+        raise ValueError("patham9/PLN handoff has no Sentence items")
+    if item_index < 0 or item_index >= len(items):
+        raise ValueError(f"item_index {item_index} out of range for {len(items)} item(s)")
+    item = items[item_index]
+    term = str(item["term"])
+    strength = str(item["stv"]["strength"])
+    confidence = str(item["stv"]["confidence"])
+    runtime_stamp = _numeric_stamp(item_index)
+    runtime_sentence = f"(Sentence ({term} (stv {strength} {confidence})) {runtime_stamp})"
+    expected = f"((stv {strength} {confidence}) {runtime_stamp})"
+    source_evidence_id = str(item.get("evidence_id", ""))
+    program = "\n".join(
+        [
+            "!(import! &self PLN)",
+            "!(PLN.Init ())",
+            f"!(Test (PLN.Query ({runtime_sentence})",
+            f"                  {term}",
+            "                  1 3 5)",
+            f"       {expected})",
+            "",
+        ]
+    )
+    return {
+        "schema": "petta-memory-patham9-pln-query-smoke-program-v1",
+        "mode": "read-only-single-sentence-query-smoke",
+        "program": program,
+        "query_term": term,
+        "expected_result": expected,
+        "runtime_sentence": runtime_sentence,
+        "runtime_stamp": runtime_stamp,
+        "runtime_stamp_policy": "numeric patham9/PLN stamp used for chainer compatibility; source evidence preserved in sidecar",
+        "source_evidence_id": source_evidence_id,
+        "source_item": item,
+        "boundary": "loads a generated Sentence into local patham9/PLN only for a bounded query smoke; no memory append, no PLN.Derive result promotion, no OmegaClaw/GoalChainer live path",
+    }
+
+
+def run_patham9_pln_query_smoke(
+    handoff: dict[str, Any],
+    *,
+    pln_repo: str | Path,
+    env_script: str | Path | None = None,
+    timeout_sec: float = 30.0,
+    item_index: int = 0,
+) -> dict[str, Any]:
+    """Run the tiny patham9/PLN handoff query smoke in an isolated temp file."""
+    program = patham9_pln_query_smoke_program(handoff, item_index=item_index)
+    repo = Path(pln_repo)
+    if env_script is None:
+        env_script = repo.parents[1] / "local" / "pettachainer-env.sh"
+    env_path = Path(env_script)
+    try:
+        with tempfile.TemporaryDirectory(prefix="petta-patham9-pln-") as td:
+            metta_path = Path(td) / "handoff_query_smoke.metta"
+            metta_path.write_text(program["program"], encoding="utf-8")
+            command = (
+                "set -euo pipefail; "
+                f"source {str(env_path)!r}; "
+                f"cd {str(repo)!r}; "
+                f"../PeTTa/run.sh {str(metta_path)!r}"
+            )
+            completed = subprocess.run(
+                ["bash", "-lc", command],
+                text=True,
+                capture_output=True,
+                timeout=timeout_sec,
+                env=os.environ.copy(),
+            )
+        returncode = completed.returncode
+        stdout = completed.stdout
+        stderr = completed.stderr
+    except subprocess.TimeoutExpired as exc:
+        returncode = -1
+        stdout = exc.stdout if isinstance(exc.stdout, str) else ""
+        stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+        stderr = f"{stderr}\nTimeoutExpired after {timeout_sec}s".strip()
+    output = f"{stdout}\n{stderr}"
+    parsed = parse_metta_test_output(output)
+    classified = classify_smoke_result(
+        {
+            "test": "patham9-pln-handoff-query-smoke",
+            "returncode": completed.returncode,
+            "output": output,
+        }
+    )
+    return {
+        "schema": "petta-memory-patham9-pln-query-smoke-result-v1",
+        "status": classified["status"],
+        "classification": classified,
+        "semantic_markers": parsed,
+        "program": program,
+        "returncode": returncode,
+        "stdout_tail": stdout[-4000:],
+        "stderr_tail": stderr[-4000:],
     }
 
 

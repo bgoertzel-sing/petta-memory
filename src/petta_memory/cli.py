@@ -6,7 +6,7 @@ from pathlib import Path
 import sys
 
 from .goalchainer_smoke import run_goalchainer_handoff_smoke, run_goalchainer_precompiled_handoff_smoke
-from .patham9_pln import patham9_pln_handoff_sentences
+from .patham9_pln import patham9_pln_handoff_sentences, run_patham9_pln_query_smoke
 from .store import MediumMemoryStore, ValidationError
 
 
@@ -62,6 +62,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print non-live patham9/PLN Sentence inputs from promoted handoff evidence",
     )
     patham9_pln.add_argument("--cache-id", default="petta-memory-patham9-pln-handoff")
+
+    patham9_smoke = sub.add_parser(
+        "patham9-pln-smoke",
+        help="Run a bounded read-only patham9/PLN query smoke from promoted handoff evidence",
+    )
+    patham9_smoke.add_argument("--cache-id", default="petta-memory-patham9-pln-smoke")
+    patham9_smoke.add_argument("--pln-repo", default="../patham9-pln", help="Path to local patham9/PLN checkout")
+    patham9_smoke.add_argument("--env-script", help="Path to local PeTTa/SWI environment activation script")
+    patham9_smoke.add_argument("--timeout-sec", type=float, default=30.0)
 
     goal_smoke = sub.add_parser(
         "goalchainer-smoke",
@@ -144,6 +153,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "patham9-pln-handoff":
             cache = store.pettachainer_handoff_cache(cache_id=args.cache_id)
             print(json.dumps(patham9_pln_handoff_sentences(cache), indent=2, sort_keys=True))
+            return 0
+        if args.cmd == "patham9-pln-smoke":
+            cache = store.pettachainer_handoff_cache(cache_id=args.cache_id)
+            handoff = patham9_pln_handoff_sentences(cache)
+            kwargs = {"pln_repo": args.pln_repo, "timeout_sec": args.timeout_sec}
+            if args.env_script:
+                kwargs["env_script"] = args.env_script
+            print(json.dumps(run_patham9_pln_query_smoke(handoff, **kwargs), indent=2, sort_keys=True))
             return 0
         if args.cmd == "goalchainer-smoke":
             cache = store.goalchainer_handoff_cache(cache_id=args.cache_id)
