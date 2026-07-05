@@ -9,6 +9,7 @@ from petta_memory.patham9_pln import (
     classify_smoke_result,
     classify_smoke_result_with_retry,
     parse_metta_test_output,
+    patham9_pi_pln_boundary_plan,
     patham9_pln_derivation_smoke_program,
     patham9_pln_handoff_sentences,
     patham9_pln_query_smoke_program,
@@ -195,6 +196,24 @@ class Patham9PlnSmokeGateTests(unittest.TestCase):
         self.assertEqual(program["stamp_sidecar"]["(0)"]["source_evidence_id"], "(PMEvidence b2 mc3 pe1 rule domain)")
         self.assertEqual(program["stamp_sidecar"]["(1)"]["kind"], "synthetic-non-live-bridge-implication")
         self.assertIn("no inferred-belief promotion", program["boundary"])
+
+    def test_patham9_pi_pln_boundary_plan_keeps_wrapper_first_and_summarizes_ec_inputs(self):
+        plan = patham9_pi_pln_boundary_plan(self._patham9_handoff())
+
+        self.assertEqual(plan["schema"], "petta-memory-patham9-pi-pln-boundary-plan-v1")
+        self.assertEqual(plan["decision"], "wrapper-first")
+        self.assertIn("unmodified functional chainer", plan["patham9_core_policy"])
+        self.assertIn("PLN.Query", plan["patham9_extension_points"])
+        self.assertIn("no truth-changing EC projection is live yet", plan["formula_policy"])
+        projected = plan["projection_inputs"][0]
+        self.assertEqual(projected["source_evidence_id"], "(PMEvidence b2 mc3 pe1 rule domain)")
+        self.assertEqual(projected["contextual_packets"][0]["total_evidence"], 10.0)
+        self.assertEqual(projected["contextual_packets"][0]["positive_ratio"], 0.8)
+        self.assertIn("no memory append", plan["non_live_gates"][1])
+
+    def test_patham9_pi_pln_boundary_plan_rejects_wrong_schema(self):
+        with self.assertRaisesRegex(ValueError, "expected petta-memory-patham9-pln-handoff-v1"):
+            patham9_pi_pln_boundary_plan({"schema": "other", "items": []})
 
 
 if __name__ == "__main__":

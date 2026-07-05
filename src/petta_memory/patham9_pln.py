@@ -407,6 +407,74 @@ def run_patham9_pln_derivation_smoke(
     }
 
 
+def patham9_pi_pln_boundary_plan(handoff: dict[str, Any]) -> dict[str, Any]:
+    """Describe the first reviewed pi-PLN extension boundary for patham9/PLN.
+
+    The direct query and two-premise derivation smokes establish that the checked
+    out patham9/PLN chainer can consume plain `Sentence` atoms.  This helper keeps
+    that core unchanged and makes the next integration boundary explicit: a
+    petta-memory-owned wrapper pre-projects contextual EvidencePacket/EC metadata
+    into additional sidecar inputs before invoking `PLN.Query`/`PLN.Derive`; it
+    must not patch patham9/PLN internals, append derived results, or reinterpret
+    raw quoted claims as premises.
+    """
+    if handoff.get("schema") != "petta-memory-patham9-pln-handoff-v1":
+        raise ValueError("expected petta-memory-patham9-pln-handoff-v1 handoff")
+    items = list(handoff.get("items", []))
+    projection_inputs: list[dict[str, Any]] = []
+    for index, item in enumerate(items):
+        packets = item.get("pi_pln_extension", {}).get("contextual_evidence_packets", [])
+        parsed_packets: list[dict[str, Any]] = []
+        for packet in packets:
+            support = float(str(packet.get("support", "0")))
+            opposition = float(str(packet.get("opposition", "0")))
+            total = support + opposition
+            parsed_packets.append(
+                {
+                    "support": support,
+                    "opposition": opposition,
+                    "total_evidence": total,
+                    "positive_ratio": None if total == 0 else support / total,
+                    "source_packet": packet,
+                }
+            )
+        projection_inputs.append(
+            {
+                "item_index": index,
+                "term": item.get("term"),
+                "base_stv": item.get("stv"),
+                "source_evidence_id": item.get("evidence_id"),
+                "contextual_packets": parsed_packets,
+                "runtime_stamp_policy": "wrapper assigns numeric runtime stamps; PMEvidence/provenance stays in sidecar",
+            }
+        )
+    return {
+        "schema": "petta-memory-patham9-pi-pln-boundary-plan-v1",
+        "decision": "wrapper-first",
+        "patham9_core_policy": "treat checked-out patham9/PLN as an unmodified functional chainer for PLN.Query/PLN.Derive over Sentence atoms",
+        "wrapper_responsibilities": [
+            "convert promoted petta-memory handoff items to patham9-compatible Sentence atoms",
+            "assign sortable numeric runtime stamps and preserve PMEvidence provenance in sidecars",
+            "pre-project reviewed contextual EvidencePacket/EC formulas into explicit Sentence inputs before runtime invocation",
+            "parse semantic Passed markers and keep inferred results artifact-only until a separate promotion review",
+        ],
+        "patham9_extension_points": {
+            "PLN.Query": "safe runtime entrypoint after wrapper projection; already smoke-tested",
+            "PLN.Derive": "safe runtime entrypoint for bounded derivation after wrapper projection; already smoke-tested",
+            "Sentence": "unchanged data boundary: (Sentence ($Term (stv S C)) $Stamp) at runtime, with provenance sidecar",
+            "StampDisjoint": "reason to keep runtime stamps numeric/simple until richer stamps are tested",
+            "PriorityRank": "current queue ordering uses confidence; wrapper may adjust confidence only through reviewed formulas",
+        },
+        "formula_policy": "no truth-changing EC projection is live yet; next gate should add a tiny reviewed wrapper formula over contextual_packets and compare artifact-only query/derive behavior",
+        "projection_inputs": projection_inputs,
+        "non_live_gates": [
+            "no patham9/PLN source patching before wrapper projection tests pass",
+            "no memory append or inferred-belief promotion from PLN outputs",
+            "no OmegaClaw/GoalChainer live integration before a non-live artifact gate passes",
+        ],
+    }
+
+
 def patham9_pln_handoff_sentences(handoff_cache: dict[str, Any]) -> dict[str, Any]:
     """Map petta-memory's non-live handoff cache into patham9/PLN Sentence inputs.
 
