@@ -11,6 +11,7 @@ from petta_memory.patham9_pln import (
     classify_smoke_result,
     classify_smoke_result_with_retry,
     continuation_predicate_wrapper,
+    controlled_backward_chainer,
     context_selection_wrapper,
     chained_inference_pipeline,
     ec_projected_stv,
@@ -2256,6 +2257,265 @@ class StoreRoundTripContinuationPredicateTests(unittest.TestCase):
         item0 = result["items"][0]
         self.assertEqual(item0["decision"], "continue")
         self.assertGreaterEqual(float(item0["stv"]["strength"]), 0.5)
+
+
+class ControlledBackwardChainerTests(unittest.TestCase):
+    """Unit tests for the controlled_backward_chainer inference-control mechanism."""
+
+    def _make_handoff(self, n: int = 3) -> dict[str, Any]:
+        """Build a small handoff with varied STVs, EC counts, and domains."""
+        items: list[dict[str, Any]] = []
+        for i in range(n):
+            strengths = [0.90, 0.50, 0.30]
+            confidences = [0.80, 0.60, 0.40]
+            domains = ["reasoning", "reasoning", "planning"]
+            rules = ["explicit-promotion", "explicit-promotion", "heuristic"]
+            depths = [0, 1, 2]
+            ec_support = [9, 3, 1]
+            ec_opposition = [1, 2, 4]
+            items.append({
+                "belief_id": f"b-cbc-{i}",
+                "term": f"(TestTerm{i})",
+                "stv": {"strength": strengths[i % 3], "confidence": confidences[i % 3]},
+                "pi_pln_extension": {
+                    "promotion_domain": domains[i % 3],
+                    "promotion_rule": rules[i % 3],
+                    "derivation_depth": depths[i % 3],
+                    "contextual_evidence_packets": [
+                        {
+                            "ec": {
+                                "support": ec_support[i % 3],
+                                "opposition": ec_opposition[i % 3],
+                            },
+                            "promotion_domain": domains[i % 3],
+                            "promotion_rule": rules[i % 3],
+                        }
+                    ],
+                },
+            })
+        return {
+            "schema": "petta-memory-patham9-pln-handoff-v1",
+            "item_count": n,
+            "items": items,
+        }
+
+    def test_schema(self):
+        result = controlled_backward_chainer(self._make_handoff())
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-controlled-backward-chainer-v1")
+        self.assertEqual(result["mode"], "design-specification-no-runtime")
+
+    def test_boundary_text(self):
+        result = controlled_backward_chainer(self._make_handoff())
+        self.assertIn("non-live wrapper-only controlled backward chainer", result["boundary"])
+        self.assertIn("no SWI/PeTTa/MeTTa runtime", result["boundary"])
+        self.assertIn("no memory append", result["boundary"])
+
+    def test_all_continue_then_terminate_at_max_depth(self):
+        """With max_depth=3, all items should eventually terminate by depth."""
+        handoff = self._make_handoff()
+        result = controlled_backward_chainer(
+            handoff, max_derivation_depth=3, max_steps=5,
+            context_update_mode="accumulate_depth",
+        )
+        # Items start at depth 0,1,2; after 1 step they go to 1,2,3 (item 0 at depth 0 -> 1)
+        # Item at depth 2 hits max_depth=3 after 1 step (depth 2 -> 3, terminates)
+        # Items at depth 0,1 need more steps
+        self.assertEqual(result["rejected_count"], 0)
+        self.assertGreater(result["terminated_count"], 0)
+        self.assertEqual(result["unterminated_count"], 0)
+        self.assertGreaterEqual(len(result["step_traces"]), 1)
+
+    def test_reject_by_strength(self):
+        result = controlled_backward_chainer(
+            self._make_handoff(), min_strength=0.6, max_steps=1,
+        )
+        # Item 0: 0.90 >= 0.6 -> continue
+        # Item 1: 0.50 < 0.6 -> reject
+        # Item 2: 0.30 < 0.6 -> reject
+        self.assertEqual(result["rejected_count"], 2)
+        # Item 0 passes strength threshold and remains active (no max_depth set)
+        self.assertEqual(result["unterminated_count"], 1)
+
+    def test_reject_by_confidence(self):
+        result = controlled_backward_chainer(
+            self._make_handoff(), min_confidence=0.7, max_steps=1,
+        )
+        self.assertEqual(result["rejected_count"], 2)
+
+    def test_domain_filter_rejects_non_matching(self):
+        result = controlled_backward_chainer(
+            self._make_handoff(), domain="reasoning", max_steps=1,
+        )
+        # Item 2 has domain "planning" -> reject
+        self.assertEqual(result["rejected_count"], 1)
+        self.assertGreaterEqual(result["terminated_count"] + result["unterminated_count"], 2)
+
+    def test_ec_ratio_threshold(self):
+        result = controlled_backward_chainer(
+            self._make_handoff(), ec_ratio_threshold=0.7, max_steps=1,
+        )
+        # Item 0: 9/(9+1) = 0.9 >= 0.7 -> pass
+        # Item 1: 3/(3+2) = 0.6 < 0.7 -> reject
+        # Item 2: 1/(1+4) = 0.2 < 0.7 -> reject
+        self.assertEqual(result["rejected_count"], 2)
+
+    def test_promotion_rule_filter(self):
+        result = controlled_backward_chainer(
+            self._make_handoff(), promotion_rule="explicit-promotion", max_steps=1,
+        )
+        # Item 2 has rule "heuristic" -> reject
+        self.assertEqual(result["rejected_count"], 1)
+
+    def test_max_steps_terminates_remaining(self):
+        """With max_steps=1, items that don't reject should be unterminated."""
+        result = controlled_backward_chainer(
+            self._make_handoff(), max_steps=1,
+        )
+        # No thresholds, no max_depth; after 1 step all 3 are still active
+        # but we stop due to max_steps
+        self.assertEqual(result["rejected_count"], 0)
+        self.assertEqual(result["terminated_count"], 0)
+        self.assertEqual(result["unterminated_count"], 3)
+        self.assertEqual(result["total_steps"], 1)
+
+    def test_accumulate_ec_mode(self):
+        """EC accumulation mode grows support count over steps."""
+        handoff = self._make_handoff(1)
+        result = controlled_backward_chainer(
+            handoff, max_derivation_depth=3, max_steps=5,
+            context_update_mode="accumulate_ec",
+        )
+        # The item starts at depth 0 with EC (9,1) and should accumulate
+        # support as it continues through steps
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-controlled-backward-chainer-v1")
+        # Item should eventually terminate at depth 3
+        self.assertEqual(result["terminated_count"], 1)
+        self.assertEqual(result["rejected_count"], 0)
+
+    def test_fixed_context_mode(self):
+        """Fixed context mode does not update depth, so items may never terminate."""
+        result = controlled_backward_chainer(
+            self._make_handoff(), max_derivation_depth=2, max_steps=3,
+            context_update_mode="fixed",
+        )
+        # With fixed mode, depth never increases; item at depth 2 terminates
+        # immediately, but items at depth 0 and 1 never reach max_depth
+        self.assertGreater(result["terminated_count"], 0)
+        self.assertGreater(result["unterminated_count"], 0)
+
+    def test_max_branches_cap(self):
+        """max_branches should cap total branches processed."""
+        result = controlled_backward_chainer(
+            self._make_handoff(10), max_steps=10, max_branches=3,
+        )
+        self.assertLessEqual(result["total_processed"], 3)
+
+    def test_empty_handoff(self):
+        empty = {"schema": "petta-memory-patham9-pln-handoff-v1", "item_count": 0, "items": []}
+        result = controlled_backward_chainer(empty)
+        self.assertEqual(result["input_count"], 0)
+        self.assertEqual(result["total_steps"], 0)
+        self.assertEqual(result["terminated_count"], 0)
+        self.assertEqual(result["rejected_count"], 0)
+
+    def test_validation_errors(self):
+        with self.assertRaises(ValueError):
+            controlled_backward_chainer({"schema": "wrong"})
+        with self.assertRaises(ValueError):
+            controlled_backward_chainer(self._make_handoff(), min_strength=2.0)
+        with self.assertRaises(ValueError):
+            controlled_backward_chainer(self._make_handoff(), min_confidence=-0.1)
+        with self.assertRaises(ValueError):
+            controlled_backward_chainer(self._make_handoff(), max_derivation_depth=-1)
+        with self.assertRaises(ValueError):
+            controlled_backward_chainer(self._make_handoff(), ec_ratio_threshold=1.5)
+        with self.assertRaises(ValueError):
+            controlled_backward_chainer(self._make_handoff(), max_steps=0)
+        with self.assertRaises(ValueError):
+            controlled_backward_chainer(self._make_handoff(), max_branches=0)
+        with self.assertRaises(ValueError):
+            controlled_backward_chainer(self._make_handoff(), context_update_mode="invalid")
+
+    def test_step_trace_structure(self):
+        result = controlled_backward_chainer(self._make_handoff(), max_steps=2)
+        for trace in result["step_traces"]:
+            self.assertIn("step", trace)
+            self.assertIn("active_count", trace)
+            self.assertIn("decisions", trace)
+            self.assertIn("continue_count", trace)
+            self.assertIn("terminate_count", trace)
+            self.assertIn("reject_count", trace)
+            for dec in trace["decisions"]:
+                self.assertIn("decision", dec)
+                self.assertIn(dec["decision"], ("continue", "terminate", "reject"))
+                self.assertIn("checks", dec)
+                self.assertIn("context_after", dec)
+                self.assertIn("depth", dec["context_after"])
+
+    def test_terminated_branches_have_step_and_checks(self):
+        result = controlled_backward_chainer(
+            self._make_handoff(), max_derivation_depth=2, max_steps=5,
+        )
+        for tb in result["terminated_branches"]:
+            self.assertIn("step", tb)
+            self.assertIn("depth", tb)
+            self.assertIn("checks", tb)
+            self.assertIn("stv", tb)
+
+    def test_source_pattern_in_policy(self):
+        result = controlled_backward_chainer(self._make_handoff())
+        self.assertIn("controlled backward chainer", result["chainer_policy"]["source_pattern"])
+        self.assertIn("trueagi-io/chaining", result["chainer_policy"]["source_pattern"])
+
+
+class StoreRoundTripControlledBackwardChainerTests(unittest.TestCase):
+    """Store round-trip test: store -> handoff -> controlled backward chainer."""
+
+    def test_roundtrip_controlled_backward_chainer_from_store(self):
+        from petta_memory.store import MediumMemoryStore
+        cluster = """
+;;; BEGIN MemoryCluster mc-cbc-a
+(MemoryCluster mc-cbc-a)
+(SchemaVersion mc-cbc-a medium-memory-v1)
+(ClusterType mc-cbc-a belief-promotion)
+(ObservedEvent oe-cbc-a)
+(EventText oe-cbc-a "test controlled chainer round trip")
+(ClusterOpenedAt mc-cbc-a "2026-07-06 08:00 PDT")
+(ClusterSource mc-cbc-a src-test)
+(Contains mc-cbc-a pe-cbc-a)
+(Contains mc-cbc-a b-cbc-a)
+(ClusterStatus mc-cbc-a active)
+(PromotionEvent pe-cbc-a)
+(PromotesFrom pe-cbc-a qc-cbc-a)
+(PromotesTo pe-cbc-a b-cbc-a)
+(PromotionRule pe-cbc-a explicit-controlled-chainer-test)
+(PromotionTrust pe-cbc-a 0.85)
+(PromotionDomain pe-cbc-a reasoning)
+(DerivedBelief b-cbc-a)
+(BeliefContent b-cbc-a (ControlledChainerResult))
+(TruthValue b-cbc-a (stv 0.88 0.75))
+(EvidenceFor b-cbc-a qc-cbc-a)
+(EvidenceSupportCount b-cbc-a 8.0)
+(EvidenceOppositionCount b-cbc-a 2.0)
+;;; END MemoryCluster mc-cbc-a
+"""
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "cbc_memory.metta")
+            store.append_cluster(cluster)
+            cache = store.pettachainer_handoff_cache()
+
+        handoff = patham9_pln_handoff_sentences(cache)
+        result = controlled_backward_chainer(
+            handoff,
+            min_strength=0.5,
+            min_confidence=0.5,
+            domain="reasoning",
+            max_derivation_depth=3,
+            max_steps=5,
+        )
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-controlled-backward-chainer-v1")
+        self.assertGreaterEqual(result["terminated_count"] + result["unterminated_count"], 1)
+        self.assertEqual(result["rejected_count"], 0)
 
 
 if __name__ == "__main__":

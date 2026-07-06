@@ -3107,3 +3107,358 @@ def continuation_predicate_wrapper(
         "items": result_items,
         "boundary": _CONTINUATION_PREDICATE_BOUNDARY,
     }
+
+
+_CONTROLLED_BACKWARD_CHAINER_BOUNDARY = (
+    "non-live wrapper-only controlled backward chainer; no SWI/PeTTa/MeTTa runtime invoked; "
+    "no memory append or inferred-belief promotion; no patham9/PLN source change; "
+    "no OmegaClaw/GoalChainer live path"
+)
+
+
+def controlled_backward_chainer(
+    handoff: dict[str, Any],
+    *,
+    min_strength: float = 0.0,
+    min_confidence: float = 0.0,
+    max_derivation_depth: int | None = None,
+    domain: str | None = None,
+    ec_ratio_threshold: float = 0.0,
+    promotion_rule: str | None = None,
+    max_steps: int = 5,
+    max_branches: int = 20,
+    context_update_mode: str = "accumulate_depth",
+) -> dict[str, Any]:
+    """Simulate a bounded controlled backward-chaining loop over handoff items.
+
+    This implements the second medium-term "controlled backward chainer"
+    pattern from the trueagi-io/chaining inference-control survey.  It
+    builds on the continuation predicate wrapper by iterating it across
+    simulated derivation steps, using context updaters to track
+    progression, and terminating when all branches are resolved or
+    limits are reached.
+
+    The controlled chainer works as follows:
+
+    1. **Initialize** active branches from the handoff items.
+    2. **At each step**, apply the continuation predicate to every
+       active branch:
+       - ``continue``: keep the branch active; increment its depth.
+       - ``terminate``: record as a final result; remove from active.
+       - ``reject``: record as rejected; remove from active.
+    3. **Context update**: depending on ``context_update_mode``:
+       - ``accumulate_depth``: increment derivation depth for continued
+         branches.
+       - ``accumulate_ec``: additionally accumulate EC counts from
+         the step's continuation result into the branch context.
+       - ``fixed``: do not update context (baseline control).
+    4. **Termination**: stop when all branches are resolved, or when
+       ``max_steps`` or ``max_branches`` is reached.
+
+    The result is a derivation trace showing the controlled chainer's
+    decisions at each step, plus the final terminated and rejected
+    items.
+
+    The wrapper is non-live and wrapper-only:
+    - No SWI/PeTTa/MeTTa runtime invoked
+    - No memory append or inferred-belief promotion
+    - No patham9/PLN source changes
+    - No OmegaClaw/GoalChainer live path
+
+    Args:
+        handoff: A ``petta-memory-patham9-pln-handoff-v1`` dict.
+        min_strength: Minimum STV strength for continuation.
+        min_confidence: Minimum STV confidence for continuation.
+        max_derivation_depth: If set, branches at or beyond this depth
+            are terminated.
+        domain: If set, branches with non-matching promotion domain are
+            rejected.
+        ec_ratio_threshold: Minimum EC support ratio for continuation.
+        promotion_rule: If set, branches with non-matching promotion
+            rule are rejected.
+        max_steps: Maximum number of chainer iterations (default 5).
+        max_branches: Maximum total branches processed across all
+            steps (default 20, safety cap).
+        context_update_mode: How context is updated between steps:
+            ``accumulate_depth`` (default), ``accumulate_ec``, or
+            ``fixed``.
+
+    Returns:
+        A dict with schema
+        ``petta-memory-pi-pln-controlled-backward-chainer-v1``.
+    """
+    if handoff.get("schema") != "petta-memory-patham9-pln-handoff-v1":
+        raise ValueError("expected petta-memory-patham9-pln-handoff-v1 handoff")
+    if not (0 <= min_strength <= 1):
+        raise ValueError(f"min_strength {min_strength} out of [0, 1]")
+    if not (0 <= min_confidence <= 1):
+        raise ValueError(f"min_confidence {min_confidence} out of [0, 1]")
+    if max_derivation_depth is not None and max_derivation_depth < 0:
+        raise ValueError(f"max_derivation_depth {max_derivation_depth} must be non-negative or None")
+    if not (0 <= ec_ratio_threshold <= 1):
+        raise ValueError(f"ec_ratio_threshold {ec_ratio_threshold} out of [0, 1]")
+    if max_steps < 1:
+        raise ValueError(f"max_steps {max_steps} must be >= 1")
+    if max_branches < 1:
+        raise ValueError(f"max_branches {max_branches} must be >= 1")
+    if context_update_mode not in ("accumulate_depth", "accumulate_ec", "fixed"):
+        raise ValueError(
+            f"context_update_mode {context_update_mode!r} must be "
+            "'accumulate_depth', 'accumulate_ec', or 'fixed'"
+        )
+
+    items = list(handoff.get("items", []))
+
+    # Initialize branches from handoff items
+    # Each branch carries: item, depth, accumulated_ec, status
+    branches: list[dict[str, Any]] = []
+    for idx, item in enumerate(items):
+        extension = item.get("pi_pln_extension", {})
+        packets = extension.get("contextual_evidence_packets", [])
+        total_support = sum(
+            float(pkt.get("ec", {}).get("support", pkt.get("support", 0)))
+            for pkt in packets
+        )
+        total_opposition = sum(
+            float(pkt.get("ec", {}).get("opposition", pkt.get("opposition", 0)))
+            for pkt in packets
+        )
+        branches.append({
+            "item_index": idx,
+            "belief_id": item.get("belief_id"),
+            "term": item.get("term"),
+            "stv": item.get("stv", {}),
+            "depth": int(extension.get("derivation_depth", item.get("derivation_depth", 0))),
+            "promotion_domain": item.get("promotion_domain") or extension.get("promotion_domain"),
+            "promotion_rule": item.get("promotion_rule") or extension.get("promotion_rule"),
+            "accumulated_ec": {
+                "support": total_support,
+                "opposition": total_opposition,
+            },
+            "has_ec": len(packets) > 0,
+            "status": "active",
+        })
+
+    # Run the controlled chainer loop
+    step_traces: list[dict[str, Any]] = []
+    terminated_branches: list[dict[str, Any]] = []
+    rejected_branches: list[dict[str, Any]] = []
+    total_processed = 0
+
+    for step_num in range(1, max_steps + 1):
+        active = [b for b in branches if b["status"] == "active"]
+        if not active:
+            break
+        if total_processed + len(active) > max_branches:
+            # Cap: only process up to max_branches total
+            active = active[: max_branches - total_processed]
+            if not active:
+                break
+
+        step_decisions: list[dict[str, Any]] = []
+        for branch in active:
+            total_processed += 1
+            stv = branch["stv"]
+            strength = float(stv.get("strength", 0.0))
+            confidence = float(stv.get("confidence", 0.0))
+            depth = branch["depth"]
+            item_domain = branch["promotion_domain"]
+            item_rule = branch["promotion_rule"]
+            ec = branch["accumulated_ec"]
+            has_ec = branch["has_ec"]
+            ec_ratio = (
+                ec["support"] / (ec["support"] + ec["opposition"])
+                if (ec["support"] + ec["opposition"]) > 0
+                else 0.0
+            )
+
+            # Evaluate continuation predicate checks
+            checks: list[dict[str, Any]] = []
+
+            # Check 1: STV strength
+            strength_pass = strength >= min_strength
+            checks.append({
+                "check": "min_strength",
+                "required": min_strength,
+                "actual": strength,
+                "passed": strength_pass,
+            })
+
+            # Check 2: STV confidence
+            confidence_pass = confidence >= min_confidence
+            checks.append({
+                "check": "min_confidence",
+                "required": min_confidence,
+                "actual": confidence,
+                "passed": confidence_pass,
+            })
+
+            # Check 3: Domain match
+            if domain is not None:
+                domain_pass = item_domain == domain
+                checks.append({
+                    "check": "domain",
+                    "required": domain,
+                    "actual": item_domain,
+                    "passed": domain_pass,
+                })
+            else:
+                domain_pass = True
+
+            # Check 4: Promotion rule match
+            if promotion_rule is not None:
+                rule_pass = item_rule == promotion_rule
+                checks.append({
+                    "check": "promotion_rule",
+                    "required": promotion_rule,
+                    "actual": item_rule,
+                    "passed": rule_pass,
+                })
+            else:
+                rule_pass = True
+
+            # Check 5: EC support ratio
+            if has_ec and ec_ratio_threshold > 0:
+                ec_ratio_pass = ec_ratio >= ec_ratio_threshold
+                checks.append({
+                    "check": "ec_ratio",
+                    "required": ec_ratio_threshold,
+                    "actual": ec_ratio,
+                    "passed": ec_ratio_pass,
+                })
+            else:
+                ec_ratio_pass = True
+
+            # Check 6: Derivation depth (termination)
+            depth_terminates = (
+                max_derivation_depth is not None
+                and depth >= max_derivation_depth
+            )
+            if max_derivation_depth is not None:
+                checks.append({
+                    "check": "max_derivation_depth",
+                    "required": max_derivation_depth,
+                    "actual": depth,
+                    "passed": not depth_terminates,
+                    "termination": depth_terminates,
+                })
+
+            all_predicate_pass = (
+                strength_pass and confidence_pass
+                and domain_pass and rule_pass and ec_ratio_pass
+            )
+
+            if not all_predicate_pass:
+                decision = "reject"
+                branch["status"] = "rejected"
+                rejected_branches.append({
+                    "item_index": branch["item_index"],
+                    "belief_id": branch["belief_id"],
+                    "term": branch["term"],
+                    "stv": stv,
+                    "depth": depth,
+                    "step": step_num,
+                    "checks": checks,
+                })
+            elif depth_terminates:
+                decision = "terminate"
+                branch["status"] = "terminated"
+                terminated_branches.append({
+                    "item_index": branch["item_index"],
+                    "belief_id": branch["belief_id"],
+                    "term": branch["term"],
+                    "stv": stv,
+                    "depth": depth,
+                    "step": step_num,
+                    "checks": checks,
+                })
+            else:
+                decision = "continue"
+                # Apply context update
+                if context_update_mode == "accumulate_depth":
+                    branch["depth"] = depth + 1
+                elif context_update_mode == "accumulate_ec":
+                    branch["depth"] = depth + 1
+                    # In accumulate_ec mode, EC grows to reflect
+                    # accumulated evidence across derivation steps
+                    branch["accumulated_ec"] = {
+                        "support": ec["support"] + 1,
+                        "opposition": ec["opposition"],
+                    }
+                # fixed: no context update
+
+            step_decisions.append({
+                "item_index": branch["item_index"],
+                "belief_id": branch["belief_id"],
+                "term": branch["term"],
+                "stv": stv,
+                "depth": depth,
+                "decision": decision,
+                "checks": checks,
+                "context_after": {
+                    "depth": branch["depth"],
+                    "accumulated_ec": branch["accumulated_ec"],
+                },
+            })
+
+        step_traces.append({
+            "step": step_num,
+            "active_count": len(active),
+            "decisions": step_decisions,
+            "continue_count": sum(1 for d in step_decisions if d["decision"] == "continue"),
+            "terminate_count": sum(1 for d in step_decisions if d["decision"] == "terminate"),
+            "reject_count": sum(1 for d in step_decisions if d["decision"] == "reject"),
+        })
+
+        # Check if we hit max_branches
+        if total_processed >= max_branches:
+            break
+
+    # Any branches still active after max_steps are unterminated
+    unterminated = [b for b in branches if b["status"] == "active"]
+
+    return {
+        "schema": "petta-memory-pi-pln-controlled-backward-chainer-v1",
+        "mode": "design-specification-no-runtime",
+        "chainer_policy": {
+            "min_strength": min_strength,
+            "min_confidence": min_confidence,
+            "max_derivation_depth": max_derivation_depth,
+            "domain": domain,
+            "ec_ratio_threshold": ec_ratio_threshold,
+            "promotion_rule": promotion_rule,
+            "max_steps": max_steps,
+            "max_branches": max_branches,
+            "context_update_mode": context_update_mode,
+            "source_pattern": "controlled backward chainer from trueagi-io/chaining survey (medium-term)",
+            "description": (
+                "Simulates a bounded backward-chaining loop using "
+                "the continuation predicate as a per-branch decision "
+                "function, with context updaters tracking depth and "
+                "EC accumulation between steps.  Inspired by the "
+                "controlled backward chainer pattern in "
+                "trueagi-io/chaining."
+            ),
+        },
+        "input_count": len(items),
+        "total_steps": len(step_traces),
+        "total_processed": total_processed,
+        "terminated_count": len(terminated_branches),
+        "rejected_count": len(rejected_branches),
+        "unterminated_count": len(unterminated),
+        "step_traces": step_traces,
+        "terminated_branches": terminated_branches,
+        "rejected_branches": rejected_branches,
+        "unterminated_branches": [
+            {
+                "item_index": b["item_index"],
+                "belief_id": b["belief_id"],
+                "term": b["term"],
+                "stv": b["stv"],
+                "depth": b["depth"],
+                "accumulated_ec": b["accumulated_ec"],
+            }
+            for b in unterminated
+        ],
+        "boundary": _CONTROLLED_BACKWARD_CHAINER_BOUNDARY,
+    }

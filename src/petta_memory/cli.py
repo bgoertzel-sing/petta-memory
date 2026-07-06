@@ -9,6 +9,7 @@ from .goalchainer_smoke import run_goalchainer_handoff_smoke, run_goalchainer_pr
 from .patham9_pln import (
     chained_inference_pipeline,
     continuation_predicate_wrapper,
+    controlled_backward_chainer,
     context_selection_wrapper,
     patham9_pi_pln_extension_spec,
     patham9_pln_handoff_sentences,
@@ -202,6 +203,21 @@ def build_parser() -> argparse.ArgumentParser:
     cont_pred.add_argument("--domain", help="Require this promotion domain for continuation")
     cont_pred.add_argument("--ec-ratio-threshold", type=float, default=0.0, help="Minimum EC support ratio for continuation")
     cont_pred.add_argument("--promotion-rule", help="Require this promotion rule for continuation")
+
+    controlled_chainer = sub.add_parser(
+        "pi-pln-controlled-chainer",
+        help="Simulate a bounded controlled backward-chaining loop over handoff items",
+    )
+    controlled_chainer.add_argument("--cache-id", default="petta-memory-pi-pln-controlled-chainer")
+    controlled_chainer.add_argument("--min-strength", type=float, default=0.0, help="Minimum STV strength for continuation")
+    controlled_chainer.add_argument("--min-confidence", type=float, default=0.0, help="Minimum STV confidence for continuation")
+    controlled_chainer.add_argument("--max-depth", type=int, default=None, help="Maximum derivation depth; branches at this depth are terminated")
+    controlled_chainer.add_argument("--domain", help="Require this promotion domain for continuation")
+    controlled_chainer.add_argument("--ec-ratio-threshold", type=float, default=0.0, help="Minimum EC support ratio for continuation")
+    controlled_chainer.add_argument("--promotion-rule", help="Require this promotion rule for continuation")
+    controlled_chainer.add_argument("--max-steps", type=int, default=5, help="Maximum number of chainer iterations")
+    controlled_chainer.add_argument("--max-branches", type=int, default=20, help="Maximum total branches processed across all steps")
+    controlled_chainer.add_argument("--context-update-mode", choices=["accumulate_depth", "accumulate_ec", "fixed"], default="accumulate_depth", help="How context is updated between steps")
 
     goal_smoke = sub.add_parser(
         "goalchainer-smoke",
@@ -404,6 +420,23 @@ def main(argv: list[str] | None = None) -> int:
                 domain=args.domain,
                 ec_ratio_threshold=args.ec_ratio_threshold,
                 promotion_rule=args.promotion_rule,
+            )
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0
+        if args.cmd == "pi-pln-controlled-chainer":
+            cache = store.pettachainer_handoff_cache(cache_id=args.cache_id)
+            handoff = patham9_pln_handoff_sentences(cache)
+            result = controlled_backward_chainer(
+                handoff,
+                min_strength=args.min_strength,
+                min_confidence=args.min_confidence,
+                max_derivation_depth=args.max_depth,
+                domain=args.domain,
+                ec_ratio_threshold=args.ec_ratio_threshold,
+                promotion_rule=args.promotion_rule,
+                max_steps=args.max_steps,
+                max_branches=args.max_branches,
+                context_update_mode=args.context_update_mode,
             )
             print(json.dumps(result, indent=2, sort_keys=True))
             return 0
