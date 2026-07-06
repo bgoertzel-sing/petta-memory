@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import math
 import os
+import random
 import re
 import subprocess
 import tempfile
@@ -3461,4 +3463,286 @@ def controlled_backward_chainer(
             for b in unterminated
         ],
         "boundary": _CONTROLLED_BACKWARD_CHAINER_BOUNDARY,
+    }
+
+
+_PLN_ESTIMATOR_BOUNDARY = (
+    "non-live wrapper-only PLN estimator; no SWI/PeTTa/MeTTa runtime invoked; "
+    "no memory append or inferred-belief promotion; no patham9/PLN source change; "
+    "no OmegaClaw/GoalChainer live path"
+)
+
+
+def _beta_sample(alpha: float, beta: float, rng: random.Random) -> float:
+    """Sample from a Beta(alpha, beta) distribution.
+
+    Uses the gamma-ratio method which is numerically stable for
+    moderate parameters and does not require numpy/scipy.
+    """
+    if alpha <= 0 or beta <= 0:
+        return 0.0
+    x = rng.gammavariate(alpha, 1.0)
+    y = rng.gammavariate(beta, 1.0)
+    return x / (x + y) if (x + y) > 0 else 0.0
+
+
+def pln_estimator_wrapper(
+    handoff: dict[str, Any],
+    *,
+    query_target: str = "",
+    min_strength: float = 0.0,
+    min_confidence: float = 0.0,
+    domain: str | None = None,
+    ec_ratio_threshold: float = 0.0,
+    promotion_rule: str | None = None,
+    exploration_weight: float = 1.0,
+    max_branches: int = 20,
+    seed: int | None = None,
+) -> dict[str, Any]:
+    """Estimate branch viability using a PLN-based inference controller.
+
+    This implements the first long-term "PLN-based inference controller"
+    pattern from the trueagi-io/chaining inference-control survey.  It
+    converts each handoff Sentence into a PLN viability estimate, uses
+    Thompson sampling (beta distribution) to balance exploration and
+    exploitation, and returns a ranked exploration plan with EDCall
+    (Estimated Delayed Call) records.
+
+    The estimator works as follows:
+
+    1. **PLN estimation**: For each handoff item, compute an estimated
+       viability prior from STV strength and confidence, adjusted by
+       contextual EC evidence.  The prior alpha/beta parameters are
+       derived from EC support/opposition counts when available, or
+       from STV values when EC is absent.
+
+    2. **Context filtering**: Apply domain, promotion-rule, and EC-ratio
+       filters (same as the continuation predicate and context selection
+       wrappers) to determine which items are eligible for exploration.
+
+    3. **Thompson sampling**: For each eligible item, sample from the
+       Beta(alpha, beta) posterior to get a sampled viability score.
+       The exploration_weight parameter controls the temperature: higher
+       values increase exploration (wider sampling), lower values
+       increase exploitation (peakier sampling around the mean).
+
+    4. **EDCall ranking**: Produce an ordered list of EDCall records,
+       each pairing a sampled viability probability with the deferred
+       branch (handoff item) to explore.  The top-k branches by sampled
+       viability are recommended for PLN.Derive exploration.
+
+    This mirrors the ``pln-inf-ctl.metta`` pattern from
+    trueagi-io/chaining, where a Control structure holds a PLN knowledge
+    base and an estimator function that converts queries into PLN
+    statements to estimate branch viability before committing to
+    recursive search.
+
+    The wrapper is non-live and wrapper-only:
+    - No SWI/PeTTa/MeTTa runtime invoked
+    - No memory append or inferred-belief promotion
+    - No patham9/PLN source changes
+    - No OmegaClaw/GoalChainer live path
+
+    Args:
+        handoff: A ``petta-memory-patham9-pln-handoff-v1`` dict.
+        query_target: Optional query target term for the PLN estimator.
+            When empty, all items are considered equally relevant.
+        min_strength: Minimum STV strength for eligibility.
+        min_confidence: Minimum STV confidence for eligibility.
+        domain: If set, require matching promotion domain.
+        ec_ratio_threshold: Minimum EC support ratio for eligibility.
+        promotion_rule: If set, require matching promotion rule.
+        exploration_weight: Temperature for Thompson sampling.  Higher
+            values increase exploration (default 1.0).  Must be > 0.
+        max_branches: Maximum number of EDCall records to return
+            (default 20).
+        seed: Optional random seed for reproducibility.
+
+    Returns:
+        A dict with schema
+        ``petta-memory-pi-pln-pln-estimator-v1``.
+    """
+    if handoff.get("schema") != "petta-memory-patham9-pln-handoff-v1":
+        raise ValueError("expected petta-memory-patham9-pln-handoff-v1 handoff")
+    if not (0 <= min_strength <= 1):
+        raise ValueError(f"min_strength {min_strength} out of [0, 1]")
+    if not (0 <= min_confidence <= 1):
+        raise ValueError(f"min_confidence {min_confidence} out of [0, 1]")
+    if not (0 <= ec_ratio_threshold <= 1):
+        raise ValueError(f"ec_ratio_threshold {ec_ratio_threshold} out of [0, 1]")
+    if exploration_weight <= 0:
+        raise ValueError(f"exploration_weight {exploration_weight} must be > 0")
+    if max_branches < 1:
+        raise ValueError(f"max_branches {max_branches} must be >= 1")
+
+    rng = random.Random(seed)
+    items = list(handoff.get("items", []))
+
+    eligible: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+
+    for idx, item in enumerate(items):
+        stv = item.get("stv", {})
+        strength = float(stv.get("strength", 0.0))
+        confidence = float(stv.get("confidence", 0.0))
+
+        extension = item.get("pi_pln_extension", {})
+        item_domain = item.get("promotion_domain") or extension.get("promotion_domain")
+        item_rule = item.get("promotion_rule") or extension.get("promotion_rule")
+        packets = extension.get("contextual_evidence_packets", [])
+
+        total_support = sum(
+            float(pkt.get("ec", {}).get("support", pkt.get("support", 0)))
+            for pkt in packets
+        )
+        total_opposition = sum(
+            float(pkt.get("ec", {}).get("opposition", pkt.get("opposition", 0)))
+            for pkt in packets
+        )
+        has_ec = len(packets) > 0
+        ec_ratio = (
+            total_support / (total_support + total_opposition)
+            if (total_support + total_opposition) > 0
+            else 0.0
+        )
+
+        # Apply eligibility filters
+        reject_reasons: list[str] = []
+        if strength < min_strength:
+            reject_reasons.append(f"strength {strength} < {min_strength}")
+        if confidence < min_confidence:
+            reject_reasons.append(f"confidence {confidence} < {min_confidence}")
+        if domain is not None and item_domain != domain:
+            reject_reasons.append(f"domain {item_domain} != {domain}")
+        if promotion_rule is not None and item_rule != promotion_rule:
+            reject_reasons.append(f"promotion_rule {item_rule} != {promotion_rule}")
+        if has_ec and ec_ratio_threshold > 0 and ec_ratio < ec_ratio_threshold:
+            reject_reasons.append(f"ec_ratio {ec_ratio} < {ec_ratio_threshold}")
+
+        if reject_reasons:
+            rejected.append({
+                "item_index": idx,
+                "belief_id": item.get("belief_id"),
+                "term": item.get("term"),
+                "stv": stv,
+                "reject_reasons": reject_reasons,
+            })
+            continue
+
+        # Compute PLN viability prior parameters
+        # When EC is available, use EC counts as the primary evidence:
+        #   alpha = support + 1, beta = opposition + 1
+        # When EC is absent, derive from STV:
+        #   alpha = strength * confidence * 10 + 1
+        #   beta = (1 - strength) * confidence * 10 + 1
+        # The confidence factor scales the effective sample size.
+        if has_ec and (total_support + total_opposition) > 0:
+            alpha = total_support + 1.0
+            beta = total_opposition + 1.0
+        else:
+            effective_n = confidence * 10.0
+            alpha = strength * effective_n + 1.0
+            beta = (1.0 - strength) * effective_n + 1.0
+
+        # Apply exploration weight: scales the effective sample size
+        # Higher weight = wider posterior = more exploration
+        # We shrink alpha/beta toward 1 (uniform) by dividing the
+        # evidence contribution by the weight.
+        if exploration_weight != 1.0:
+            alpha = max(1.0, (alpha - 1.0) / exploration_weight + 1.0)
+            beta = max(1.0, (beta - 1.0) / exploration_weight + 1.0)
+
+        # Thompson sampling: sample from Beta(alpha, beta)
+        sampled_viability = _beta_sample(alpha, beta, rng)
+
+        # Compute mean viability (for reference)
+        mean_viability = alpha / (alpha + beta) if (alpha + beta) > 0 else 0.0
+
+        # Query relevance: simple text match on the query target
+        term = item.get("term", "")
+        query_relevant = (
+            query_target == ""
+            or query_target in term
+            or term in query_target
+        )
+
+        eligible.append({
+            "item_index": idx,
+            "belief_id": item.get("belief_id"),
+            "term": term,
+            "stv": stv,
+            "promotion_domain": item_domain,
+            "promotion_rule": item_rule,
+            "contextual_ec": {
+                "support": total_support,
+                "opposition": total_opposition,
+                "ratio": ec_ratio,
+            } if has_ec else None,
+            "pln_estimation": {
+                "alpha": alpha,
+                "beta": beta,
+                "mean_viability": mean_viability,
+                "sampled_viability": sampled_viability,
+                "exploration_weight": exploration_weight,
+                "prior_source": "ec_counts" if has_ec else "stv_derived",
+            },
+            "query_target": query_target,
+            "query_relevant": query_relevant,
+        })
+
+    # Sort by sampled viability (descending) to produce EDCall ranking
+    eligible.sort(key=lambda e: e["pln_estimation"]["sampled_viability"], reverse=True)
+
+    # Build EDCall records for the top-k branches
+    ed_calls: list[dict[str, Any]] = []
+    for rank, entry in enumerate(eligible[:max_branches], start=1):
+        est = entry["pln_estimation"]
+        ed_calls.append({
+            "rank": rank,
+            "item_index": entry["item_index"],
+            "belief_id": entry["belief_id"],
+            "term": entry["term"],
+            "stv": entry["stv"],
+            "estimated_probability": est["sampled_viability"],
+            "mean_viability": est["mean_viability"],
+            "alpha": est["alpha"],
+            "beta": est["beta"],
+            "query_relevant": entry["query_relevant"],
+            "deferred_branch": {
+                "schema": "petta-memory-patham9-pln-handoff-v1",
+                "item_index": entry["item_index"],
+                "belief_id": entry["belief_id"],
+                "term": entry["term"],
+            },
+        })
+
+    return {
+        "schema": "petta-memory-pi-pln-pln-estimator-v1",
+        "mode": "design-specification-no-runtime",
+        "estimator_policy": {
+            "query_target": query_target,
+            "min_strength": min_strength,
+            "min_confidence": min_confidence,
+            "domain": domain,
+            "ec_ratio_threshold": ec_ratio_threshold,
+            "promotion_rule": promotion_rule,
+            "exploration_weight": exploration_weight,
+            "max_branches": max_branches,
+            "seed": seed,
+            "source_pattern": "PLN-based inference controller from trueagi-io/chaining survey (long-term)",
+            "description": (
+                "Estimates branch viability by converting handoff items "
+                "into PLN prior parameters (alpha/beta) from EC counts or "
+                "STV values, then Thompson-samples from the Beta posterior "
+                "to rank exploration branches.  Inspired by the PLN-based "
+                "inference controller in trueagi-io/chaining."
+            ),
+        },
+        "input_count": len(items),
+        "eligible_count": len(eligible),
+        "rejected_count": len(rejected),
+        "ed_call_count": len(ed_calls),
+        "ed_calls": ed_calls,
+        "rejected_items": rejected,
+        "boundary": _PLN_ESTIMATOR_BOUNDARY,
     }

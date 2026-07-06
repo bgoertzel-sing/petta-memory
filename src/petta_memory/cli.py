@@ -13,6 +13,7 @@ from .patham9_pln import (
     context_selection_wrapper,
     patham9_pi_pln_extension_spec,
     patham9_pln_handoff_sentences,
+    pln_estimator_wrapper,
     probabilistic_inference_filter,
     run_meta_learning_benchmark,
     run_patham9_pln_derivation_smoke,
@@ -218,6 +219,21 @@ def build_parser() -> argparse.ArgumentParser:
     controlled_chainer.add_argument("--max-steps", type=int, default=5, help="Maximum number of chainer iterations")
     controlled_chainer.add_argument("--max-branches", type=int, default=20, help="Maximum total branches processed across all steps")
     controlled_chainer.add_argument("--context-update-mode", choices=["accumulate_depth", "accumulate_ec", "fixed"], default="accumulate_depth", help="How context is updated between steps")
+
+    pln_estimator = sub.add_parser(
+        "pi-pln-estimator",
+        help="Estimate branch viability using PLN-based inference controller with Thompson sampling",
+    )
+    pln_estimator.add_argument("--cache-id", default="petta-memory-pi-pln-pln-estimator")
+    pln_estimator.add_argument("--query-target", default="", help="Query target term for PLN estimation")
+    pln_estimator.add_argument("--min-strength", type=float, default=0.0, help="Minimum STV strength for eligibility")
+    pln_estimator.add_argument("--min-confidence", type=float, default=0.0, help="Minimum STV confidence for eligibility")
+    pln_estimator.add_argument("--domain", help="Require this promotion domain for eligibility")
+    pln_estimator.add_argument("--ec-ratio-threshold", type=float, default=0.0, help="Minimum EC support ratio for eligibility")
+    pln_estimator.add_argument("--promotion-rule", help="Require this promotion rule for eligibility")
+    pln_estimator.add_argument("--exploration-weight", type=float, default=1.0, help="Temperature for Thompson sampling (higher = more exploration)")
+    pln_estimator.add_argument("--max-branches", type=int, default=20, help="Maximum EDCall records to return")
+    pln_estimator.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility")
 
     goal_smoke = sub.add_parser(
         "goalchainer-smoke",
@@ -437,6 +453,23 @@ def main(argv: list[str] | None = None) -> int:
                 max_steps=args.max_steps,
                 max_branches=args.max_branches,
                 context_update_mode=args.context_update_mode,
+            )
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0
+        if args.cmd == "pi-pln-estimator":
+            cache = store.pettachainer_handoff_cache(cache_id=args.cache_id)
+            handoff = patham9_pln_handoff_sentences(cache)
+            result = pln_estimator_wrapper(
+                handoff,
+                query_target=args.query_target,
+                min_strength=args.min_strength,
+                min_confidence=args.min_confidence,
+                domain=args.domain,
+                ec_ratio_threshold=args.ec_ratio_threshold,
+                promotion_rule=args.promotion_rule,
+                exploration_weight=args.exploration_weight,
+                max_branches=args.max_branches,
+                seed=args.seed,
             )
             print(json.dumps(result, indent=2, sort_keys=True))
             return 0

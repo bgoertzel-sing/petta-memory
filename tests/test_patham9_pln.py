@@ -26,6 +26,7 @@ from petta_memory.patham9_pln import (
     patham9_pln_handoff_sentences,
     patham9_pln_multi_sentence_derivation_smoke_program,
     patham9_pln_query_smoke_program,
+    pln_estimator_wrapper,
     probabilistic_inference_filter,
     run_meta_learning_benchmark,
     summarize_smoke_results,
@@ -2516,6 +2517,341 @@ class StoreRoundTripControlledBackwardChainerTests(unittest.TestCase):
         self.assertEqual(result["schema"], "petta-memory-pi-pln-controlled-backward-chainer-v1")
         self.assertGreaterEqual(result["terminated_count"] + result["unterminated_count"], 1)
         self.assertEqual(result["rejected_count"], 0)
+
+
+class PlnEstimatorWrapperTests(unittest.TestCase):
+    """Tests for the PLN-based inference controller (PLN estimator) wrapper."""
+
+    def _make_handoff(self, n: int = 3) -> dict:
+        items = []
+        for i in range(n):
+            items.append({
+                "belief_id": f"b-est-{i}",
+                "term": f"(Acceptable action_{i})",
+                "stv": {"strength": 0.6 + i * 0.1, "confidence": 0.7 + i * 0.05},
+                "stamp": f"(PMEvidence est-{i})",
+                "promotion_domain": "reasoning",
+                "promotion_rule": "explicit-estimator-test",
+                "pi_pln_extension": {
+                    "contextual_evidence_packets": [
+                        {
+                            "ec": {"support": 5 + i, "opposition": 2 - i if i < 2 else 1},
+                            "domain": "reasoning",
+                            "promotion_rule": "explicit-estimator-test",
+                        }
+                    ],
+                },
+            })
+        return {
+            "schema": "petta-memory-patham9-pln-handoff-v1",
+            "items": items,
+        }
+
+    def test_schema(self):
+        result = pln_estimator_wrapper(self._make_handoff(), seed=42)
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-pln-estimator-v1")
+
+    def test_mode_is_no_runtime(self):
+        result = pln_estimator_wrapper(self._make_handoff(), seed=42)
+        self.assertEqual(result["mode"], "design-specification-no-runtime")
+
+    def test_boundary_text(self):
+        result = pln_estimator_wrapper(self._make_handoff(), seed=42)
+        self.assertIn("non-live wrapper-only", result["boundary"])
+        self.assertIn("no memory append", result["boundary"])
+
+    def test_input_count(self):
+        result = pln_estimator_wrapper(self._make_handoff(n=3), seed=42)
+        self.assertEqual(result["input_count"], 3)
+        self.assertEqual(result["eligible_count"], 3)
+        self.assertEqual(result["rejected_count"], 0)
+
+    def test_ed_calls_sorted_by_sampled_viability(self):
+        result = pln_estimator_wrapper(self._make_handoff(n=5), seed=42)
+        ed_calls = result["ed_calls"]
+        self.assertEqual(len(ed_calls), 5)
+        # Verify descending order
+        for i in range(len(ed_calls) - 1):
+            self.assertGreaterEqual(
+                ed_calls[i]["estimated_probability"],
+                ed_calls[i + 1]["estimated_probability"],
+            )
+
+    def test_ed_call_structure(self):
+        result = pln_estimator_wrapper(self._make_handoff(n=1), seed=42)
+        ed = result["ed_calls"][0]
+        self.assertIn("rank", ed)
+        self.assertIn("item_index", ed)
+        self.assertIn("belief_id", ed)
+        self.assertIn("term", ed)
+        self.assertIn("stv", ed)
+        self.assertIn("estimated_probability", ed)
+        self.assertIn("mean_viability", ed)
+        self.assertIn("alpha", ed)
+        self.assertIn("beta", ed)
+        self.assertIn("query_relevant", ed)
+        self.assertIn("deferred_branch", ed)
+        self.assertEqual(ed["deferred_branch"]["schema"], "petta-memory-patham9-pln-handoff-v1")
+
+    def test_thompson_sampling_with_seed_is_reproducible(self):
+        r1 = pln_estimator_wrapper(self._make_handoff(n=3), seed=123)
+        r2 = pln_estimator_wrapper(self._make_handoff(n=3), seed=123)
+        for e1, e2 in zip(r1["ed_calls"], r2["ed_calls"]):
+            self.assertEqual(e1["estimated_probability"], e2["estimated_probability"])
+
+    def test_thompson_sampling_different_seeds_vary(self):
+        r1 = pln_estimator_wrapper(self._make_handoff(n=3), seed=1)
+        r2 = pln_estimator_wrapper(self._make_handoff(n=3), seed=2)
+        # At least one sampled viability should differ
+        probs1 = [e["estimated_probability"] for e in r1["ed_calls"]]
+        probs2 = [e["estimated_probability"] for e in r2["ed_calls"]]
+        self.assertTrue(any(a != b for a, b in zip(probs1, probs2)))
+
+    def test_ec_prior_source(self):
+        result = pln_estimator_wrapper(self._make_handoff(n=1), seed=42)
+        est = result["ed_calls"][0]
+        self.assertEqual(est["alpha"], 6.0)  # support=5 + 1
+        self.assertEqual(est["beta"], 3.0)  # opposition=2 + 1
+
+    def test_stv_prior_source_without_ec(self):
+        handoff = {
+            "schema": "petta-memory-patham9-pln-handoff-v1",
+            "items": [{
+                "belief_id": "b-no-ec",
+                "term": "(Acceptable no_ec_action)",
+                "stv": {"strength": 0.8, "confidence": 0.5},
+                "stamp": "(PMEvidence no-ec)",
+                "pi_pln_extension": {},
+            }],
+        }
+        result = pln_estimator_wrapper(handoff, seed=42)
+        ed = result["ed_calls"][0]
+        # alpha = 0.8 * 0.5 * 10 + 1 = 5.0
+        self.assertAlmostEqual(ed["alpha"], 5.0)
+        # beta = (1 - 0.8) * 0.5 * 10 + 1 = 2.0
+        self.assertAlmostEqual(ed["beta"], 2.0)
+
+    def test_mean_viability(self):
+        result = pln_estimator_wrapper(self._make_handoff(n=1), seed=42)
+        est = result["ed_calls"][0]
+        # mean = alpha / (alpha + beta) = 6 / 9 = 0.6667
+        self.assertAlmostEqual(est["mean_viability"], 6.0 / 9.0, places=4)
+
+    def test_sampled_viability_in_range(self):
+        result = pln_estimator_wrapper(self._make_handoff(n=5), seed=42)
+        for ed in result["ed_calls"]:
+            self.assertGreaterEqual(ed["estimated_probability"], 0.0)
+            self.assertLessEqual(ed["estimated_probability"], 1.0)
+
+    def test_min_strength_filter_rejects(self):
+        result = pln_estimator_wrapper(self._make_handoff(n=3), min_strength=0.8, seed=42)
+        # Items with strength < 0.8 are rejected (item 0: 0.6, item 1: 0.7)
+        self.assertGreater(result["rejected_count"], 0)
+        for r in result["rejected_items"]:
+            self.assertTrue(any("strength" in reason for reason in r["reject_reasons"]))
+
+    def test_min_confidence_filter_rejects(self):
+        result = pln_estimator_wrapper(self._make_handoff(n=3), min_confidence=0.9, seed=42)
+        self.assertGreater(result["rejected_count"], 0)
+
+    def test_domain_filter_rejects(self):
+        result = pln_estimator_wrapper(self._make_handoff(n=3), domain="planning", seed=42)
+        self.assertEqual(result["eligible_count"], 0)
+        self.assertEqual(result["rejected_count"], 3)
+
+    def test_domain_filter_accepts_matching(self):
+        result = pln_estimator_wrapper(self._make_handoff(n=3), domain="reasoning", seed=42)
+        self.assertEqual(result["eligible_count"], 3)
+        self.assertEqual(result["rejected_count"], 0)
+
+    def test_promotion_rule_filter_rejects(self):
+        result = pln_estimator_wrapper(self._make_handoff(n=3), promotion_rule="wrong-rule", seed=42)
+        self.assertEqual(result["eligible_count"], 0)
+
+    def test_promotion_rule_filter_accepts_matching(self):
+        result = pln_estimator_wrapper(self._make_handoff(n=3), promotion_rule="explicit-estimator-test", seed=42)
+        self.assertEqual(result["eligible_count"], 3)
+
+    def test_ec_ratio_threshold_rejects(self):
+        # Item 2 has support=7, opposition=0 -> ratio=1.0
+        # Item 1 has support=6, opposition=1 -> ratio=0.857
+        # Item 0 has support=5, opposition=2 -> ratio=0.714
+        result = pln_estimator_wrapper(self._make_handoff(n=3), ec_ratio_threshold=0.8, seed=42)
+        self.assertLess(result["eligible_count"], 3)
+
+    def test_query_target_relevance(self):
+        result = pln_estimator_wrapper(
+            self._make_handoff(n=3), query_target="action_1", seed=42
+        )
+        for ed in result["ed_calls"]:
+            if "action_1" in ed["term"]:
+                self.assertTrue(ed["query_relevant"])
+            else:
+                self.assertFalse(ed["query_relevant"])
+
+    def test_empty_query_target_all_relevant(self):
+        result = pln_estimator_wrapper(self._make_handoff(n=2), seed=42)
+        for ed in result["ed_calls"]:
+            self.assertTrue(ed["query_relevant"])
+
+    def test_max_branches_caps_ed_calls(self):
+        result = pln_estimator_wrapper(self._make_handoff(n=5), max_branches=2, seed=42)
+        self.assertEqual(len(result["ed_calls"]), 2)
+
+    def test_empty_handoff(self):
+        result = pln_estimator_wrapper({
+            "schema": "petta-memory-patham9-pln-handoff-v1",
+            "items": [],
+        }, seed=42)
+        self.assertEqual(result["input_count"], 0)
+        self.assertEqual(result["ed_call_count"], 0)
+        self.assertEqual(result["ed_calls"], [])
+
+    def test_wrong_schema_raises(self):
+        with self.assertRaises(ValueError):
+            pln_estimator_wrapper({"schema": "wrong", "items": []}, seed=42)
+
+    def test_min_strength_out_of_range(self):
+        with self.assertRaises(ValueError):
+            pln_estimator_wrapper(self._make_handoff(), min_strength=-0.1, seed=42)
+        with self.assertRaises(ValueError):
+            pln_estimator_wrapper(self._make_handoff(), min_strength=1.1, seed=42)
+
+    def test_min_confidence_out_of_range(self):
+        with self.assertRaises(ValueError):
+            pln_estimator_wrapper(self._make_handoff(), min_confidence=-0.1, seed=42)
+
+    def test_ec_ratio_threshold_out_of_range(self):
+        with self.assertRaises(ValueError):
+            pln_estimator_wrapper(self._make_handoff(), ec_ratio_threshold=-0.1, seed=42)
+
+    def test_exploration_weight_must_be_positive(self):
+        with self.assertRaises(ValueError):
+            pln_estimator_wrapper(self._make_handoff(), exploration_weight=0, seed=42)
+        with self.assertRaises(ValueError):
+            pln_estimator_wrapper(self._make_handoff(), exploration_weight=-1, seed=42)
+
+    def test_max_branches_must_be_positive(self):
+        with self.assertRaises(ValueError):
+            pln_estimator_wrapper(self._make_handoff(), max_branches=0, seed=42)
+
+    def test_exploration_weight_scales_alpha_beta(self):
+        r1 = pln_estimator_wrapper(self._make_handoff(n=1), exploration_weight=1.0, seed=42)
+        r2 = pln_estimator_wrapper(self._make_handoff(n=1), exploration_weight=2.0, seed=42)
+        # With weight=2, evidence (alpha-1, beta-1) is halved, shrinking toward 1
+        # Base: alpha=6, beta=3 -> with weight=2: alpha=(5/2)+1=3.5, beta=(2/2)+1=2.0
+        self.assertAlmostEqual(r2["ed_calls"][0]["alpha"], 3.5)
+        self.assertAlmostEqual(r2["ed_calls"][0]["beta"], 2.0)
+
+    def test_exploration_weight_increases_variance(self):
+        # Higher exploration weight -> wider posterior -> more variance across seeds
+        results_low = [pln_estimator_wrapper(self._make_handoff(n=1), exploration_weight=0.5, seed=s)
+                       for s in range(10)]
+        results_high = [pln_estimator_wrapper(self._make_handoff(n=1), exploration_weight=5.0, seed=s)
+                        for s in range(10)]
+        probs_low = [r["ed_calls"][0]["estimated_probability"] for r in results_low]
+        probs_high = [r["ed_calls"][0]["estimated_probability"] for r in results_high]
+        var_low = sum((p - sum(probs_low) / len(probs_low)) ** 2 for p in probs_low) / len(probs_low)
+        var_high = sum((p - sum(probs_high) / len(probs_high)) ** 2 for p in probs_high) / len(probs_high)
+        self.assertGreater(var_high, var_low)
+
+    def test_source_pattern_in_policy(self):
+        result = pln_estimator_wrapper(self._make_handoff(), seed=42)
+        self.assertIn("PLN-based inference controller", result["estimator_policy"]["source_pattern"])
+        self.assertIn("trueagi-io/chaining", result["estimator_policy"]["source_pattern"])
+
+    def test_estimator_policy_structure(self):
+        result = pln_estimator_wrapper(
+            self._make_handoff(n=1),
+            query_target="action_0",
+            min_strength=0.5,
+            min_confidence=0.5,
+            domain="reasoning",
+            ec_ratio_threshold=0.3,
+            promotion_rule="explicit-estimator-test",
+            exploration_weight=2.0,
+            max_branches=10,
+            seed=99,
+        )
+        policy = result["estimator_policy"]
+        self.assertEqual(policy["query_target"], "action_0")
+        self.assertEqual(policy["min_strength"], 0.5)
+        self.assertEqual(policy["min_confidence"], 0.5)
+        self.assertEqual(policy["domain"], "reasoning")
+        self.assertEqual(policy["ec_ratio_threshold"], 0.3)
+        self.assertEqual(policy["promotion_rule"], "explicit-estimator-test")
+        self.assertEqual(policy["exploration_weight"], 2.0)
+        self.assertEqual(policy["max_branches"], 10)
+        self.assertEqual(policy["seed"], 99)
+
+    def test_rejected_items_structure(self):
+        result = pln_estimator_wrapper(
+            self._make_handoff(n=3),
+            min_strength=0.75,
+            seed=42,
+        )
+        self.assertGreater(result["rejected_count"], 0)
+        for r in result["rejected_items"]:
+            self.assertIn("item_index", r)
+            self.assertIn("belief_id", r)
+            self.assertIn("term", r)
+            self.assertIn("stv", r)
+            self.assertIn("reject_reasons", r)
+            self.assertIsInstance(r["reject_reasons"], list)
+            self.assertGreater(len(r["reject_reasons"]), 0)
+
+
+class StoreRoundTripPlnEstimatorTests(unittest.TestCase):
+    """Store round-trip test: store -> handoff -> PLN estimator."""
+
+    def test_roundtrip_pln_estimator_from_store(self):
+        from petta_memory.store import MediumMemoryStore
+        cluster = """
+;;; BEGIN MemoryCluster mc-est-a
+(MemoryCluster mc-est-a)
+(SchemaVersion mc-est-a medium-memory-v1)
+(ClusterType mc-est-a belief-promotion)
+(ObservedEvent oe-est-a)
+(EventText oe-est-a "test PLN estimator round trip")
+(ClusterOpenedAt mc-est-a "2026-07-06 12:00 PDT")
+(ClusterSource mc-est-a src-test)
+(Contains mc-est-a pe-est-a)
+(Contains mc-est-a b-est-a)
+(ClusterStatus mc-est-a active)
+(PromotionEvent pe-est-a)
+(PromotesFrom pe-est-a qc-est-a)
+(PromotesTo pe-est-a b-est-a)
+(PromotionRule pe-est-a explicit-estimator-rt)
+(PromotionTrust pe-est-a 0.85)
+(PromotionDomain pe-est-a reasoning)
+(DerivedBelief b-est-a)
+(BeliefContent b-est-a (EstimatorResult))
+(TruthValue b-est-a (stv 0.88 0.75))
+(EvidenceFor b-est-a qc-est-a)
+(EvidenceSupportCount b-est-a 8.0)
+(EvidenceOppositionCount b-est-a 2.0)
+;;; END MemoryCluster mc-est-a
+"""
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "est_memory.metta")
+            store.append_cluster(cluster)
+            cache = store.pettachainer_handoff_cache()
+
+        handoff = patham9_pln_handoff_sentences(cache)
+        result = pln_estimator_wrapper(
+            handoff,
+            min_strength=0.5,
+            min_confidence=0.5,
+            domain="reasoning",
+            seed=42,
+        )
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-pln-estimator-v1")
+        self.assertGreater(result["ed_call_count"], 0)
+        self.assertEqual(result["rejected_count"], 0)
+        # The EC counts should be 8/2, so alpha=9, beta=3
+        ed = result["ed_calls"][0]
+        self.assertAlmostEqual(ed["alpha"], 9.0)
+        self.assertAlmostEqual(ed["beta"], 3.0)
 
 
 if __name__ == "__main__":
