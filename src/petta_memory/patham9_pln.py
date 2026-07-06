@@ -3746,3 +3746,410 @@ def pln_estimator_wrapper(
         "rejected_items": rejected,
         "boundary": _PLN_ESTIMATOR_BOUNDARY,
     }
+
+
+_CONTROLLER_AS_CHAINER_BOUNDARY = (
+    "non-live wrapper-only controller-as-chainer; no SWI/PeTTa/MeTTa runtime invoked; "
+    "no memory append or inferred-belief promotion; no patham9/PLN source change; "
+    "no OmegaClaw/GoalChainer live path"
+)
+
+def controller_as_chainer(
+    handoff: dict[str, Any],
+    *,
+    # Primary chainer parameters
+    primary_min_strength: float = 0.0,
+    primary_min_confidence: float = 0.0,
+    primary_max_derivation_depth: int | None = None,
+    primary_domain: str | None = None,
+    primary_ec_ratio_threshold: float = 0.0,
+    primary_promotion_rule: str | None = None,
+    primary_max_steps: int = 5,
+    primary_max_branches: int = 20,
+    primary_context_update_mode: str = "accumulate_depth",
+    # Controller chainer parameters (stricter by default)
+    controller_min_strength: float = 0.5,
+    controller_min_confidence: float = 0.5,
+    controller_max_derivation_depth: int | None = 3,
+    controller_domain: str | None = None,
+    controller_ec_ratio_threshold: float = 0.5,
+    controller_promotion_rule: str | None = None,
+) -> dict[str, Any]:
+    """Run a two-level backward chainer where a controller chainer supervises
+    the primary chainer's termination decisions.
+
+    This implements the second long-term "controller-as-chainer" pattern from
+    the trueagi-io/chaining inference-control survey.  It uses a second backward
+    chainer instance (with stricter parameters) as a meta-level termination
+    controller over the primary chainer.
+
+    The controller-as-chainer works as follows:
+
+    1. **Primary chainer**: runs the controlled backward chainer with the
+       primary parameters, producing a derivation trace of per-step
+       decisions (continue/terminate/reject) for each branch.
+    2. **Controller evaluation**: after each primary step where branches
+       continued, the controller chainer evaluates those still-active
+       branches using its own (stricter) criteria.  The controller can:
+       - **confirm**: agree with the primary's continue decision.
+       - **override-terminate**: force-terminate a branch the primary
+         would have continued (e.g., the controller's stricter depth
+         limit or strength threshold is exceeded).
+       - **override-reject**: force-reject a branch the primary would
+         have continued (e.g., the controller's domain or EC threshold
+         is not met).
+    3. **Combined trace**: the result shows both the primary and
+       controller decisions at each step, with override decisions
+       marked clearly.
+
+    The controller typically uses tighter thresholds (higher minimum
+    strength/confidence, lower max depth, higher EC ratio) so it acts as
+    a quality gate that prunes speculative branches early.
+
+    The wrapper is non-live and wrapper-only:
+    - No SWI/PeTTa/MeTTa runtime invoked
+    - No memory append or inferred-belief promotion
+    - No patham9/PLN source changes
+    - No OmegaClaw/GoalChainer live path
+
+    Args:
+        handoff: A ``petta-memory-patham9-pln-handoff-v1`` dict.
+        primary_min_strength: Minimum STV strength for primary continuation.
+        primary_min_confidence: Minimum STV confidence for primary continuation.
+        primary_max_derivation_depth: Max depth for primary before termination.
+        primary_domain: Required domain for primary continuation.
+        primary_ec_ratio_threshold: Min EC support ratio for primary.
+        primary_promotion_rule: Required promotion rule for primary.
+        primary_max_steps: Max primary chainer iterations.
+        primary_max_branches: Max total branches for primary.
+        primary_context_update_mode: Context update mode for primary.
+        controller_min_strength: Controller's minimum STV strength (stricter).
+        controller_min_confidence: Controller's minimum STV confidence (stricter).
+        controller_max_derivation_depth: Controller's max depth (typically lower).
+        controller_domain: Controller's required domain.
+        controller_ec_ratio_threshold: Controller's min EC ratio (typically higher).
+        controller_promotion_rule: Controller's required promotion rule.
+
+    Returns:
+        A dict with schema
+        ``petta-memory-pi-pln-controller-as-chainer-v1``.
+    """
+    if handoff.get("schema") != "petta-memory-patham9-pln-handoff-v1":
+        raise ValueError("expected petta-memory-patham9-pln-handoff-v1 handoff")
+    if not (0 <= primary_min_strength <= 1):
+        raise ValueError(f"primary_min_strength {primary_min_strength} out of [0, 1]")
+    if not (0 <= primary_min_confidence <= 1):
+        raise ValueError(f"primary_min_confidence {primary_min_confidence} out of [0, 1]")
+    if not (0 <= controller_min_strength <= 1):
+        raise ValueError(f"controller_min_strength {controller_min_strength} out of [0, 1]")
+    if not (0 <= controller_min_confidence <= 1):
+        raise ValueError(f"controller_min_confidence {controller_min_confidence} out of [0, 1]")
+    if not (0 <= controller_ec_ratio_threshold <= 1):
+        raise ValueError(f"controller_ec_ratio_threshold {controller_ec_ratio_threshold} out of [0, 1]")
+    if not (0 <= primary_ec_ratio_threshold <= 1):
+        raise ValueError(f"primary_ec_ratio_threshold {primary_ec_ratio_threshold} out of [0, 1]")
+    if primary_max_derivation_depth is not None and primary_max_derivation_depth < 0:
+        raise ValueError(f"primary_max_derivation_depth must be non-negative or None")
+    if controller_max_derivation_depth is not None and controller_max_derivation_depth < 0:
+        raise ValueError(f"controller_max_derivation_depth must be non-negative or None")
+    if primary_max_steps < 1:
+        raise ValueError(f"primary_max_steps {primary_max_steps} must be >= 1")
+    if primary_max_branches < 1:
+        raise ValueError(f"primary_max_branches {primary_max_branches} must be >= 1")
+    if primary_context_update_mode not in ("accumulate_depth", "accumulate_ec", "fixed"):
+        raise ValueError(
+            f"primary_context_update_mode {primary_context_update_mode!r} must be "
+            "'accumulate_depth', 'accumulate_ec', or 'fixed'"
+        )
+
+    # Run the primary controlled backward chainer
+    primary_result = controlled_backward_chainer(
+        handoff,
+        min_strength=primary_min_strength,
+        min_confidence=primary_min_confidence,
+        max_derivation_depth=primary_max_derivation_depth,
+        domain=primary_domain,
+        ec_ratio_threshold=primary_ec_ratio_threshold,
+        promotion_rule=primary_promotion_rule,
+        max_steps=primary_max_steps,
+        max_branches=primary_max_branches,
+        context_update_mode=primary_context_update_mode,
+    )
+
+    # Now run the controller evaluation over the primary trace.
+    # The controller re-evaluates branches that the primary continued,
+    # using stricter criteria to potentially override with termination or rejection.
+    items = list(handoff.get("items", []))
+    controller_overrides: list[dict[str, Any]] = []
+    controller_terminations: list[dict[str, Any]] = []
+    controller_rejections: list[dict[str, Any]] = []
+    controller_confirmations: list[dict[str, Any]] = []
+
+    # Build a lookup of item -> STV/EC/domain/rule for controller evaluation
+    item_lookup: dict[int, dict[str, Any]] = {}
+    for idx, item in enumerate(items):
+        extension = item.get("pi_pln_extension", {})
+        packets = extension.get("contextual_evidence_packets", [])
+        total_support = sum(
+            float(pkt.get("ec", {}).get("support", pkt.get("support", 0)))
+            for pkt in packets
+        )
+        total_opposition = sum(
+            float(pkt.get("ec", {}).get("opposition", pkt.get("opposition", 0)))
+            for pkt in packets
+        )
+        item_lookup[idx] = {
+            "stv": item.get("stv", {}),
+            "strength": float(item.get("stv", {}).get("strength", 0.0)),
+            "confidence": float(item.get("stv", {}).get("confidence", 0.0)),
+            "promotion_domain": item.get("promotion_domain") or extension.get("promotion_domain"),
+            "promotion_rule": item.get("promotion_rule") or extension.get("promotion_rule"),
+            "has_ec": len(packets) > 0,
+            "ec_support": total_support,
+            "ec_opposition": total_opposition,
+            "ec_ratio": (
+                total_support / (total_support + total_opposition)
+                if (total_support + total_opposition) > 0
+                else 0.0
+            ),
+        }
+
+    # Walk the primary step traces.  For each step, evaluate controller
+    # decisions on branches that the primary continued.
+    combined_step_traces: list[dict[str, Any]] = []
+    for step_trace in primary_result.get("step_traces", []):
+        step_num = step_trace["step"]
+        controller_decisions: list[dict[str, Any]] = []
+
+        for decision in step_trace.get("decisions", []):
+            if decision["decision"] != "continue":
+                # Controller only evaluates branches the primary continued
+                controller_decisions.append({
+                    "item_index": decision["item_index"],
+                    "belief_id": decision["belief_id"],
+                    "primary_decision": decision["decision"],
+                    "controller_decision": "skip",
+                    "controller_reason": "primary did not continue",
+                })
+                continue
+
+            idx = decision["item_index"]
+            info = item_lookup.get(idx, {})
+            strength = info.get("strength", 0.0)
+            confidence = info.get("confidence", 0.0)
+            item_domain = info.get("promotion_domain")
+            item_rule = info.get("promotion_rule")
+            has_ec = info.get("has_ec", False)
+            ec_ratio = info.get("ec_ratio", 0.0)
+            # Use the depth from the primary trace's context_after
+            depth = decision.get("context_after", {}).get("depth", decision.get("depth", 0))
+
+            controller_checks: list[dict[str, Any]] = []
+            controller_decision = "confirm"
+            controller_reason = "all controller checks passed"
+
+            # Controller check 1: strength
+            if strength < controller_min_strength:
+                controller_checks.append({
+                    "check": "min_strength",
+                    "required": controller_min_strength,
+                    "actual": strength,
+                    "passed": False,
+                })
+                controller_decision = "override-reject"
+                controller_reason = f"strength {strength} < controller minimum {controller_min_strength}"
+            else:
+                controller_checks.append({
+                    "check": "min_strength",
+                    "required": controller_min_strength,
+                    "actual": strength,
+                    "passed": True,
+                })
+
+            # Controller check 2: confidence
+            if confidence < controller_min_confidence:
+                controller_checks.append({
+                    "check": "min_confidence",
+                    "required": controller_min_confidence,
+                    "actual": confidence,
+                    "passed": False,
+                })
+                controller_decision = "override-reject"
+                controller_reason = f"confidence {confidence} < controller minimum {controller_min_confidence}"
+            else:
+                controller_checks.append({
+                    "check": "min_confidence",
+                    "required": controller_min_confidence,
+                    "actual": confidence,
+                    "passed": True,
+                })
+
+            # Controller check 3: domain
+            if controller_domain is not None:
+                if item_domain != controller_domain:
+                    controller_checks.append({
+                        "check": "domain",
+                        "required": controller_domain,
+                        "actual": item_domain,
+                        "passed": False,
+                    })
+                    controller_decision = "override-reject"
+                    controller_reason = f"domain {item_domain!r} != controller domain {controller_domain!r}"
+                else:
+                    controller_checks.append({
+                        "check": "domain",
+                        "required": controller_domain,
+                        "actual": item_domain,
+                        "passed": True,
+                    })
+
+            # Controller check 4: promotion rule
+            if controller_promotion_rule is not None:
+                if item_rule != controller_promotion_rule:
+                    controller_checks.append({
+                        "check": "promotion_rule",
+                        "required": controller_promotion_rule,
+                        "actual": item_rule,
+                        "passed": False,
+                    })
+                    controller_decision = "override-reject"
+                    controller_reason = f"promotion_rule {item_rule!r} != controller rule {controller_promotion_rule!r}"
+                else:
+                    controller_checks.append({
+                        "check": "promotion_rule",
+                        "required": controller_promotion_rule,
+                        "actual": item_rule,
+                        "passed": True,
+                    })
+
+            # Controller check 5: EC ratio
+            if has_ec and controller_ec_ratio_threshold > 0:
+                if ec_ratio < controller_ec_ratio_threshold:
+                    controller_checks.append({
+                        "check": "ec_ratio",
+                        "required": controller_ec_ratio_threshold,
+                        "actual": ec_ratio,
+                        "passed": False,
+                    })
+                    controller_decision = "override-reject"
+                    controller_reason = f"EC ratio {ec_ratio:.4f} < controller threshold {controller_ec_ratio_threshold}"
+                else:
+                    controller_checks.append({
+                        "check": "ec_ratio",
+                        "required": controller_ec_ratio_threshold,
+                        "actual": ec_ratio,
+                        "passed": True,
+                    })
+
+            # Controller check 6: derivation depth (termination, not rejection)
+            if controller_max_derivation_depth is not None and depth >= controller_max_derivation_depth:
+                controller_checks.append({
+                    "check": "max_derivation_depth",
+                    "required": controller_max_derivation_depth,
+                    "actual": depth,
+                    "passed": False,
+                    "termination": True,
+                })
+                # Override-terminate takes priority over override-reject
+                # because termination preserves the result as a final answer
+                controller_decision = "override-terminate"
+                controller_reason = f"depth {depth} >= controller max {controller_max_derivation_depth}"
+            elif controller_max_derivation_depth is not None:
+                controller_checks.append({
+                    "check": "max_derivation_depth",
+                    "required": controller_max_derivation_depth,
+                    "actual": depth,
+                    "passed": True,
+                })
+
+            controller_entry = {
+                "item_index": idx,
+                "belief_id": decision["belief_id"],
+                "term": decision["term"],
+                "stv": decision["stv"],
+                "primary_decision": "continue",
+                "controller_decision": controller_decision,
+                "controller_reason": controller_reason,
+                "controller_checks": controller_checks,
+                "depth_at_controller_check": depth,
+            }
+            controller_decisions.append(controller_entry)
+
+            if controller_decision == "override-terminate":
+                controller_terminations.append(controller_entry)
+                controller_overrides.append(controller_entry)
+            elif controller_decision == "override-reject":
+                controller_rejections.append(controller_entry)
+                controller_overrides.append(controller_entry)
+            else:
+                controller_confirmations.append(controller_entry)
+
+        combined_step_traces.append({
+            "step": step_num,
+            "primary": {
+                "active_count": step_trace["active_count"],
+                "continue_count": step_trace["continue_count"],
+                "terminate_count": step_trace["terminate_count"],
+                "reject_count": step_trace["reject_count"],
+            },
+            "controller_decisions": controller_decisions,
+            "controller_override_count": sum(
+                1 for d in controller_decisions
+                if d["controller_decision"].startswith("override")
+            ),
+            "controller_confirm_count": sum(
+                1 for d in controller_decisions
+                if d["controller_decision"] == "confirm"
+            ),
+        })
+
+    return {
+        "schema": "petta-memory-pi-pln-controller-as-chainer-v1",
+        "mode": "design-specification-no-runtime",
+        "primary_chainer": {
+            "min_strength": primary_min_strength,
+            "min_confidence": primary_min_confidence,
+            "max_derivation_depth": primary_max_derivation_depth,
+            "domain": primary_domain,
+            "ec_ratio_threshold": primary_ec_ratio_threshold,
+            "promotion_rule": primary_promotion_rule,
+            "max_steps": primary_max_steps,
+            "max_branches": primary_max_branches,
+            "context_update_mode": primary_context_update_mode,
+            "source_pattern": "controlled backward chainer (primary)",
+        },
+        "controller_chainer": {
+            "min_strength": controller_min_strength,
+            "min_confidence": controller_min_confidence,
+            "max_derivation_depth": controller_max_derivation_depth,
+            "domain": controller_domain,
+            "ec_ratio_threshold": controller_ec_ratio_threshold,
+            "promotion_rule": controller_promotion_rule,
+            "source_pattern": "controlled backward chainer (controller)",
+            "description": (
+                "A second backward chainer instance with stricter "
+                "parameters that supervises the primary chainer's "
+                "continuation decisions.  The controller can confirm, "
+                "override-terminate, or override-reject branches that "
+                "the primary would have continued.  Inspired by the "
+                "controller-as-chainer pattern in trueagi-io/chaining."
+            ),
+        },
+        "input_count": len(items),
+        "primary_result_summary": {
+            "terminated_count": primary_result["terminated_count"],
+            "rejected_count": primary_result["rejected_count"],
+            "unterminated_count": primary_result["unterminated_count"],
+            "total_steps": primary_result["total_steps"],
+            "total_processed": primary_result["total_processed"],
+        },
+        "controller_override_count": len(controller_overrides),
+        "controller_termination_count": len(controller_terminations),
+        "controller_rejection_count": len(controller_rejections),
+        "controller_confirmation_count": len(controller_confirmations),
+        "combined_step_traces": combined_step_traces,
+        "controller_terminations": controller_terminations,
+        "controller_rejections": controller_rejections,
+        "controller_confirmations": controller_confirmations,
+        "boundary": _CONTROLLER_AS_CHAINER_BOUNDARY,
+    }

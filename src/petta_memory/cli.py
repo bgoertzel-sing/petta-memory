@@ -11,6 +11,7 @@ from .patham9_pln import (
     continuation_predicate_wrapper,
     controlled_backward_chainer,
     context_selection_wrapper,
+    controller_as_chainer,
     patham9_pi_pln_extension_spec,
     patham9_pln_handoff_sentences,
     pln_estimator_wrapper,
@@ -234,6 +235,29 @@ def build_parser() -> argparse.ArgumentParser:
     pln_estimator.add_argument("--exploration-weight", type=float, default=1.0, help="Temperature for Thompson sampling (higher = more exploration)")
     pln_estimator.add_argument("--max-branches", type=int, default=20, help="Maximum EDCall records to return")
     pln_estimator.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility")
+
+    controller_chainer = sub.add_parser(
+        "pi-pln-controller-as-chainer",
+        help="Run a two-level backward chainer where a controller supervises the primary's termination decisions",
+    )
+    controller_chainer.add_argument("--cache-id", default="petta-memory-pi-pln-controller-as-chainer")
+    # Primary parameters
+    controller_chainer.add_argument("--primary-min-strength", type=float, default=0.0, help="Minimum STV strength for primary chainer")
+    controller_chainer.add_argument("--primary-min-confidence", type=float, default=0.0, help="Minimum STV confidence for primary chainer")
+    controller_chainer.add_argument("--primary-max-depth", type=int, default=None, help="Max derivation depth for primary chainer")
+    controller_chainer.add_argument("--primary-domain", help="Required domain for primary chainer")
+    controller_chainer.add_argument("--primary-ec-ratio-threshold", type=float, default=0.0, help="Min EC support ratio for primary")
+    controller_chainer.add_argument("--primary-promotion-rule", help="Required promotion rule for primary")
+    controller_chainer.add_argument("--primary-max-steps", type=int, default=5, help="Max primary chainer iterations")
+    controller_chainer.add_argument("--primary-max-branches", type=int, default=20, help="Max total branches for primary")
+    controller_chainer.add_argument("--primary-context-update-mode", choices=["accumulate_depth", "accumulate_ec", "fixed"], default="accumulate_depth", help="Context update mode for primary")
+    # Controller parameters
+    controller_chainer.add_argument("--controller-min-strength", type=float, default=0.5, help="Minimum STV strength for controller (stricter)")
+    controller_chainer.add_argument("--controller-min-confidence", type=float, default=0.5, help="Minimum STV confidence for controller (stricter)")
+    controller_chainer.add_argument("--controller-max-depth", type=int, default=3, help="Max derivation depth for controller (typically lower)")
+    controller_chainer.add_argument("--controller-domain", help="Required domain for controller")
+    controller_chainer.add_argument("--controller-ec-ratio-threshold", type=float, default=0.5, help="Min EC support ratio for controller")
+    controller_chainer.add_argument("--controller-promotion-rule", help="Required promotion rule for controller")
 
     goal_smoke = sub.add_parser(
         "goalchainer-smoke",
@@ -470,6 +494,29 @@ def main(argv: list[str] | None = None) -> int:
                 exploration_weight=args.exploration_weight,
                 max_branches=args.max_branches,
                 seed=args.seed,
+            )
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0
+        if args.cmd == "pi-pln-controller-as-chainer":
+            cache = store.pettachainer_handoff_cache(cache_id=args.cache_id)
+            handoff = patham9_pln_handoff_sentences(cache)
+            result = controller_as_chainer(
+                handoff,
+                primary_min_strength=args.primary_min_strength,
+                primary_min_confidence=args.primary_min_confidence,
+                primary_max_derivation_depth=args.primary_max_depth,
+                primary_domain=args.primary_domain,
+                primary_ec_ratio_threshold=args.primary_ec_ratio_threshold,
+                primary_promotion_rule=args.primary_promotion_rule,
+                primary_max_steps=args.primary_max_steps,
+                primary_max_branches=args.primary_max_branches,
+                primary_context_update_mode=args.primary_context_update_mode,
+                controller_min_strength=args.controller_min_strength,
+                controller_min_confidence=args.controller_min_confidence,
+                controller_max_derivation_depth=args.controller_max_depth,
+                controller_domain=args.controller_domain,
+                controller_ec_ratio_threshold=args.controller_ec_ratio_threshold,
+                controller_promotion_rule=args.controller_promotion_rule,
             )
             print(json.dumps(result, indent=2, sort_keys=True))
             return 0

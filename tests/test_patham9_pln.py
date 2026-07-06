@@ -12,6 +12,7 @@ from petta_memory.patham9_pln import (
     classify_smoke_result_with_retry,
     continuation_predicate_wrapper,
     controlled_backward_chainer,
+    controller_as_chainer,
     context_selection_wrapper,
     chained_inference_pipeline,
     ec_projected_stv,
@@ -2852,6 +2853,404 @@ class StoreRoundTripPlnEstimatorTests(unittest.TestCase):
         ed = result["ed_calls"][0]
         self.assertAlmostEqual(ed["alpha"], 9.0)
         self.assertAlmostEqual(ed["beta"], 3.0)
+
+
+class ControllerAsChainerTests(unittest.TestCase):
+    """Unit tests for the controller_as_chainer inference-control mechanism."""
+
+    def _make_handoff(self, n: int = 3) -> dict[str, Any]:
+        """Build a small handoff with varied STVs, EC counts, and domains."""
+        items: list[dict[str, Any]] = []
+        for i in range(n):
+            strengths = [0.90, 0.50, 0.30]
+            confidences = [0.80, 0.60, 0.40]
+            domains = ["reasoning", "reasoning", "planning"]
+            rules = ["explicit-promotion", "explicit-promotion", "heuristic"]
+            depths = [0, 1, 2]
+            ec_support = [9, 3, 1]
+            ec_opposition = [1, 2, 4]
+            items.append({
+                "belief_id": f"b-cac-{i}",
+                "term": f"(TestTerm{i})",
+                "stv": {"strength": strengths[i % 3], "confidence": confidences[i % 3]},
+                "pi_pln_extension": {
+                    "promotion_domain": domains[i % 3],
+                    "promotion_rule": rules[i % 3],
+                    "derivation_depth": depths[i % 3],
+                    "contextual_evidence_packets": [
+                        {
+                            "ec": {
+                                "support": ec_support[i % 3],
+                                "opposition": ec_opposition[i % 3],
+                            },
+                            "promotion_domain": domains[i % 3],
+                            "promotion_rule": rules[i % 3],
+                        }
+                    ],
+                },
+            })
+        return {
+            "schema": "petta-memory-patham9-pln-handoff-v1",
+            "item_count": n,
+            "items": items,
+        }
+
+    def test_schema(self):
+        result = controller_as_chainer(self._make_handoff())
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-controller-as-chainer-v1")
+        self.assertEqual(result["mode"], "design-specification-no-runtime")
+
+    def test_boundary_text(self):
+        result = controller_as_chainer(self._make_handoff())
+        self.assertIn("non-live wrapper-only controller-as-chainer", result["boundary"])
+        self.assertIn("no SWI/PeTTa/MeTTa runtime", result["boundary"])
+        self.assertIn("no memory append", result["boundary"])
+
+    def test_primary_result_summary_present(self):
+        result = controller_as_chainer(self._make_handoff())
+        self.assertIn("primary_result_summary", result)
+        self.assertIn("terminated_count", result["primary_result_summary"])
+        self.assertIn("rejected_count", result["primary_result_summary"])
+        self.assertIn("unterminated_count", result["primary_result_summary"])
+
+    def test_controller_chainer_policy_present(self):
+        result = controller_as_chainer(self._make_handoff())
+        self.assertIn("controller_chainer", result)
+        self.assertIn("min_strength", result["controller_chainer"])
+        self.assertIn("max_derivation_depth", result["controller_chainer"])
+        self.assertEqual(result["controller_chainer"]["min_strength"], 0.5)
+
+    def test_controller_confirms_high_quality_branch(self):
+        """Item 0 (strength=0.90, confidence=0.80) should be confirmed by controller."""
+        result = controller_as_chainer(
+            self._make_handoff(),
+            primary_max_derivation_depth=10,
+            controller_max_derivation_depth=10,
+            primary_max_steps=1,
+        )
+        # Find the controller decision for item 0
+        confirmations = result["controller_confirmations"]
+        confirmed_ids = [c["belief_id"] for c in confirmations]
+        self.assertIn("b-cac-0", confirmed_ids)
+
+    def test_controller_rejects_low_strength(self):
+        """Controller with min_strength=0.6 should override-reject items below it."""
+        result = controller_as_chainer(
+            self._make_handoff(),
+            primary_max_steps=1,
+            controller_min_strength=0.6,
+            controller_max_derivation_depth=None,
+        )
+        rejections = result["controller_rejections"]
+        rejected_ids = [r["belief_id"] for r in rejections]
+        # Items 1 (0.50) and 2 (0.30) should be rejected by controller
+        self.assertIn("b-cac-1", rejected_ids)
+        self.assertIn("b-cac-2", rejected_ids)
+        self.assertNotIn("b-cac-0", rejected_ids)
+
+    def test_controller_rejects_low_confidence(self):
+        result = controller_as_chainer(
+            self._make_handoff(),
+            primary_max_steps=1,
+            controller_min_confidence=0.7,
+            controller_max_derivation_depth=None,
+        )
+        rejections = result["controller_rejections"]
+        rejected_ids = [r["belief_id"] for r in rejections]
+        self.assertIn("b-cac-1", rejected_ids)
+        self.assertIn("b-cac-2", rejected_ids)
+
+    def test_controller_domain_filter(self):
+        result = controller_as_chainer(
+            self._make_handoff(),
+            primary_max_steps=1,
+            controller_domain="reasoning",
+            controller_max_derivation_depth=None,
+        )
+        rejections = result["controller_rejections"]
+        rejected_ids = [r["belief_id"] for r in rejections]
+        # Item 2 has domain "planning" -> reject
+        self.assertIn("b-cac-2", rejected_ids)
+
+    def test_controller_promotion_rule_filter(self):
+        result = controller_as_chainer(
+            self._make_handoff(),
+            primary_max_steps=1,
+            controller_promotion_rule="explicit-promotion",
+            controller_max_derivation_depth=None,
+        )
+        rejections = result["controller_rejections"]
+        rejected_ids = [r["belief_id"] for r in rejections]
+        # Item 2 has rule "heuristic" -> reject
+        self.assertIn("b-cac-2", rejected_ids)
+
+    def test_controller_ec_ratio_filter(self):
+        result = controller_as_chainer(
+            self._make_handoff(),
+            primary_max_steps=1,
+            controller_ec_ratio_threshold=0.7,
+            controller_max_derivation_depth=None,
+        )
+        rejections = result["controller_rejections"]
+        rejected_ids = [r["belief_id"] for r in rejections]
+        # Item 1: 3/(3+2) = 0.6 < 0.7 -> reject
+        # Item 2: 1/(1+4) = 0.2 < 0.7 -> reject
+        self.assertIn("b-cac-1", rejected_ids)
+        self.assertIn("b-cac-2", rejected_ids)
+        self.assertNotIn("b-cac-0", rejected_ids)
+
+    def test_controller_terminates_by_depth(self):
+        """Controller with max_depth=1 should terminate items reaching depth 1."""
+        # Items start at depth 0, 1, 2. After one step, item 0 goes to depth 1.
+        # Controller with max_depth=1 should override-terminate item 0 at depth 1.
+        result = controller_as_chainer(
+            self._make_handoff(),
+            primary_max_steps=1,
+            controller_max_derivation_depth=1,
+            controller_min_strength=0.0,
+            controller_min_confidence=0.0,
+            controller_ec_ratio_threshold=0.0,
+        )
+        terminations = result["controller_terminations"]
+        self.assertGreater(len(terminations), 0)
+        # Items at depth >= 1 should be terminated by controller
+        for t in terminations:
+            self.assertGreaterEqual(t["depth_at_controller_check"], 1)
+
+    def test_override_terminate_takes_priority_over_reject(self):
+        """If both depth termination and strength rejection would fire,
+        termination should win (it preserves the result as a final answer)."""
+        result = controller_as_chainer(
+            self._make_handoff(),
+            primary_max_steps=1,
+            controller_max_derivation_depth=1,
+            controller_min_strength=0.95,  # higher than all items
+            controller_min_confidence=0.0,
+            controller_ec_ratio_threshold=0.0,
+        )
+        terminations = result["controller_terminations"]
+        # Items at depth >= 1 should be terminated, not rejected
+        for t in terminations:
+            self.assertEqual(t["controller_decision"], "override-terminate")
+
+    def test_combined_step_traces_present(self):
+        result = controller_as_chainer(
+            self._make_handoff(), primary_max_steps=2,
+        )
+        self.assertGreater(len(result["combined_step_traces"]), 0)
+        for trace in result["combined_step_traces"]:
+            self.assertIn("step", trace)
+            self.assertIn("primary", trace)
+            self.assertIn("controller_decisions", trace)
+            self.assertIn("controller_override_count", trace)
+            self.assertIn("controller_confirm_count", trace)
+
+    def test_controller_override_count(self):
+        result = controller_as_chainer(
+            self._make_handoff(),
+            primary_max_steps=1,
+            controller_min_strength=0.6,
+            controller_max_derivation_depth=None,
+        )
+        self.assertGreater(result["controller_override_count"], 0)
+        self.assertEqual(
+            result["controller_override_count"],
+            result["controller_termination_count"] + result["controller_rejection_count"],
+        )
+
+    def test_empty_handoff(self):
+        empty = {
+            "schema": "petta-memory-patham9-pln-handoff-v1",
+            "item_count": 0,
+            "items": [],
+        }
+        result = controller_as_chainer(empty)
+        self.assertEqual(result["input_count"], 0)
+        self.assertEqual(result["controller_override_count"], 0)
+        self.assertEqual(result["controller_confirmation_count"], 0)
+
+    def test_wrong_schema_raises(self):
+        with self.assertRaises(ValueError, msg="expected petta-memory-patham9-pln-handoff-v1 handoff"):
+            controller_as_chainer({"schema": "wrong", "items": []})
+
+    def test_out_of_range_primary_strength_raises(self):
+        with self.assertRaises(ValueError):
+            controller_as_chainer(self._make_handoff(), primary_min_strength=1.5)
+
+    def test_out_of_range_controller_strength_raises(self):
+        with self.assertRaises(ValueError):
+            controller_as_chainer(self._make_handoff(), controller_min_strength=-0.1)
+
+    def test_out_of_range_controller_ec_ratio_raises(self):
+        with self.assertRaises(ValueError):
+            controller_as_chainer(self._make_handoff(), controller_ec_ratio_threshold=1.5)
+
+    def test_negative_controller_max_depth_raises(self):
+        with self.assertRaises(ValueError):
+            controller_as_chainer(self._make_handoff(), controller_max_derivation_depth=-1)
+
+    def test_primary_max_steps_zero_raises(self):
+        with self.assertRaises(ValueError):
+            controller_as_chainer(self._make_handoff(), primary_max_steps=0)
+
+    def test_primary_max_branches_zero_raises(self):
+        with self.assertRaises(ValueError):
+            controller_as_chainer(self._make_handoff(), primary_max_branches=0)
+
+    def test_invalid_context_update_mode_raises(self):
+        with self.assertRaises(ValueError):
+            controller_as_chainer(self._make_handoff(), primary_context_update_mode="invalid")
+
+    def test_controller_decisions_skip_non_continue(self):
+        """Controller should skip branches the primary did not continue."""
+        # With primary min_strength=0.6, items 1 and 2 are rejected by primary.
+        # Controller should only evaluate item 0 (which continued).
+        result = controller_as_chainer(
+            self._make_handoff(),
+            primary_min_strength=0.6,
+            primary_max_steps=1,
+            controller_max_derivation_depth=None,
+        )
+        for trace in result["combined_step_traces"]:
+            for dec in trace["controller_decisions"]:
+                if dec["controller_decision"] == "skip":
+                    self.assertNotEqual(dec["primary_decision"], "continue")
+
+    def test_controller_checks_structure(self):
+        result = controller_as_chainer(
+            self._make_handoff(), primary_max_steps=1,
+            controller_max_derivation_depth=5,
+        )
+        # Find a non-skip decision with checks
+        for trace in result["combined_step_traces"]:
+            for dec in trace["controller_decisions"]:
+                if dec["controller_decision"] != "skip" and "controller_checks" in dec:
+                    check_types = [c["check"] for c in dec["controller_checks"]]
+                    self.assertIn("min_strength", check_types)
+                    self.assertIn("min_confidence", check_types)
+                    if dec.get("controller_checks"):
+                        for c in dec["controller_checks"]:
+                            self.assertIn("check", c)
+                            self.assertIn("required", c)
+                            self.assertIn("actual", c)
+                            self.assertIn("passed", c)
+                    break
+            else:
+                continue
+            break
+
+    def test_input_count_matches(self):
+        handoff = self._make_handoff(n=4)
+        result = controller_as_chainer(handoff)
+        self.assertEqual(result["input_count"], 4)
+
+    def test_controller_confirmations_structure(self):
+        result = controller_as_chainer(
+            self._make_handoff(),
+            primary_max_steps=1,
+            controller_max_derivation_depth=None,
+            controller_min_strength=0.0,
+            controller_min_confidence=0.0,
+            controller_ec_ratio_threshold=0.0,
+        )
+        for c in result["controller_confirmations"]:
+            self.assertIn("item_index", c)
+            self.assertIn("belief_id", c)
+            self.assertIn("primary_decision", c)
+            self.assertEqual(c["primary_decision"], "continue")
+            self.assertIn("controller_decision", c)
+            self.assertEqual(c["controller_decision"], "confirm")
+            self.assertIn("controller_checks", c)
+            self.assertIn("controller_reason", c)
+
+    def test_controller_terminations_structure(self):
+        result = controller_as_chainer(
+            self._make_handoff(),
+            primary_max_steps=1,
+            controller_max_derivation_depth=1,
+            controller_min_strength=0.0,
+            controller_min_confidence=0.0,
+            controller_ec_ratio_threshold=0.0,
+        )
+        for t in result["controller_terminations"]:
+            self.assertEqual(t["controller_decision"], "override-terminate")
+            self.assertIn("depth_at_controller_check", t)
+            self.assertIn("controller_checks", t)
+
+    def test_controller_rejections_structure(self):
+        result = controller_as_chainer(
+            self._make_handoff(),
+            primary_max_steps=1,
+            controller_min_strength=0.6,
+            controller_max_derivation_depth=None,
+        )
+        for r in result["controller_rejections"]:
+            self.assertEqual(r["controller_decision"], "override-reject")
+            self.assertIn("controller_reason", r)
+            self.assertIn("controller_checks", r)
+
+    def test_primary_chainer_policy_in_result(self):
+        result = controller_as_chainer(self._make_handoff())
+        self.assertIn("primary_chainer", result)
+        self.assertEqual(result["primary_chainer"]["min_strength"], 0.0)
+        self.assertEqual(result["primary_chainer"]["max_steps"], 5)
+
+
+class StoreRoundTripControllerAsChainerTests(unittest.TestCase):
+    """Store round-trip test: store -> handoff -> controller-as-chainer."""
+
+    def test_roundtrip_controller_as_chainer_from_store(self):
+        from petta_memory.store import MediumMemoryStore
+        cluster = """
+;;; BEGIN MemoryCluster mc-cac-a
+(MemoryCluster mc-cac-a)
+(SchemaVersion mc-cac-a medium-memory-v1)
+(ClusterType mc-cac-a belief-promotion)
+(ObservedEvent oe-cac-a)
+(EventText oe-cac-a "test controller-as-chainer round trip")
+(ClusterOpenedAt mc-cac-a "2026-07-06 14:00 PDT")
+(ClusterSource mc-cac-a src-test)
+(Contains mc-cac-a pe-cac-a)
+(Contains mc-cac-a b-cac-a)
+(ClusterStatus mc-cac-a active)
+(PromotionEvent pe-cac-a)
+(PromotesFrom pe-cac-a qc-cac-a)
+(PromotesTo pe-cac-a b-cac-a)
+(PromotionRule pe-cac-a explicit-controller-test)
+(PromotionTrust pe-cac-a 0.85)
+(PromotionDomain pe-cac-a reasoning)
+(DerivedBelief b-cac-a)
+(BeliefContent b-cac-a (ControllerChainerResult))
+(TruthValue b-cac-a (stv 0.88 0.75))
+(EvidenceFor b-cac-a qc-cac-a)
+(EvidenceSupportCount b-cac-a 8.0)
+(EvidenceOppositionCount b-cac-a 2.0)
+;;; END MemoryCluster mc-cac-a
+"""
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "cac_memory.metta")
+            store.append_cluster(cluster)
+            cache = store.pettachainer_handoff_cache()
+
+        handoff = patham9_pln_handoff_sentences(cache)
+        result = controller_as_chainer(
+            handoff,
+            primary_min_strength=0.5,
+            primary_min_confidence=0.5,
+            primary_domain="reasoning",
+            primary_max_derivation_depth=5,
+            primary_max_steps=3,
+            controller_min_strength=0.5,
+            controller_min_confidence=0.5,
+            controller_max_derivation_depth=5,
+            controller_domain="reasoning",
+        )
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-controller-as-chainer-v1")
+        self.assertGreater(result["input_count"], 0)
+        # The store belief has strength=0.88, confidence=0.75, domain=reasoning
+        # Controller with min_strength=0.5, min_confidence=0.5 should confirm it
+        self.assertGreater(result["controller_confirmation_count"], 0)
+        self.assertEqual(result["controller_rejection_count"], 0)
 
 
 if __name__ == "__main__":
