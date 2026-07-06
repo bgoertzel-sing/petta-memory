@@ -8,6 +8,7 @@ import sys
 from .goalchainer_smoke import run_goalchainer_handoff_smoke, run_goalchainer_precompiled_handoff_smoke
 from .patham9_pln import (
     chained_inference_pipeline,
+    continuation_predicate_wrapper,
     context_selection_wrapper,
     patham9_pi_pln_extension_spec,
     patham9_pln_handoff_sentences,
@@ -189,6 +190,18 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark.add_argument("--top-k", type=int, default=None, help="Keep only top-k items by composite score")
     benchmark.add_argument("--domain", help="Filter by this promotion domain in context selection")
     benchmark.add_argument("--min-relevance", type=float, default=0.0, help="Minimum packet relevance score [0, 1]")
+
+    cont_pred = sub.add_parser(
+        "pi-pln-continuation-predicate",
+        help="Apply continuation predicate wrapper to evaluate derivation branch decisions",
+    )
+    cont_pred.add_argument("--cache-id", default="petta-memory-pi-pln-continuation-predicate")
+    cont_pred.add_argument("--min-strength", type=float, default=0.0, help="Minimum STV strength for continuation")
+    cont_pred.add_argument("--min-confidence", type=float, default=0.0, help="Minimum STV confidence for continuation")
+    cont_pred.add_argument("--max-depth", type=int, default=None, help="Maximum derivation depth; items at this depth are terminated")
+    cont_pred.add_argument("--domain", help="Require this promotion domain for continuation")
+    cont_pred.add_argument("--ec-ratio-threshold", type=float, default=0.0, help="Minimum EC support ratio for continuation")
+    cont_pred.add_argument("--promotion-rule", help="Require this promotion rule for continuation")
 
     goal_smoke = sub.add_parser(
         "goalchainer-smoke",
@@ -377,6 +390,20 @@ def main(argv: list[str] | None = None) -> int:
                 top_k=args.top_k,
                 domain=args.domain,
                 min_packet_relevance=args.min_relevance,
+            )
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0
+        if args.cmd == "pi-pln-continuation-predicate":
+            cache = store.pettachainer_handoff_cache(cache_id=args.cache_id)
+            handoff = patham9_pln_handoff_sentences(cache)
+            result = continuation_predicate_wrapper(
+                handoff,
+                min_strength=args.min_strength,
+                min_confidence=args.min_confidence,
+                max_derivation_depth=args.max_depth,
+                domain=args.domain,
+                ec_ratio_threshold=args.ec_ratio_threshold,
+                promotion_rule=args.promotion_rule,
             )
             print(json.dumps(result, indent=2, sort_keys=True))
             return 0

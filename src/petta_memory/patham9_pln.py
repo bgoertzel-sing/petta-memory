@@ -2852,3 +2852,258 @@ def run_meta_learning_benchmark(
         },
         "boundary": _META_LEARNING_BOUNDARY,
     }
+
+
+_CONTINUATION_PREDICATE_BOUNDARY = (
+    "non-live wrapper-only continuation predicate; no SWI/PeTTa/MeTTa runtime invoked; "
+    "no memory append or inferred-belief promotion; no patham9/PLN source change; "
+    "no OmegaClaw/GoalChainer live path"
+)
+
+
+def continuation_predicate_wrapper(
+    handoff: dict[str, Any],
+    *,
+    min_strength: float = 0.0,
+    min_confidence: float = 0.0,
+    max_derivation_depth: int | None = None,
+    domain: str | None = None,
+    ec_ratio_threshold: float = 0.0,
+    promotion_rule: str | None = None,
+) -> dict[str, Any]:
+    """Apply a continuation predicate to handoff items.
+
+    This implements the medium-term "continuation predicate" pattern from
+    the trueagi-io/chaining inference-control survey.  Unlike the
+    probabilistic inference filter (which pre-filters by composite score)
+    or the context selection wrapper (which filters EvidencePackets), the
+    continuation predicate evaluates whether each item should *continue*
+    being explored as a derivation branch, or whether it should be
+    terminated (kept as a final result) or rejected (dropped entirely).
+
+    The wrapper produces a structured continuation plan for each item:
+    - ``continue``: the item passes all predicate checks and should be
+      fed back for further derivation.
+    - ``terminate``: the item passes strength/confidence checks but has
+      reached a stopping condition (e.g., max depth, domain match).
+    - ``reject``: the item fails one or more predicate checks and should
+      not be included in further derivation.
+
+    The continuation criteria are:
+    1. **STV strength** >= ``min_strength``.
+    2. **STV confidence** >= ``min_confidence``.
+    3. **Derivation depth** < ``max_derivation_depth`` (if set).
+    4. **Domain** matches ``domain`` (if set, checked against the item's
+       promotion domain in its pi-PLN extension).
+    5. **EC support ratio** >= ``ec_ratio_threshold``, where
+       ``ec_ratio = support / (support + opposition)`` when EC counts
+       are available.
+    6. **Promotion rule** matches ``promotion_rule`` (if set).
+
+    The wrapper is non-live and wrapper-only:
+    - No SWI/PeTTa/MeTTa runtime invoked
+    - No memory append or inferred-belief promotion
+    - No patham9/PLN source changes
+    - No OmegaClaw/GoalChainer live path
+
+    Args:
+        handoff: A ``petta-memory-patham9-pln-handoff-v1`` dict from
+            :func:`patham9_pln_handoff_sentences`.
+        min_strength: Minimum STV strength for continuation (default 0.0).
+        min_confidence: Minimum STV confidence for continuation (default 0.0).
+        max_derivation_depth: If set, items at or beyond this depth are
+            terminated rather than continued.  Depth is read from the
+            item's ``derivation_depth`` field in its pi-PLN extension
+            (default 0 for items without a depth field).
+        domain: If set, items whose promotion domain does not match
+            are rejected.
+        ec_ratio_threshold: Minimum EC support ratio ``support / (support
+            + opposition)`` for continuation.  Items without EC counts
+            are treated as passing this check.
+        promotion_rule: If set, items whose promotion rule does not
+            match are rejected.
+
+    Returns:
+        A dict with schema
+        ``petta-memory-pi-pln-continuation-predicate-v1``.
+    """
+    if handoff.get("schema") != "petta-memory-patham9-pln-handoff-v1":
+        raise ValueError("expected petta-memory-patham9-pln-handoff-v1 handoff")
+    if not (0 <= min_strength <= 1):
+        raise ValueError(f"min_strength {min_strength} out of [0, 1]")
+    if not (0 <= min_confidence <= 1):
+        raise ValueError(f"min_confidence {min_confidence} out of [0, 1]")
+    if max_derivation_depth is not None and max_derivation_depth < 0:
+        raise ValueError(f"max_derivation_depth {max_derivation_depth} must be non-negative or None")
+    if not (0 <= ec_ratio_threshold <= 1):
+        raise ValueError(f"ec_ratio_threshold {ec_ratio_threshold} out of [0, 1]")
+
+    items = list(handoff.get("items", []))
+    result_items: list[dict[str, Any]] = []
+    continue_indices: list[int] = []
+    terminate_indices: list[int] = []
+    reject_indices: list[int] = []
+
+    for idx, item in enumerate(items):
+        stv = item.get("stv", {})
+        strength = float(stv.get("strength", 0.0))
+        confidence = float(stv.get("confidence", 0.0))
+        extension = item.get("pi_pln_extension", {})
+        # Domain and promotion rule may be at the top level of the item
+        # or inside the pi_pln_extension depending on the handoff source.
+        item_domain = item.get("promotion_domain") or extension.get("promotion_domain")
+        item_promotion_rule = item.get("promotion_rule") or extension.get("promotion_rule")
+        derivation_depth = int(extension.get("derivation_depth", item.get("derivation_depth", 0)))
+
+        # Extract EC counts from contextual evidence packets
+        packets = extension.get("contextual_evidence_packets", [])
+        total_support = 0
+        total_opposition = 0
+        for pkt in packets:
+            # Packets may use either nested ec.{support,opposition} or
+            # top-level {support, opposition} depending on the handoff source.
+            ec = pkt.get("ec", {})
+            support_val = ec.get("support", pkt.get("support", 0))
+            opposition_val = ec.get("opposition", pkt.get("opposition", 0))
+            total_support += float(support_val)
+            total_opposition += float(opposition_val)
+        has_ec = len(packets) > 0
+        ec_ratio = (
+            total_support / (total_support + total_opposition)
+            if (total_support + total_opposition) > 0
+            else 0.0
+        )
+
+        # Evaluate continuation predicate checks
+        checks: list[dict[str, Any]] = []
+
+        # Check 1: STV strength
+        strength_pass = strength >= min_strength
+        checks.append({
+            "check": "min_strength",
+            "required": min_strength,
+            "actual": strength,
+            "passed": strength_pass,
+        })
+
+        # Check 2: STV confidence
+        confidence_pass = confidence >= min_confidence
+        checks.append({
+            "check": "min_confidence",
+            "required": min_confidence,
+            "actual": confidence,
+            "passed": confidence_pass,
+        })
+
+        # Check 3: Domain match
+        if domain is not None:
+            domain_pass = item_domain == domain
+            checks.append({
+                "check": "domain",
+                "required": domain,
+                "actual": item_domain,
+                "passed": domain_pass,
+            })
+        else:
+            domain_pass = True
+
+        # Check 4: Promotion rule match
+        if promotion_rule is not None:
+            rule_pass = item_promotion_rule == promotion_rule
+            checks.append({
+                "check": "promotion_rule",
+                "required": promotion_rule,
+                "actual": item_promotion_rule,
+                "passed": rule_pass,
+            })
+        else:
+            rule_pass = True
+
+        # Check 5: EC support ratio
+        if has_ec and ec_ratio_threshold > 0:
+            ec_ratio_pass = ec_ratio >= ec_ratio_threshold
+            checks.append({
+                "check": "ec_ratio",
+                "required": ec_ratio_threshold,
+                "actual": ec_ratio,
+                "passed": ec_ratio_pass,
+            })
+        else:
+            ec_ratio_pass = True
+
+        # Check 6: Derivation depth (termination check, not rejection)
+        depth_terminates = (
+            max_derivation_depth is not None
+            and derivation_depth >= max_derivation_depth
+        )
+        if max_derivation_depth is not None:
+            checks.append({
+                "check": "max_derivation_depth",
+                "required": max_derivation_depth,
+                "actual": derivation_depth,
+                "passed": not depth_terminates,
+                "termination": depth_terminates,
+            })
+
+        # Determine continuation decision
+        all_predicate_pass = (
+            strength_pass and confidence_pass
+            and domain_pass and rule_pass and ec_ratio_pass
+        )
+
+        if not all_predicate_pass:
+            decision = "reject"
+            reject_indices.append(idx)
+        elif depth_terminates:
+            decision = "terminate"
+            terminate_indices.append(idx)
+        else:
+            decision = "continue"
+            continue_indices.append(idx)
+
+        result_items.append({
+            "item_index": idx,
+            "belief_id": item.get("belief_id"),
+            "term": item.get("term"),
+            "stv": stv,
+            "decision": decision,
+            "derivation_depth": derivation_depth,
+            "promotion_domain": item_domain,
+            "promotion_rule": item_promotion_rule,
+            "ec_summary": {
+                "support": total_support,
+                "opposition": total_opposition,
+                "ratio": ec_ratio,
+            } if has_ec else None,
+            "checks": checks,
+        })
+
+    return {
+        "schema": "petta-memory-pi-pln-continuation-predicate-v1",
+        "mode": "design-specification-no-runtime",
+        "continuation_policy": {
+            "min_strength": min_strength,
+            "min_confidence": min_confidence,
+            "max_derivation_depth": max_derivation_depth,
+            "domain": domain,
+            "ec_ratio_threshold": ec_ratio_threshold,
+            "promotion_rule": promotion_rule,
+            "source_pattern": "continuation predicate from trueagi-io/chaining survey (medium-term)",
+            "description": (
+                "Evaluates whether each handoff item should continue "
+                "being explored as a derivation branch, be terminated "
+                "(kept as a final result), or be rejected (dropped). "
+                "Inspired by the backward-chaining continuation predicate "
+                "pattern in trueagi-io/chaining."
+            ),
+        },
+        "input_count": len(items),
+        "continue_count": len(continue_indices),
+        "terminate_count": len(terminate_indices),
+        "reject_count": len(reject_indices),
+        "continue_indices": continue_indices,
+        "terminate_indices": terminate_indices,
+        "reject_indices": reject_indices,
+        "items": result_items,
+        "boundary": _CONTINUATION_PREDICATE_BOUNDARY,
+    }

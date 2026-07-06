@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -9,6 +10,7 @@ from petta_memory.patham9_pln import (
     build_meta_learning_benchmark_handoff,
     classify_smoke_result,
     classify_smoke_result_with_retry,
+    continuation_predicate_wrapper,
     context_selection_wrapper,
     chained_inference_pipeline,
     ec_projected_stv,
@@ -1930,6 +1932,330 @@ class StoreRoundTripMetaLearningBenchmarkTests(unittest.TestCase):
         self.assertEqual(result["benchmark_scenario"]["shortcut_item_index"], 0)
         self.assertEqual(result["benchmark_scenario"]["chain_item_indices"], [])
         self.assertTrue(result["overall_pass"])
+
+
+# ---------------------------------------------------------------------------
+# Continuation predicate wrapper tests
+# ---------------------------------------------------------------------------
+
+class ContinuationPredicateWrapperTests(unittest.TestCase):
+    """Unit tests for the continuation_predicate_wrapper inference-control mechanism."""
+
+    def _make_handoff(self, n: int = 3) -> dict[str, Any]:
+        """Build a small handoff with varied STVs, EC counts, and domains."""
+        items: list[dict[str, Any]] = []
+        for i in range(n):
+            strengths = [0.90, 0.50, 0.30]
+            confidences = [0.80, 0.60, 0.40]
+            domains = ["reasoning", "reasoning", "planning"]
+            rules = ["explicit-promotion", "explicit-promotion", "heuristic"]
+            depths = [0, 1, 2]
+            ec_support = [9, 3, 1]
+            ec_opposition = [1, 2, 4]
+            items.append({
+                "belief_id": f"b-cp-{i}",
+                "term": f"(TestTerm{i})",
+                "stv": {"strength": strengths[i % 3], "confidence": confidences[i % 3]},
+                "pi_pln_extension": {
+                    "promotion_domain": domains[i % 3],
+                    "promotion_rule": rules[i % 3],
+                    "derivation_depth": depths[i % 3],
+                    "contextual_evidence_packets": [
+                        {
+                            "ec": {
+                                "support": ec_support[i % 3],
+                                "opposition": ec_opposition[i % 3],
+                            },
+                            "promotion_domain": domains[i % 3],
+                            "promotion_rule": rules[i % 3],
+                        }
+                    ],
+                },
+            })
+        return {
+            "schema": "petta-memory-patham9-pln-handoff-v1",
+            "item_count": n,
+            "items": items,
+        }
+
+    def test_schema(self):
+        result = continuation_predicate_wrapper(self._make_handoff())
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-continuation-predicate-v1")
+        self.assertEqual(result["mode"], "design-specification-no-runtime")
+
+    def test_boundary_text(self):
+        result = continuation_predicate_wrapper(self._make_handoff())
+        self.assertIn("non-live wrapper-only", result["boundary"])
+        self.assertIn("no SWI/PeTTa/MeTTa runtime", result["boundary"])
+        self.assertIn("no memory append", result["boundary"])
+
+    def test_all_continue_with_default_policy(self):
+        """With no thresholds set, all items should continue."""
+        handoff = self._make_handoff()
+        result = continuation_predicate_wrapper(handoff)
+        self.assertEqual(result["continue_count"], 3)
+        self.assertEqual(result["terminate_count"], 0)
+        self.assertEqual(result["reject_count"], 0)
+        self.assertEqual(sorted(result["continue_indices"]), [0, 1, 2])
+
+    def test_min_strength_filters(self):
+        result = continuation_predicate_wrapper(self._make_handoff(), min_strength=0.6)
+        # Item 0: 0.90 >= 0.6 -> continue
+        # Item 1: 0.50 < 0.6 -> reject
+        # Item 2: 0.30 < 0.6 -> reject
+        self.assertEqual(result["continue_count"], 1)
+        self.assertEqual(result["reject_count"], 2)
+        self.assertEqual(result["continue_indices"], [0])
+        self.assertEqual(sorted(result["reject_indices"]), [1, 2])
+
+    def test_min_confidence_filters(self):
+        result = continuation_predicate_wrapper(self._make_handoff(), min_confidence=0.7)
+        # Item 0: 0.80 >= 0.7 -> continue
+        # Item 1: 0.60 < 0.7 -> reject
+        # Item 2: 0.40 < 0.7 -> reject
+        self.assertEqual(result["continue_count"], 1)
+        self.assertEqual(result["reject_count"], 2)
+
+    def test_domain_filter(self):
+        result = continuation_predicate_wrapper(self._make_handoff(), domain="reasoning")
+        # Items 0,1 have domain "reasoning" -> continue
+        # Item 2 has domain "planning" -> reject
+        self.assertEqual(result["continue_count"], 2)
+        self.assertEqual(result["reject_count"], 1)
+        self.assertEqual(result["reject_indices"], [2])
+        # Check that domain check appears in checks
+        item2 = [i for i in result["items"] if i["item_index"] == 2][0]
+        domain_check = [c for c in item2["checks"] if c["check"] == "domain"][0]
+        self.assertEqual(domain_check["required"], "reasoning")
+        self.assertEqual(domain_check["actual"], "planning")
+        self.assertFalse(domain_check["passed"])
+
+    def test_promotion_rule_filter(self):
+        result = continuation_predicate_wrapper(self._make_handoff(), promotion_rule="explicit-promotion")
+        # Items 0,1 have rule "explicit-promotion" -> continue
+        # Item 2 has rule "heuristic" -> reject
+        self.assertEqual(result["continue_count"], 2)
+        self.assertEqual(result["reject_count"], 1)
+        self.assertEqual(result["reject_indices"], [2])
+
+    def test_ec_ratio_threshold(self):
+        # Item 0: 9/(9+1)=0.9, Item 1: 3/(3+2)=0.6, Item 2: 1/(1+4)=0.2
+        result = continuation_predicate_wrapper(self._make_handoff(), ec_ratio_threshold=0.5)
+        # Items 0,1 pass; item 2 rejected
+        self.assertEqual(result["continue_count"], 2)
+        self.assertEqual(result["reject_count"], 1)
+        self.assertEqual(result["reject_indices"], [2])
+        item2 = [i for i in result["items"] if i["item_index"] == 2][0]
+        ec_check = [c for c in item2["checks"] if c["check"] == "ec_ratio"][0]
+        self.assertAlmostEqual(ec_check["actual"], 0.2, places=2)
+        self.assertFalse(ec_check["passed"])
+
+    def test_max_derivation_depth_terminates(self):
+        """Items at or beyond max depth should be terminated, not rejected."""
+        result = continuation_predicate_wrapper(self._make_handoff(), max_derivation_depth=1)
+        # Item 0: depth 0 < 1 -> continue
+        # Item 1: depth 1 >= 1 -> terminate
+        # Item 2: depth 2 >= 1 -> terminate
+        self.assertEqual(result["continue_count"], 1)
+        self.assertEqual(result["terminate_count"], 2)
+        self.assertEqual(result["reject_count"], 0)
+        self.assertEqual(result["continue_indices"], [0])
+        self.assertEqual(sorted(result["terminate_indices"]), [1, 2])
+
+    def test_terminate_with_depth_and_strength(self):
+        """If an item both exceeds depth and fails strength, it should be rejected."""
+        result = continuation_predicate_wrapper(
+            self._make_handoff(),
+            min_strength=0.6,
+            max_derivation_depth=1,
+        )
+        # Item 0: strength 0.90 >= 0.6, depth 0 < 1 -> continue
+        # Item 1: strength 0.50 < 0.6 -> reject (strength check fails first)
+        # Item 2: strength 0.30 < 0.6 -> reject
+        self.assertEqual(result["continue_count"], 1)
+        self.assertEqual(result["terminate_count"], 0)
+        self.assertEqual(result["reject_count"], 2)
+
+    def test_combined_filters(self):
+        result = continuation_predicate_wrapper(
+            self._make_handoff(),
+            min_strength=0.4,
+            min_confidence=0.5,
+            domain="reasoning",
+        )
+        # Item 0: strength 0.90, confidence 0.80, domain reasoning -> continue
+        # Item 1: strength 0.50 >= 0.4, confidence 0.60 >= 0.5, domain reasoning -> continue
+        # Item 2: strength 0.30 < 0.4 -> reject; also domain planning -> reject
+        self.assertEqual(result["continue_count"], 2)
+        self.assertEqual(result["reject_count"], 1)
+
+    def test_empty_handoff(self):
+        handoff = {
+            "schema": "petta-memory-patham9-pln-handoff-v1",
+            "item_count": 0,
+            "items": [],
+        }
+        result = continuation_predicate_wrapper(handoff)
+        self.assertEqual(result["input_count"], 0)
+        self.assertEqual(result["continue_count"], 0)
+        self.assertEqual(result["items"], [])
+
+    def test_validation_wrong_schema(self):
+        with self.assertRaises(ValueError):
+            continuation_predicate_wrapper({"schema": "wrong"})
+
+    def test_validation_min_strength_out_of_range(self):
+        with self.assertRaises(ValueError):
+            continuation_predicate_wrapper(self._make_handoff(), min_strength=-0.1)
+        with self.assertRaises(ValueError):
+            continuation_predicate_wrapper(self._make_handoff(), min_strength=1.1)
+
+    def test_validation_min_confidence_out_of_range(self):
+        with self.assertRaises(ValueError):
+            continuation_predicate_wrapper(self._make_handoff(), min_confidence=-0.1)
+        with self.assertRaises(ValueError):
+            continuation_predicate_wrapper(self._make_handoff(), min_confidence=1.1)
+
+    def test_validation_max_depth_negative(self):
+        with self.assertRaises(ValueError):
+            continuation_predicate_wrapper(self._make_handoff(), max_derivation_depth=-1)
+
+    def test_validation_ec_ratio_out_of_range(self):
+        with self.assertRaises(ValueError):
+            continuation_predicate_wrapper(self._make_handoff(), ec_ratio_threshold=-0.1)
+        with self.assertRaises(ValueError):
+            continuation_predicate_wrapper(self._make_handoff(), ec_ratio_threshold=1.1)
+
+    def test_no_ec_packets_passes_ec_check(self):
+        """Items without EC packets should pass the EC ratio check."""
+        handoff = {
+            "schema": "petta-memory-patham9-pln-handoff-v1",
+            "item_count": 1,
+            "items": [{
+                "belief_id": "b-no-ec",
+                "term": "(NoEC)",
+                "stv": {"strength": 0.8, "confidence": 0.7},
+                "pi_pln_extension": {
+                    "promotion_domain": "test",
+                    "promotion_rule": "rule",
+                    "derivation_depth": 0,
+                },
+            }],
+        }
+        result = continuation_predicate_wrapper(handoff, ec_ratio_threshold=0.5)
+        self.assertEqual(result["continue_count"], 1)
+        item0 = result["items"][0]
+        self.assertIsNone(item0["ec_summary"])
+
+    def test_item_decision_field(self):
+        result = continuation_predicate_wrapper(self._make_handoff(), min_strength=0.6)
+        item0 = [i for i in result["items"] if i["item_index"] == 0][0]
+        self.assertEqual(item0["decision"], "continue")
+        item1 = [i for i in result["items"] if i["item_index"] == 1][0]
+        self.assertEqual(item1["decision"], "reject")
+
+    def test_checks_structure(self):
+        result = continuation_predicate_wrapper(
+            self._make_handoff(),
+            min_strength=0.5,
+            min_confidence=0.5,
+            domain="reasoning",
+            ec_ratio_threshold=0.5,
+            max_derivation_depth=2,
+            promotion_rule="explicit-promotion",
+        )
+        item0 = result["items"][0]
+        check_names = [c["check"] for c in item0["checks"]]
+        self.assertIn("min_strength", check_names)
+        self.assertIn("min_confidence", check_names)
+        self.assertIn("domain", check_names)
+        self.assertIn("promotion_rule", check_names)
+        self.assertIn("ec_ratio", check_names)
+        self.assertIn("max_derivation_depth", check_names)
+        for check in item0["checks"]:
+            self.assertIn("passed", check)
+            self.assertIn("required", check)
+            self.assertIn("actual", check)
+
+    def test_ec_summary_with_packets(self):
+        result = continuation_predicate_wrapper(self._make_handoff())
+        item0 = result["items"][0]
+        self.assertIsNotNone(item0["ec_summary"])
+        self.assertEqual(item0["ec_summary"]["support"], 9)
+        self.assertEqual(item0["ec_summary"]["opposition"], 1)
+        self.assertAlmostEqual(item0["ec_summary"]["ratio"], 0.9, places=2)
+
+    def test_policy_in_result(self):
+        result = continuation_predicate_wrapper(
+            self._make_handoff(),
+            min_strength=0.5,
+            max_derivation_depth=3,
+            domain="reasoning",
+            ec_ratio_threshold=0.3,
+            promotion_rule="explicit-promotion",
+        )
+        policy = result["continuation_policy"]
+        self.assertEqual(policy["min_strength"], 0.5)
+        self.assertEqual(policy["max_derivation_depth"], 3)
+        self.assertEqual(policy["domain"], "reasoning")
+        self.assertEqual(policy["ec_ratio_threshold"], 0.3)
+        self.assertEqual(policy["promotion_rule"], "explicit-promotion")
+        self.assertIn("continuation predicate", policy["source_pattern"])
+
+    def test_depth_termination_check_has_termination_flag(self):
+        result = continuation_predicate_wrapper(self._make_handoff(), max_derivation_depth=1)
+        item1 = [i for i in result["items"] if i["item_index"] == 1][0]
+        depth_check = [c for c in item1["checks"] if c["check"] == "max_derivation_depth"][0]
+        self.assertTrue(depth_check.get("termination"))
+        self.assertFalse(depth_check["passed"])
+
+
+class StoreRoundTripContinuationPredicateTests(unittest.TestCase):
+    """Empirical round-trip: store -> handoff -> continuation predicate."""
+
+    def test_roundtrip_continuation_predicate_from_store(self):
+        from petta_memory.store import MediumMemoryStore
+
+        cluster = """
+(MemoryCluster mc-cp-a)
+(SchemaVersion mc-cp-a medium-memory-v1)
+(ClusterType mc-cp-a belief-promotion)
+(ClusterOpenedAt mc-cp-a "2026-07-06 07:00 PDT")
+(ClusterSource mc-cp-a src-test)
+(Contains mc-cp-a pe-cp-a)
+(Contains mc-cp-a b-cp-a)
+(ClusterStatus mc-cp-a active)
+(PromotionEvent pe-cp-a)
+(PromotesFrom pe-cp-a qc-cp-a)
+(PromotesTo pe-cp-a b-cp-a)
+(PromotionRule pe-cp-a explicit-continuation-test)
+(PromotionTrust pe-cp-a 0.85)
+(PromotionDomain pe-cp-a reasoning)
+(DerivedBelief b-cp-a)
+(BeliefContent b-cp-a (ContinuationTestConclusion))
+(TruthValue b-cp-a (stv 0.88 0.75))
+(EvidenceFor b-cp-a qc-cp-a)
+(EvidenceSupportCount b-cp-a 8.0)
+(EvidenceOppositionCount b-cp-a 2.0)
+"""
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "cp_memory.metta")
+            store.append_cluster(cluster)
+            cache = store.pettachainer_handoff_cache()
+
+        handoff = patham9_pln_handoff_sentences(cache)
+        result = continuation_predicate_wrapper(
+            handoff,
+            min_strength=0.5,
+            min_confidence=0.5,
+            domain="reasoning",
+        )
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-continuation-predicate-v1")
+        self.assertGreaterEqual(result["continue_count"], 1)
+        # The promoted belief should continue (strength 0.88, confidence ~0.6375 after trust cap)
+        item0 = result["items"][0]
+        self.assertEqual(item0["decision"], "continue")
+        self.assertGreaterEqual(float(item0["stv"]["strength"]), 0.5)
 
 
 if __name__ == "__main__":
