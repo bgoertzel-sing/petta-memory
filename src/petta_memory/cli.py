@@ -7,6 +7,7 @@ import sys
 
 from .goalchainer_smoke import run_goalchainer_handoff_smoke, run_goalchainer_precompiled_handoff_smoke
 from .patham9_pln import (
+    chained_inference_pipeline,
     context_selection_wrapper,
     patham9_pi_pln_extension_spec,
     patham9_pln_handoff_sentences,
@@ -165,6 +166,18 @@ def build_parser() -> argparse.ArgumentParser:
     context_select.add_argument("--cluster-id", help="Select only EvidencePackets from this cluster")
     context_select.add_argument("--promotion-rule", help="Select only EvidencePackets with this promotion_rule")
     context_select.add_argument("--min-relevance", type=float, default=0.0, help="Minimum packet relevance score [0, 1]")
+
+    pipeline = sub.add_parser(
+        "pi-pln-pipeline",
+        help="Run chained inference-control pipeline (context selection + probabilistic filtering)",
+    )
+    pipeline.add_argument("--cache-id", default="petta-memory-pi-pln-inference-pipeline")
+    pipeline.add_argument("--domain", help="Select only EvidencePackets with this promotion_domain")
+    pipeline.add_argument("--cluster-id", help="Select only EvidencePackets from this cluster")
+    pipeline.add_argument("--promotion-rule", help="Select only EvidencePackets with this promotion_rule")
+    pipeline.add_argument("--min-relevance", type=float, default=0.0, help="Minimum packet relevance score [0, 1]")
+    pipeline.add_argument("--min-confidence", type=float, default=0.0, help="Minimum projected confidence for inclusion")
+    pipeline.add_argument("--top-k", type=int, default=None, help="Keep only top-k items by composite score")
 
     goal_smoke = sub.add_parser(
         "goalchainer-smoke",
@@ -327,6 +340,20 @@ def main(argv: list[str] | None = None) -> int:
                 cluster_id=args.cluster_id,
                 promotion_rule=args.promotion_rule,
                 min_packet_relevance=args.min_relevance,
+            )
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0
+        if args.cmd == "pi-pln-pipeline":
+            cache = store.pettachainer_handoff_cache(cache_id=args.cache_id)
+            handoff = patham9_pln_handoff_sentences(cache)
+            result = chained_inference_pipeline(
+                handoff,
+                domain=args.domain,
+                cluster_id=args.cluster_id,
+                promotion_rule=args.promotion_rule,
+                min_packet_relevance=args.min_relevance,
+                min_confidence=args.min_confidence,
+                top_k=args.top_k,
             )
             print(json.dumps(result, indent=2, sort_keys=True))
             return 0

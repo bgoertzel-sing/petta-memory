@@ -2351,3 +2351,212 @@ def _packet_filter_reason(
     if not rule_match and promotion_rule is not None:
         reasons.append(f"promotion_rule mismatch (expected {promotion_rule!r})")
     return "; ".join(reasons) if reasons else "unknown"
+
+
+_PIPELINE_BOUNDARY = (
+    "non-live wrapper-only chained inference pipeline; no SWI/PeTTa/MeTTa runtime invoked; "
+    "no memory append or inferred-belief promotion; no patham9/PLN source change; "
+    "no OmegaClaw/GoalChainer live path"
+)
+
+
+def chained_inference_pipeline(
+    handoff: dict[str, Any],
+    *,
+    domain: str | None = None,
+    cluster_id: str | None = None,
+    promotion_rule: str | None = None,
+    min_packet_relevance: float = 0.0,
+    min_confidence: float = 0.0,
+    top_k: int | None = None,
+) -> dict[str, Any]:
+    """Chained inference-control pipeline: context selection then probabilistic filtering.
+
+    This is the third concrete inference-control mechanism, combining the two
+    near-term patterns from the trueagi-io/chaining survey into a single
+    pipeline:
+
+    1. **Context selection** (stage 1): filter EvidencePackets by domain,
+       cluster_id, or promotion_rule, and score remaining packets by
+       evidence-weighted relevance.
+    2. **Probabilistic filtering** (stage 2): apply EC projection to the
+       context-filtered handoff, compute composite scores, and filter/rank
+       by confidence threshold and top_k.
+
+    The pipeline is non-live and wrapper-only:
+    - No SWI/PeTTa/MeTTa runtime invoked
+    - No memory append or inferred-belief promotion
+    - No patham9/PLN source changes
+    - No OmegaClaw/GoalChainer live path
+
+    Args:
+        handoff: A ``petta-memory-patham9-pln-handoff-v1`` dict from
+            :func:`patham9_pln_handoff_sentences`.
+        domain: If set, select only EvidencePackets whose ``promotion_domain``
+            matches this value (stage 1).
+        cluster_id: If set, select only EvidencePackets whose ``cluster_id``
+            matches this value (stage 1).
+        promotion_rule: If set, select only EvidencePackets whose
+            ``promotion_rule`` matches this value (stage 1).
+        min_packet_relevance: Minimum relevance score [0, 1] for a packet
+            to survive stage 1 (default 0.0, no relevance filtering).
+        min_confidence: Minimum projected confidence for inclusion in
+            stage 2 (default 0.0, no confidence filtering).
+        top_k: If set, keep only the top-k items by composite score in
+            stage 2.
+
+    Returns:
+        A dict with schema ``petta-memory-pi-pln-inference-pipeline-v1``.
+    """
+    if handoff.get("schema") != "petta-memory-patham9-pln-handoff-v1":
+        raise ValueError("expected petta-memory-patham9-pln-handoff-v1 handoff")
+    if min_packet_relevance < 0 or min_packet_relevance > 1:
+        raise ValueError(f"min_packet_relevance {min_packet_relevance} out of [0, 1]")
+    if min_confidence < 0 or min_confidence > 1:
+        raise ValueError(f"min_confidence {min_confidence} out of [0, 1]")
+    if top_k is not None and top_k < 0:
+        raise ValueError(f"top_k {top_k} must be non-negative or None")
+
+    # Stage 1: context selection
+    context_result = context_selection_wrapper(
+        handoff,
+        domain=domain,
+        cluster_id=cluster_id,
+        promotion_rule=promotion_rule,
+        min_packet_relevance=min_packet_relevance,
+    )
+
+    # Build a filtered handoff from the context selection result
+    # Items that were filtered out by context selection are removed;
+    # items with kept packets have their packets updated.
+    original_items = list(handoff.get("items", []))
+    selected_indices = set(context_result.get("selected_indices", []))
+    filtered_handoff_items: list[dict[str, Any]] = []
+    for idx, item in enumerate(original_items):
+        if idx not in selected_indices:
+            continue
+        # Use the context-filtered version of the item
+        per_item = None
+        for pi in context_result.get("items", []):
+            if pi["item_index"] == idx:
+                per_item = pi
+                break
+        if per_item is None:
+            filtered_handoff_items.append(item)
+            continue
+        # Reconstruct item with filtered packets
+        filtered_item = dict(item)
+        filtered_extension = dict(item.get("pi_pln_extension", {}))
+        # Rebuild packets from context_result's kept packets
+        kept_packets = [
+            pkt for pkt, summary in zip(
+                item.get("pi_pln_extension", {}).get("contextual_evidence_packets", []),
+                per_item.get("packets_in", []),
+            ) if summary.get("included", False)
+        ]
+        filtered_extension["contextual_evidence_packets"] = kept_packets
+        filtered_extension["context_selection_applied"] = True
+        filtered_extension["context_selection_criteria"] = {
+            "domain": domain,
+            "cluster_id": cluster_id,
+            "promotion_rule": promotion_rule,
+            "min_packet_relevance": min_packet_relevance,
+        }
+        filtered_item["pi_pln_extension"] = filtered_extension
+        filtered_handoff_items.append(filtered_item)
+
+    # Build the stage-2 handoff
+    stage2_handoff = {
+        "schema": "petta-memory-patham9-pln-handoff-v1",
+        "item_count": len(filtered_handoff_items),
+        "items": filtered_handoff_items,
+    }
+
+    # Stage 2: probabilistic filtering
+    filter_result = probabilistic_inference_filter(
+        stage2_handoff,
+        min_confidence=min_confidence,
+        top_k=top_k,
+    )
+
+    # Remap item_index values in the filter result to original handoff indices
+    original_selected = list(selected_indices)
+    remapped_items: list[dict[str, Any]] = []
+    remapped_selected: list[int] = []
+    remapped_filtered: list[int] = []
+    remapped_ranking: list[dict[str, Any]] = []
+
+    # Build a mapping from stage2 index -> original index
+    stage2_to_original = {s2_idx: orig_idx for s2_idx, orig_idx in enumerate(sorted(selected_indices))}
+
+    for fi in filter_result.get("items", []):
+        stage2_idx = fi["item_index"]
+        orig_idx = stage2_to_original.get(stage2_idx, stage2_idx)
+        remapped = dict(fi)
+        remapped["item_index"] = orig_idx
+        remapped["pipeline_stage"] = "post-filter"
+        if fi.get("included"):
+            remapped_selected.append(orig_idx)
+        else:
+            remapped_filtered.append(orig_idx)
+        remapped_items.append(remapped)
+
+    for r in filter_result.get("ranking", []):
+        stage2_idx = r["item_index"]
+        orig_idx = stage2_to_original.get(stage2_idx, stage2_idx)
+        remapped_ranking.append({
+            "rank": r["rank"],
+            "item_index": orig_idx,
+            "composite_score": r["composite_score"],
+            "term": r.get("term"),
+        })
+
+    # Items filtered by stage 1 (context selection) are also reported
+    context_filtered_indices = list(context_result.get("filtered_indices", []))
+    all_filtered = sorted(set(remapped_filtered + context_filtered_indices))
+
+    return {
+        "schema": "petta-memory-pi-pln-inference-pipeline-v1",
+        "mode": "design-specification-no-runtime",
+        "pipeline_policy": {
+            "stage_1": "context_selection",
+            "stage_2": "probabilistic_filtering",
+            "context_selection": {
+                "domain": domain,
+                "cluster_id": cluster_id,
+                "promotion_rule": promotion_rule,
+                "min_packet_relevance": min_packet_relevance,
+            },
+            "probabilistic_filtering": {
+                "min_confidence": min_confidence,
+                "top_k": top_k,
+                "scoring_formula": "projected_strength * projected_confidence",
+            },
+            "source_pattern": "chained filter+select pipeline from trueagi-io/chaining survey (near-term)",
+        },
+        "input_count": len(original_items),
+        "stage1_output_count": len(filtered_handoff_items),
+        "stage1_filtered_count": len(context_filtered_indices),
+        "stage1_filtered_indices": context_filtered_indices,
+        "stage1_total_packets_in": context_result.get("total_packets_in", 0),
+        "stage1_total_packets_out": context_result.get("total_packets_out", 0),
+        "stage2_output_count": len(remapped_selected),
+        "output_count": len(remapped_selected),
+        "selected_indices": remapped_selected,
+        "filtered_indices": all_filtered,
+        "items": remapped_items,
+        "ranking": remapped_ranking,
+        "stage1_result": {
+            "schema": context_result["schema"],
+            "selected_indices": context_result.get("selected_indices", []),
+            "filtered_indices": context_result.get("filtered_indices", []),
+            "total_packets_in": context_result.get("total_packets_in", 0),
+            "total_packets_out": context_result.get("total_packets_out", 0),
+        },
+        "stage2_result": {
+            "schema": filter_result["schema"],
+            "selected_indices": filter_result.get("selected_indices", []),
+            "filtered_indices": filter_result.get("filtered_indices", []),
+        },
+        "boundary": _PIPELINE_BOUNDARY,
+    }

@@ -9,6 +9,7 @@ from petta_memory.patham9_pln import (
     classify_smoke_result,
     classify_smoke_result_with_retry,
     context_selection_wrapper,
+    chained_inference_pipeline,
     ec_projected_stv,
     parse_metta_test_output,
     patham9_pln_api_surface,
@@ -1425,6 +1426,247 @@ class StoreRoundTripContextSelectionTests(unittest.TestCase):
         self.assertEqual(len(result["selected_indices"]), 1)
         self.assertGreater(result["total_packets_in"], 0)
         self.assertGreater(result["total_packets_out"], 0)
+
+
+class ChainedInferencePipelineTests(unittest.TestCase):
+    """Tests for the third inference-control mechanism: chained filter+select pipeline.
+
+    The pipeline chains context selection (stage 1) with probabilistic
+    filtering (stage 2) so that irrelevant evidence packets are removed before
+    EC projection and composite-score ranking.  These tests validate the
+    pipeline logic without invoking any runtime.
+    """
+
+    def _handoff(self, num_items: int = 3) -> dict:
+        """Build a handoff with mixed evidence contexts and quality for pipeline testing."""
+        items = []
+        # Item 0: strong STV, packets from domain-a (strong support)
+        items.append({
+            "kind": "patham9-pln-sentence-input",
+            "atom": "(Sentence (Acceptable publish_redacted_summary) (stv 0.91 0.74) ((PMEvidence b-0 mc-0 pe-0 rule domain)))",
+            "term": "(Acceptable publish_redacted_summary)",
+            "stv": {"strength": 0.91, "confidence": 0.74},
+            "evidence_id": "(PMEvidence b-0 mc-0 pe-0 rule domain)",
+            "belief_id": "b-0",
+            "cluster_id": "mc-0",
+            "promotion_event": "pe-0",
+            "promotion_rule": "explicit-test",
+            "promotion_domain": "memory-architecture",
+            "source_status": "pln-ready-input-not-inferred-belief",
+            "pi_pln_extension": {
+                "contextual_evidence_packets": [
+                    {"support": 9, "opposition": 1, "statement": "(Acceptable publish_redacted_summary)",
+                     "promotion_domain": "domain-a", "cluster_id": "mc-0", "promotion_rule": "explicit-test"},
+                    {"support": 3, "opposition": 7, "statement": "(Acceptable publish_redacted_summary)",
+                     "promotion_domain": "domain-b", "cluster_id": "mc-0", "promotion_rule": "explicit-test"},
+                ],
+                "ec_projection_policy": "preserve packets first; later project EC",
+                "context_selection": "not-run",
+            },
+        })
+        if num_items >= 2:
+            # Item 1: strong base STV but packets from domain-b (conflicting EC)
+            items.append({
+                "kind": "patham9-pln-sentence-input",
+                "atom": "(Sentence (Acceptable share_full_log) (stv 0.94 0.80) ((PMEvidence b-1 mc-1 pe-1 rule domain)))",
+                "term": "(Acceptable share_full_log)",
+                "stv": {"strength": 0.94, "confidence": 0.80},
+                "evidence_id": "(PMEvidence b-1 mc-1 pe-1 rule domain)",
+                "belief_id": "b-1",
+                "cluster_id": "mc-1",
+                "promotion_event": "pe-1",
+                "promotion_rule": "explicit-test",
+                "promotion_domain": "memory-architecture",
+                "source_status": "pln-ready-input-not-inferred-belief",
+                "pi_pln_extension": {
+                    "contextual_evidence_packets": [
+                        {"support": 1, "opposition": 9, "statement": "(Acceptable share_full_log)",
+                         "promotion_domain": "domain-b", "cluster_id": "mc-1", "promotion_rule": "explicit-test"},
+                    ],
+                    "ec_projection_policy": "preserve packets first; later project EC",
+                    "context_selection": "not-run",
+                },
+            })
+        if num_items >= 3:
+            # Item 2: weak STV, no packets — passes context selection, low composite score
+            items.append({
+                "kind": "patham9-pln-sentence-input",
+                "atom": "(Sentence (Requires MemoryTarget0 PLNReadyViews) (stv 0.70 0.55) ((PMEvidence b-2 mc-2 pe-2 rule domain)))",
+                "term": "(Requires MemoryTarget0 PLNReadyViews)",
+                "stv": {"strength": 0.70, "confidence": 0.55},
+                "evidence_id": "(PMEvidence b-2 mc-2 pe-2 rule domain)",
+                "belief_id": "b-2",
+                "cluster_id": "mc-2",
+                "promotion_event": "pe-2",
+                "promotion_rule": "explicit-test",
+                "promotion_domain": "memory-architecture",
+                "source_status": "pln-ready-input-not-inferred-belief",
+                "pi_pln_extension": {
+                    "contextual_evidence_packets": [],
+                    "ec_projection_policy": "preserve packets first; later project EC",
+                    "context_selection": "not-run",
+                },
+            })
+        return {
+            "schema": "petta-memory-patham9-pln-handoff-v1",
+            "item_count": len(items),
+            "items": items,
+        }
+
+    def test_pipeline_returns_correct_schema(self):
+        result = chained_inference_pipeline(self._handoff())
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-inference-pipeline-v1")
+
+    def test_pipeline_no_filters_keeps_all_items(self):
+        result = chained_inference_pipeline(self._handoff())
+        self.assertEqual(result["input_count"], 3)
+        self.assertEqual(result["stage1_output_count"], 3)
+        self.assertEqual(result["stage1_filtered_count"], 0)
+        self.assertEqual(result["output_count"], 3)
+        self.assertEqual(len(result["selected_indices"]), 3)
+        self.assertEqual(len(result["filtered_indices"]), 0)
+
+    def test_pipeline_boundary_text_is_non_live(self):
+        result = chained_inference_pipeline(self._handoff())
+        self.assertIn("non-live", result["boundary"])
+
+    def test_pipeline_domain_filter_excludes_items_with_only_foreign_packets(self):
+        # Item 1 has packets only from domain-b; filtering by domain-a should exclude it
+        result = chained_inference_pipeline(self._handoff(), domain="domain-a")
+        self.assertEqual(result["stage1_output_count"], 2)  # items 0 and 2
+        self.assertIn(1, result["stage1_filtered_indices"])
+        self.assertNotIn(1, result["selected_indices"])
+
+    def test_pipeline_domain_filter_reduces_packets_for_multi_domain_item(self):
+        # Item 0 has packets from both domain-a and domain-b
+        # Filtering by domain-a should keep item 0 but with fewer packets
+        result = chained_inference_pipeline(self._handoff(), domain="domain-a")
+        item0 = [pi for pi in result["items"] if pi["item_index"] == 0][0]
+        self.assertTrue(item0["included"])
+        # Stage 1 should have reduced packets (from 2 to 1)
+        self.assertEqual(result["stage1_total_packets_in"], 3)
+        self.assertEqual(result["stage1_total_packets_out"], 1)
+
+    def test_pipeline_min_confidence_excludes_low_confidence_items(self):
+        # Item 2 has confidence 0.55; set threshold above it
+        result = chained_inference_pipeline(self._handoff(), min_confidence=0.60)
+        self.assertNotIn(2, result["selected_indices"])
+        self.assertIn(2, result["filtered_indices"])
+
+    def test_pipeline_top_k_keeps_only_k_items(self):
+        result = chained_inference_pipeline(self._handoff(), top_k=1)
+        self.assertEqual(result["output_count"], 1)
+        self.assertEqual(len(result["selected_indices"]), 1)
+        # Item 0 should rank highest (strong support from domain-a packet)
+        self.assertEqual(result["selected_indices"][0], 0)
+
+    def test_pipeline_combined_domain_filter_and_top_k(self):
+        # Filter by domain-a, then keep only top-1
+        result = chained_inference_pipeline(self._handoff(), domain="domain-a", top_k=1)
+        self.assertEqual(result["stage1_output_count"], 2)  # items 0 and 2
+        self.assertEqual(result["output_count"], 1)  # only top-1 from stage 2
+        self.assertEqual(result["selected_indices"][0], 0)
+
+    def test_pipeline_combined_domain_filter_and_min_confidence(self):
+        # Filter by domain-a (keeps items 0, 2), then exclude item 2 by confidence
+        result = chained_inference_pipeline(self._handoff(), domain="domain-a", min_confidence=0.60)
+        self.assertEqual(result["stage1_output_count"], 2)
+        self.assertIn(0, result["selected_indices"])
+        self.assertNotIn(2, result["selected_indices"])
+        self.assertIn(2, result["filtered_indices"])
+
+    def test_pipeline_empty_handoff_returns_empty_result(self):
+        handoff = {
+            "schema": "petta-memory-patham9-pln-handoff-v1",
+            "item_count": 0,
+            "items": [],
+        }
+        result = chained_inference_pipeline(handoff)
+        self.assertEqual(result["input_count"], 0)
+        self.assertEqual(result["output_count"], 0)
+        self.assertEqual(result["items"], [])
+        self.assertEqual(result["selected_indices"], [])
+        self.assertEqual(result["filtered_indices"], [])
+
+    def test_pipeline_rejects_wrong_schema(self):
+        with self.assertRaises(ValueError):
+            chained_inference_pipeline({"schema": "wrong"})
+
+    def test_pipeline_rejects_out_of_range_min_relevance(self):
+        with self.assertRaises(ValueError):
+            chained_inference_pipeline(self._handoff(), min_packet_relevance=-0.1)
+        with self.assertRaises(ValueError):
+            chained_inference_pipeline(self._handoff(), min_packet_relevance=1.1)
+
+    def test_pipeline_rejects_out_of_range_min_confidence(self):
+        with self.assertRaises(ValueError):
+            chained_inference_pipeline(self._handoff(), min_confidence=-0.1)
+        with self.assertRaises(ValueError):
+            chained_inference_pipeline(self._handoff(), min_confidence=1.1)
+
+    def test_pipeline_rejects_negative_top_k(self):
+        with self.assertRaises(ValueError):
+            chained_inference_pipeline(self._handoff(), top_k=-1)
+
+    def test_pipeline_ranking_remapped_to_original_indices(self):
+        result = chained_inference_pipeline(self._handoff(), domain="domain-a", top_k=1)
+        # With domain-a filter, stage 1 keeps items 0 and 2 (original indices)
+        # Stage 2 top_k=1 should pick item 0
+        self.assertEqual(result["ranking"][0]["item_index"], 0)
+        self.assertIn("composite_score", result["ranking"][0])
+
+    def test_pipeline_stage1_and_stage2_results_present(self):
+        result = chained_inference_pipeline(self._handoff())
+        self.assertIn("stage1_result", result)
+        self.assertIn("stage2_result", result)
+        self.assertEqual(result["stage1_result"]["schema"], "petta-memory-pi-pln-context-selection-v1")
+        self.assertEqual(result["stage2_result"]["schema"], "petta-memory-pi-pln-inference-filter-v1")
+
+
+class StoreRoundTripPipelineTests(unittest.TestCase):
+    """Empirical round-trip: store -> handoff -> chained inference pipeline."""
+
+    def test_roundtrip_pipeline_from_store(self):
+        from petta_memory.store import MediumMemoryStore
+
+        cluster = """
+(MemoryCluster mc-pl-a)
+(SchemaVersion mc-pl-a medium-memory-v1)
+(ClusterType mc-pl-a belief-promotion)
+(ClusterOpenedAt mc-pl-a "2026-07-06 03:00 PDT")
+(ClusterSource mc-pl-a src-test)
+(Contains mc-pl-a pe-pl-a)
+(Contains mc-pl-a b-pl-a)
+(ClusterStatus mc-pl-a active)
+(PromotionEvent pe-pl-a)
+(PromotesFrom pe-pl-a qc-pl-a)
+(PromotesTo pe-pl-a b-pl-a)
+(PromotionRule pe-pl-a explicit-test-promotion)
+(PromotionTrust pe-pl-a 0.85)
+(PromotionDomain pe-pl-a memory-architecture)
+(DerivedBelief b-pl-a)
+(BeliefContent b-pl-a (Requires MemoryTarget0 PLNReadyViews))
+(TruthValue b-pl-a (stv 0.88 0.72))
+(EvidenceFor b-pl-a qc-pl-a)
+(EvidenceSupportCount b-pl-a 9.0)
+(EvidenceOppositionCount b-pl-a 1.0)
+"""
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "pipeline_memory.metta")
+            store.append_cluster(cluster)
+            cache = store.pettachainer_handoff_cache()
+
+        handoff = patham9_pln_handoff_sentences(cache)
+        result = chained_inference_pipeline(handoff)
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-inference-pipeline-v1")
+        self.assertEqual(result["input_count"], 1)
+        self.assertEqual(result["stage1_output_count"], 1)
+        self.assertEqual(result["output_count"], 1)
+        self.assertEqual(len(result["selected_indices"]), 1)
+        self.assertEqual(len(result["filtered_indices"]), 0)
+        # Item should have a composite score > 0
+        item = result["items"][0]
+        self.assertGreater(item["composite_score"], 0.0)
 
 
 if __name__ == "__main__":
