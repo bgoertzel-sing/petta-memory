@@ -1212,8 +1212,9 @@ def patham9_pln_multi_sentence_derivation_smoke_program(
     expected_confidence = base_confidence * float(bridge_confidence)
     expected = f"((stv {expected_strength} {expected_confidence}) (0 {len(items)}))"
 
-    # Build the MeTTa program
-    all_sentences = ", ".join(runtime_sentences + [bridge_sentence])
+    # Build the MeTTa program (sentences are space-separated, matching
+    # patham9/PLN's MeTTa list syntax; comma separation breaks the chainer)
+    all_sentences = "\n                  ".join(runtime_sentences + [bridge_sentence])
     program_lines = [
         "!(import! &self PLN)",
         "!(PLN.Init ())",
