@@ -12,6 +12,7 @@ from .patham9_pln import (
     patham9_pi_pln_extension_spec,
     patham9_pln_handoff_sentences,
     probabilistic_inference_filter,
+    run_meta_learning_benchmark,
     run_patham9_pln_derivation_smoke,
     run_patham9_pln_derivation_ec_projection_smoke,
     run_patham9_pln_ec_projection_smoke,
@@ -178,6 +179,16 @@ def build_parser() -> argparse.ArgumentParser:
     pipeline.add_argument("--min-relevance", type=float, default=0.0, help="Minimum packet relevance score [0, 1]")
     pipeline.add_argument("--min-confidence", type=float, default=0.0, help="Minimum projected confidence for inclusion")
     pipeline.add_argument("--top-k", type=int, default=None, help="Keep only top-k items by composite score")
+
+    benchmark = sub.add_parser(
+        "pi-pln-meta-learning-benchmark",
+        help="Run meta-learning inference-control benchmark (shortcut vs chain)",
+    )
+    benchmark.add_argument("--cache-id", default="petta-memory-pi-pln-meta-learning-benchmark")
+    benchmark.add_argument("--min-confidence", type=float, default=0.0, help="Minimum projected confidence for inclusion")
+    benchmark.add_argument("--top-k", type=int, default=None, help="Keep only top-k items by composite score")
+    benchmark.add_argument("--domain", help="Filter by this promotion domain in context selection")
+    benchmark.add_argument("--min-relevance", type=float, default=0.0, help="Minimum packet relevance score [0, 1]")
 
     goal_smoke = sub.add_parser(
         "goalchainer-smoke",
@@ -354,6 +365,18 @@ def main(argv: list[str] | None = None) -> int:
                 min_packet_relevance=args.min_relevance,
                 min_confidence=args.min_confidence,
                 top_k=args.top_k,
+            )
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0
+        if args.cmd == "pi-pln-meta-learning-benchmark":
+            cache = store.pettachainer_handoff_cache(cache_id=args.cache_id)
+            handoff = patham9_pln_handoff_sentences(cache)
+            result = run_meta_learning_benchmark(
+                handoff=handoff,
+                min_confidence=args.min_confidence,
+                top_k=args.top_k,
+                domain=args.domain,
+                min_packet_relevance=args.min_relevance,
             )
             print(json.dumps(result, indent=2, sort_keys=True))
             return 0

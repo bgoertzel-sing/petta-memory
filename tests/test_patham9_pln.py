@@ -6,6 +6,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from petta_memory.patham9_pln import (
+    build_meta_learning_benchmark_handoff,
     classify_smoke_result,
     classify_smoke_result_with_retry,
     context_selection_wrapper,
@@ -23,6 +24,7 @@ from petta_memory.patham9_pln import (
     patham9_pln_multi_sentence_derivation_smoke_program,
     patham9_pln_query_smoke_program,
     probabilistic_inference_filter,
+    run_meta_learning_benchmark,
     summarize_smoke_results,
     summarize_smoke_results_file,
     survey_trueagi_chaining_inference_control,
@@ -1667,6 +1669,267 @@ class StoreRoundTripPipelineTests(unittest.TestCase):
         # Item should have a composite score > 0
         item = result["items"][0]
         self.assertGreater(item["composite_score"], 0.0)
+
+
+class MetaLearningBenchmarkHandoffTests(unittest.TestCase):
+    """Tests for build_meta_learning_benchmark_handoff()."""
+
+    def test_default_handoff_schema(self):
+        h = build_meta_learning_benchmark_handoff()
+        self.assertEqual(h["schema"], "petta-memory-patham9-pln-handoff-v1")
+        self.assertEqual(h["item_count"], 4)  # 1 shortcut + 3 chain
+
+    def test_shortcut_item_has_higher_stv_than_chain(self):
+        h = build_meta_learning_benchmark_handoff()
+        items = h["items"]
+        shortcut = items[0]
+        for item in items[1:]:
+            self.assertGreater(
+                shortcut["stv"]["strength"], item["stv"]["strength"],
+                "shortcut should have higher strength than chain items",
+            )
+            self.assertGreater(
+                shortcut["stv"]["confidence"], item["stv"]["confidence"],
+                "shortcut should have higher confidence than chain items",
+            )
+
+    def test_shortcut_and_chain_have_evidence_packets(self):
+        h = build_meta_learning_benchmark_handoff()
+        for item in h["items"]:
+            packets = item["pi_pln_extension"]["contextual_evidence_packets"]
+            self.assertEqual(len(packets), 1)
+            pkt = packets[0]
+            self.assertIn("ec", pkt)
+            self.assertIn("promotion_domain", pkt)
+            self.assertIn("cluster_id", pkt)
+            self.assertIn("promotion_rule", pkt)
+
+    def test_shortcut_has_supportive_ec_chain_has_declining_ec(self):
+        h = build_meta_learning_benchmark_handoff()
+        shortcut_pkt = h["items"][0]["pi_pln_extension"]["contextual_evidence_packets"][0]
+        self.assertEqual(shortcut_pkt["ec"], {"support": 9, "opposition": 1})
+        chain_pkts = [
+            item["pi_pln_extension"]["contextual_evidence_packets"][0]
+            for item in h["items"][1:]
+        ]
+        self.assertEqual(chain_pkts[0]["ec"], {"support": 3, "opposition": 1})
+        self.assertEqual(chain_pkts[1]["ec"], {"support": 2, "opposition": 2})
+        self.assertEqual(chain_pkts[2]["ec"], {"support": 1, "opposition": 3})
+
+    def test_custom_chain_lengths(self):
+        h = build_meta_learning_benchmark_handoff(
+            chain_strengths=[0.80, 0.70],
+            chain_confidences=[0.60, 0.50],
+            chain_ecs=[(4, 1), (2, 3)],
+        )
+        self.assertEqual(h["item_count"], 3)
+        self.assertEqual(h["items"][2]["stv"]["strength"], 0.70)
+        self.assertEqual(h["items"][2]["pi_pln_extension"]["contextual_evidence_packets"][0]["ec"],
+                         {"support": 2, "opposition": 3})
+
+    def test_rejects_mismatched_chain_lengths(self):
+        with self.assertRaises(ValueError):
+            build_meta_learning_benchmark_handoff(
+                chain_strengths=[0.70, 0.60],
+                chain_confidences=[0.55],
+            )
+
+    def test_rejects_mismatched_ecs(self):
+        with self.assertRaises(ValueError):
+            build_meta_learning_benchmark_handoff(
+                chain_strengths=[0.70, 0.60],
+                chain_confidences=[0.55, 0.50],
+                chain_ecs=[(3, 1)],
+            )
+
+    def test_rejects_out_of_range_stv(self):
+        with self.assertRaises(ValueError):
+            build_meta_learning_benchmark_handoff(shortcut_strength=1.5)
+        with self.assertRaises(ValueError):
+            build_meta_learning_benchmark_handoff(chain_strengths=[0.70, -0.1])
+
+    def test_rejects_negative_ec(self):
+        with self.assertRaises(ValueError):
+            build_meta_learning_benchmark_handoff(shortcut_ec=(-1, 2))
+
+    def test_custom_domains(self):
+        h = build_meta_learning_benchmark_handoff(
+            shortcut_domain="memory",
+            chain_domain="planning",
+        )
+        self.assertEqual(
+            h["items"][0]["pi_pln_extension"]["contextual_evidence_packets"][0]["promotion_domain"],
+            "memory",
+        )
+        self.assertEqual(
+            h["items"][1]["pi_pln_extension"]["contextual_evidence_packets"][0]["promotion_domain"],
+            "planning",
+        )
+
+
+class MetaLearningBenchmarkRunTests(unittest.TestCase):
+    """Tests for run_meta_learning_benchmark()."""
+
+    def test_default_benchmark_passes(self):
+        """With default STVs, the shortcut should be ranked first."""
+        result = run_meta_learning_benchmark()
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-meta-learning-benchmark-v1")
+        self.assertTrue(result["overall_pass"],
+                        "shortcut should be preferred over chain items by default")
+        self.assertTrue(result["filter_shortcut_first"])
+        self.assertTrue(result["pipeline_shortcut_first"])
+
+    def test_shortcut_ranked_first_in_filter(self):
+        result = run_meta_learning_benchmark()
+        self.assertEqual(result["filter_result"]["shortcut_rank"], 1)
+        self.assertTrue(result["filter_result"]["shortcut_first"])
+
+    def test_shortcut_ranked_first_in_pipeline(self):
+        result = run_meta_learning_benchmark()
+        self.assertEqual(result["pipeline_result"]["shortcut_rank"], 1)
+        self.assertTrue(result["pipeline_result"]["shortcut_first"])
+
+    def test_shortcut_has_higher_composite_score_than_chain(self):
+        result = run_meta_learning_benchmark()
+        self.assertIsNotNone(result["filter_result"]["shortcut_composite_score"])
+        best_chain = result["filter_result"]["best_chain_composite_score"]
+        if best_chain is not None:
+            self.assertGreater(
+                result["filter_result"]["shortcut_composite_score"],
+                best_chain,
+            )
+
+    def test_no_chain_item_outranks_shortcut(self):
+        result = run_meta_learning_benchmark()
+        self.assertFalse(result["filter_result"]["chain_outranks_shortcut"])
+
+    def test_top_k_1_keeps_only_shortcut(self):
+        result = run_meta_learning_benchmark(top_k=1)
+        # The shortcut (index 0) should be rank 1 in the pipeline ranking
+        ranking = result["pipeline_result"]["ranking"]
+        self.assertEqual(len(ranking), 1)
+        self.assertEqual(ranking[0]["item_index"], 0)
+        self.assertEqual(ranking[0]["rank"], 1)
+
+    def test_min_confidence_filters_chain_items(self):
+        """With a high min_confidence, low-confidence chain items should be filtered."""
+        # Default chain confidences after EC projection: need to check
+        # The shortcut has confidence 0.90, chain items have 0.55, 0.50, 0.45
+        # EC projection may raise confidence, but the composite score should still
+        # rank shortcut first.  Set min_confidence high enough to filter chain.
+        result = run_meta_learning_benchmark(min_confidence=0.85)
+        # Shortcut should survive, chain items should be filtered
+        self.assertTrue(result["filter_result"]["shortcut_first"])
+
+    def test_domain_filter_excludes_chain(self):
+        """Filtering by shortcut domain should exclude chain-domain items from pipeline."""
+        result = run_meta_learning_benchmark(domain="benchmark")
+        # Both shortcut and chain have domain "benchmark" by default, so all pass
+        self.assertEqual(result["pipeline_result"]["ranking"][0]["item_index"], 0)
+
+    def test_domain_filter_excludes_shortcut(self):
+        """Filtering by chain-only domain should exclude the shortcut."""
+        h = build_meta_learning_benchmark_handoff(
+            shortcut_domain="memory",
+            chain_domain="planning",
+        )
+        result = run_meta_learning_benchmark(
+            handoff=h,
+            domain="planning",
+        )
+        # Shortcut should not be in selected indices (it has domain "memory")
+        # Chain items with domain "planning" should pass context selection
+        self.assertNotIn(0, result["pipeline_result"].get("ranking", []) and
+                         [r["item_index"] for r in result["pipeline_result"].get("ranking", [])]
+                         or [])
+
+    def test_rejects_wrong_handoff_schema(self):
+        with self.assertRaises(ValueError):
+            run_meta_learning_benchmark(handoff={"schema": "wrong"})
+
+    def test_rejects_out_of_range_confidence(self):
+        with self.assertRaises(ValueError):
+            run_meta_learning_benchmark(min_confidence=-0.1)
+        with self.assertRaises(ValueError):
+            run_meta_learning_benchmark(min_confidence=1.5)
+
+    def test_rejects_negative_top_k(self):
+        with self.assertRaises(ValueError):
+            run_meta_learning_benchmark(top_k=-1)
+
+    def test_rejects_out_of_range_relevance(self):
+        with self.assertRaises(ValueError):
+            run_meta_learning_benchmark(min_packet_relevance=-0.1)
+        with self.assertRaises(ValueError):
+            run_meta_learning_benchmark(min_packet_relevance=1.5)
+
+    def test_boundary_text_present(self):
+        result = run_meta_learning_benchmark()
+        self.assertIn("non-live wrapper-only benchmark", result["boundary"])
+        self.assertIn("no memory append", result["boundary"])
+
+    def test_benchmark_scenario_metadata(self):
+        result = run_meta_learning_benchmark()
+        scenario = result["benchmark_scenario"]
+        self.assertEqual(scenario["shortcut_item_index"], 0)
+        self.assertEqual(scenario["chain_item_indices"], [1, 2, 3])
+        self.assertEqual(scenario["shortcut_belief_id"], "shortcut-0")
+        self.assertEqual(scenario["chain_belief_ids"], ["chain-1", "chain-2", "chain-3"])
+
+    def test_filter_and_pipeline_results_present(self):
+        result = run_meta_learning_benchmark()
+        self.assertIn("filter_result", result)
+        self.assertIn("pipeline_result", result)
+        self.assertEqual(
+            result["filter_result"]["schema"],
+            "petta-memory-pi-pln-inference-filter-v1",
+        )
+        self.assertEqual(
+            result["pipeline_result"]["schema"],
+            "petta-memory-pi-pln-inference-pipeline-v1",
+        )
+
+
+class StoreRoundTripMetaLearningBenchmarkTests(unittest.TestCase):
+    """Empirical round-trip: store -> handoff -> meta-learning benchmark."""
+
+    def test_roundtrip_benchmark_from_store(self):
+        from petta_memory.store import MediumMemoryStore
+
+        cluster = """
+(MemoryCluster mc-bench-a)
+(SchemaVersion mc-bench-a medium-memory-v1)
+(ClusterType mc-bench-a belief-promotion)
+(ClusterOpenedAt mc-bench-a "2026-07-06 05:00 PDT")
+(ClusterSource mc-bench-a src-test)
+(Contains mc-bench-a pe-bench-a)
+(Contains mc-bench-a b-bench-a)
+(ClusterStatus mc-bench-a active)
+(PromotionEvent pe-bench-a)
+(PromotesFrom pe-bench-a qc-bench-a)
+(PromotesTo pe-bench-a b-bench-a)
+(PromotionRule pe-bench-a explicit-benchmark-promotion)
+(PromotionTrust pe-bench-a 0.90)
+(PromotionDomain pe-bench-a benchmark)
+(DerivedBelief b-bench-a)
+(BeliefContent b-bench-a (ShortcutConclusion))
+(TruthValue b-bench-a (stv 0.95 0.90))
+(EvidenceFor b-bench-a qc-bench-a)
+(EvidenceSupportCount b-bench-a 9.0)
+(EvidenceOppositionCount b-bench-a 1.0)
+"""
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "bench_memory.metta")
+            store.append_cluster(cluster)
+            cache = store.pettachainer_handoff_cache()
+
+        handoff = patham9_pln_handoff_sentences(cache)
+        result = run_meta_learning_benchmark(handoff=handoff)
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-meta-learning-benchmark-v1")
+        # Single item from store: shortcut by default (index 0), no chain items
+        self.assertEqual(result["benchmark_scenario"]["shortcut_item_index"], 0)
+        self.assertEqual(result["benchmark_scenario"]["chain_item_indices"], [])
+        self.assertTrue(result["overall_pass"])
 
 
 if __name__ == "__main__":

@@ -2560,3 +2560,295 @@ def chained_inference_pipeline(
         },
         "boundary": _PIPELINE_BOUNDARY,
     }
+
+
+_META_LEARNING_BOUNDARY = (
+    "non-live wrapper-only benchmark; no SWI/PeTTa/MeTTa runtime invoked; "
+    "no memory append or inferred-belief promotion; no patham9/PLN source change; "
+    "no OmegaClaw/GoalChainer live path"
+)
+
+
+def build_meta_learning_benchmark_handoff(
+    *,
+    shortcut_strength: float = 0.95,
+    shortcut_confidence: float = 0.90,
+    chain_strengths: list[float] | None = None,
+    chain_confidences: list[float] | None = None,
+    shortcut_domain: str = "benchmark",
+    chain_domain: str = "benchmark",
+    shortcut_ec: tuple[int, int] = (9, 1),
+    chain_ecs: list[tuple[int, int]] | None = None,
+) -> dict[str, Any]:
+    """Build a synthetic meta-learning benchmark handoff.
+
+    Creates a ``petta-memory-patham9-pln-handoff-v1`` handoff with a
+    high-confidence shortcut belief and a chain of lower-confidence
+    transitive beliefs leading to the same conclusion, inspired by the
+    OpenCog classic meta-learning experiment reproduced in the
+    trueagi-io/chaining repo.
+
+    The shortcut item has higher STV than any chain item, so a correct
+    inference-control wrapper should rank it first when filtering/ranking
+    by composite score.
+
+    The benchmark is non-live and wrapper-only:
+    - No SWI/PeTTa/MeTTa runtime invoked
+    - No memory append or inferred-belief promotion
+    - No patham9/PLN source changes
+    - No OmegaClaw/GoalChainer live path
+
+    Args:
+        shortcut_strength: STV strength for the shortcut item (default 0.95).
+        shortcut_confidence: STV confidence for the shortcut item (default 0.90).
+        chain_strengths: STV strengths for each chain item.  Default
+            ``[0.70, 0.65, 0.60]`` (three-step transitive chain).
+        chain_confidences: STV confidences for each chain item.  Default
+            ``[0.55, 0.50, 0.45]``.
+        shortcut_domain: Promotion domain for the shortcut item's EvidencePacket.
+        chain_domain: Promotion domain for chain items' EvidencePackets.
+        shortcut_ec: ``(support, opposition)`` EC counts for the shortcut.
+        chain_ecs: List of ``(support, opposition)`` EC counts for chain items.
+            Default ``[(3, 1), (2, 2), (1, 3)]``.
+
+    Returns:
+        A dict with schema ``petta-memory-patham9-pln-handoff-v1``.
+    """
+    if chain_strengths is None:
+        chain_strengths = [0.70, 0.65, 0.60]
+    if chain_confidences is None:
+        chain_confidences = [0.55, 0.50, 0.45]
+    if chain_ecs is None:
+        chain_ecs = [(3, 1), (2, 2), (1, 3)]
+    if len(chain_strengths) != len(chain_confidences):
+        raise ValueError("chain_strengths and chain_confidences must have equal length")
+    if len(chain_strengths) != len(chain_ecs):
+        raise ValueError("chain_strengths and chain_ecs must have equal length")
+    if not (0 <= shortcut_strength <= 1 and 0 <= shortcut_confidence <= 1):
+        raise ValueError("shortcut STV out of [0, 1]")
+    for s, c in zip(chain_strengths, chain_confidences):
+        if not (0 <= s <= 1 and 0 <= c <= 1):
+            raise ValueError("chain STV out of [0, 1]")
+    for sup, opp in [shortcut_ec] + list(chain_ecs):
+        if sup < 0 or opp < 0:
+            raise ValueError("EC counts must be non-negative")
+
+    items: list[dict[str, Any]] = []
+
+    # Shortcut item (index 0)
+    items.append({
+        "item_index": 0,
+        "belief_id": "shortcut-0",
+        "term": "(ShortcutConclusion)",
+        "stv": {"strength": shortcut_strength, "confidence": shortcut_confidence},
+        "stamp": [0],
+        "pi_pln_extension": {
+            "provenance": "meta-learning-benchmark-shortcut",
+            "contextual_evidence_packets": [
+                {
+                    "statement": "(ShortcutConclusion)",
+                    "ec": {"support": shortcut_ec[0], "opposition": shortcut_ec[1]},
+                    "promotion_domain": shortcut_domain,
+                    "cluster_id": "benchmark-shortcut",
+                    "promotion_rule": "direct-observation",
+                }
+            ],
+        },
+    })
+
+    # Chain items (indices 1..N)
+    for i, (strength, confidence, ec) in enumerate(
+        zip(chain_strengths, chain_confidences, chain_ecs), start=1
+    ):
+        items.append({
+            "item_index": i,
+            "belief_id": f"chain-{i}",
+            "term": f"(ChainStep{i})",
+            "stv": {"strength": strength, "confidence": confidence},
+            "stamp": [i],
+            "pi_pln_extension": {
+                "provenance": f"meta-learning-benchmark-chain-{i}",
+                "contextual_evidence_packets": [
+                    {
+                        "statement": f"(ChainStep{i})",
+                        "ec": {"support": ec[0], "opposition": ec[1]},
+                        "promotion_domain": chain_domain,
+                        "cluster_id": "benchmark-chain",
+                        "promotion_rule": "transitive-inference",
+                    }
+                ],
+            },
+        })
+
+    return {
+        "schema": "petta-memory-patham9-pln-handoff-v1",
+        "item_count": len(items),
+        "items": items,
+    }
+
+
+def run_meta_learning_benchmark(
+    *,
+    handoff: dict[str, Any] | None = None,
+    min_confidence: float = 0.0,
+    top_k: int | None = None,
+    domain: str | None = None,
+    min_packet_relevance: float = 0.0,
+) -> dict[str, Any]:
+    """Run the meta-learning inference-control benchmark.
+
+    Builds (or accepts) a synthetic shortcut-vs-chain handoff, runs the
+    probabilistic inference filter and the chained inference-control
+    pipeline against it, and reports whether the shortcut item is
+    correctly ranked first.
+
+    This implements the near-term "meta-learning benchmark" pattern from
+    the trueagi-io/chaining inference-control survey.  It exercises the
+    existing wrapper mechanisms against a known scenario where a
+    high-confidence shortcut should be preferred over a longer chain of
+    lower-confidence transitive beliefs.
+
+    The benchmark is non-live and wrapper-only:
+    - No SWI/PeTTa/MeTTa runtime invoked
+    - No memory append or inferred-belief promotion
+    - No patham9/PLN source changes
+    - No OmegaClaw/GoalChainer live path
+
+    Args:
+        handoff: If provided, use this handoff instead of building the
+            default benchmark handoff.  Must have schema
+            ``petta-memory-patham9-pln-handoff-v1``.
+        min_confidence: Minimum projected confidence for the probabilistic
+            filter stage (default 0.0, no filtering).
+        top_k: If set, keep only top-k items by composite score.
+        domain: If set, filter by this promotion domain in the chained
+            pipeline's context selection stage.
+        min_packet_relevance: Minimum packet relevance for context selection.
+
+    Returns:
+        A dict with schema ``petta-memory-pi-pln-meta-learning-benchmark-v1``.
+    """
+    if handoff is None:
+        handoff = build_meta_learning_benchmark_handoff()
+    if handoff.get("schema") != "petta-memory-patham9-pln-handoff-v1":
+        raise ValueError("expected petta-memory-patham9-pln-handoff-v1 handoff")
+    if min_confidence < 0 or min_confidence > 1:
+        raise ValueError(f"min_confidence {min_confidence} out of [0, 1]")
+    if top_k is not None and top_k < 0:
+        raise ValueError(f"top_k {top_k} must be non-negative or None")
+    if min_packet_relevance < 0 or min_packet_relevance > 1:
+        raise ValueError(f"min_packet_relevance {min_packet_relevance} out of [0, 1]")
+
+    items = list(handoff.get("items", []))
+    # Identify shortcut (index 0) and chain items (indices 1..N)
+    shortcut_index = 0
+    chain_indices = list(range(1, len(items))) if len(items) > 1 else []
+
+    # Run probabilistic filter
+    filter_result = probabilistic_inference_filter(
+        handoff,
+        min_confidence=min_confidence,
+        top_k=top_k,
+    )
+
+    # Run chained pipeline (context selection + probabilistic filtering)
+    pipeline_result = chained_inference_pipeline(
+        handoff,
+        domain=domain,
+        min_packet_relevance=min_packet_relevance,
+        min_confidence=min_confidence,
+        top_k=top_k,
+    )
+
+    # Analyze ranking: is shortcut ranked first?
+    filter_ranking = filter_result.get("ranking", [])
+    pipeline_ranking = pipeline_result.get("ranking", [])
+
+    filter_shortcut_rank = None
+    for r in filter_ranking:
+        if r["item_index"] == shortcut_index:
+            filter_shortcut_rank = r["rank"]
+            break
+
+    pipeline_shortcut_rank = None
+    for r in pipeline_ranking:
+        if r["item_index"] == shortcut_index:
+            pipeline_shortcut_rank = r["rank"]
+            break
+
+    filter_shortcut_first = (
+        filter_shortcut_rank is not None and filter_shortcut_rank == 1
+    )
+    pipeline_shortcut_first = (
+        pipeline_shortcut_rank is not None and pipeline_shortcut_rank == 1
+    )
+
+    # Check if any chain item outranks the shortcut
+    chain_outranks_filter = False
+    chain_outranks_pipeline = False
+    for r in filter_ranking:
+        if r["item_index"] in chain_indices and r["rank"] < (filter_shortcut_rank or len(items) + 1):
+            chain_outranks_filter = True
+    for r in pipeline_ranking:
+        if r["item_index"] in chain_indices and r["rank"] < (pipeline_shortcut_rank or len(items) + 1):
+            chain_outranks_pipeline = True
+
+    # Shortcut composite score vs best chain composite score
+    filter_shortcut_score = None
+    best_chain_score = None
+    for r in filter_ranking:
+        if r["item_index"] == shortcut_index:
+            filter_shortcut_score = r["composite_score"]
+        elif r["item_index"] in chain_indices:
+            if best_chain_score is None or r["composite_score"] > best_chain_score:
+                best_chain_score = r["composite_score"]
+
+    shortcut_preferred = (
+        filter_shortcut_score is not None
+        and (best_chain_score is None or filter_shortcut_score > best_chain_score)
+    )
+
+    return {
+        "schema": "petta-memory-pi-pln-meta-learning-benchmark-v1",
+        "mode": "design-specification-no-runtime",
+        "benchmark_scenario": {
+            "shortcut_item_index": shortcut_index,
+            "chain_item_indices": chain_indices,
+            "shortcut_belief_id": items[0].get("belief_id") if items else None,
+            "shortcut_stv": items[0].get("stv") if items else None,
+            "chain_belief_ids": [items[i].get("belief_id") for i in chain_indices if i < len(items)],
+            "source_pattern": "meta-learning benchmark from trueagi-io/chaining survey (near-term)",
+            "description": (
+                "Evaluates whether the pi-PLN wrapper's inference control "
+                "correctly prefers a high-confidence shortcut belief over "
+                "a longer chain of lower-confidence transitive beliefs, "
+                "inspired by the OpenCog classic meta-learning experiment."
+            ),
+        },
+        "filter_result": {
+            "schema": filter_result["schema"],
+            "shortcut_rank": filter_shortcut_rank,
+            "shortcut_first": filter_shortcut_first,
+            "shortcut_composite_score": filter_shortcut_score,
+            "best_chain_composite_score": best_chain_score,
+            "chain_outranks_shortcut": chain_outranks_filter,
+            "ranking": filter_ranking,
+        },
+        "pipeline_result": {
+            "schema": pipeline_result["schema"],
+            "shortcut_rank": pipeline_shortcut_rank,
+            "shortcut_first": pipeline_shortcut_first,
+            "ranking": pipeline_ranking,
+        },
+        "shortcut_preferred": shortcut_preferred,
+        "filter_shortcut_first": filter_shortcut_first,
+        "pipeline_shortcut_first": pipeline_shortcut_first,
+        "overall_pass": shortcut_preferred and filter_shortcut_first,
+        "policy": {
+            "min_confidence": min_confidence,
+            "top_k": top_k,
+            "domain": domain,
+            "min_packet_relevance": min_packet_relevance,
+        },
+        "boundary": _META_LEARNING_BOUNDARY,
+    }
