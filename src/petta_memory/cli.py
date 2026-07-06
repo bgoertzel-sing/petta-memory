@@ -15,6 +15,7 @@ from .patham9_pln import (
     run_patham9_pln_ec_projection_conflicting_smoke,
     run_patham9_pln_multi_sentence_derivation_smoke,
     run_patham9_pln_query_smoke,
+    survey_trueagi_chaining_inference_control,
 )
 from .store import MediumMemoryStore, ValidationError
 
@@ -134,6 +135,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print the concrete pi-PLN extension layer specification from handoff evidence",
     )
     pi_pln_spec.add_argument("--cache-id", default="petta-memory-patham9-pi-pln-spec")
+
+    inf_ctl_survey = sub.add_parser(
+        "trueagi-inf-ctl-survey",
+        help="Survey inference-control patterns from the trueagi-io/chaining repo",
+    )
+    inf_ctl_survey.add_argument(
+        "--chaining-repo",
+        default="../trueagi-chaining",
+        help="Path to local trueagi-io/chaining checkout",
+    )
 
     goal_smoke = sub.add_parser(
         "goalchainer-smoke",
@@ -273,6 +284,9 @@ def main(argv: list[str] | None = None) -> int:
             cache = store.pettachainer_handoff_cache(cache_id=args.cache_id)
             handoff = patham9_pln_handoff_sentences(cache)
             print(json.dumps(patham9_pi_pln_extension_spec(handoff), indent=2, sort_keys=True))
+            return 0
+        if args.cmd == "trueagi-inf-ctl-survey":
+            print(json.dumps(survey_trueagi_chaining_inference_control(args.chaining_repo), indent=2, sort_keys=True))
             return 0
         if args.cmd == "goalchainer-smoke":
             cache = store.goalchainer_handoff_cache(cache_id=args.cache_id)

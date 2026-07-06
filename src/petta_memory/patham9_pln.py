@@ -1686,3 +1686,286 @@ def patham9_pln_api_surface(pln_repo: str | Path) -> Dict[str, Any]:
         },
         "boundary": "source-level inspection only; no SWI/PeTTa/MeTTa runtime invoked; no memory append; no inferred-belief promotion; no OmegaClaw/GoalChainer live path",
     }
+
+
+def survey_trueagi_chaining_inference_control(chaining_repo: str | Path) -> Dict[str, Any]:
+    """Survey inference-control patterns from the trueagi-io/chaining repo.
+
+    This is a source-level, no-runtime inspection that maps concrete
+    inference-control patterns from the experimental chaining repository
+    (cloned at ``repos/trueagi-chaining``) to pi-PLN wrapper extension
+    points.  It directly supports the deferred roadmap item: *Design
+    OmegaClaw-specific inference-control mechanisms*.
+
+    The survey covers:
+      - PLN-based inference controller (``pln-inf-ctl/pln-inf-ctl.metta``):
+        uses PLN queries to estimate branch viability, Thompson sampling
+        for exploration/exploitation, ``EDCall`` estimated delayed calls,
+        ``Control`` structure with PLN estimator, ``toPLN`` query converter
+      - Controlled backward chainer (``inference-control/inf-ctl-xp.metta``):
+        parameterized chainer with context abstraction/argument updaters and
+        a termination predicate
+      - Meta-learning inference control (``inference-control/inf-ctl-month-xp.metta``):
+        reproduces OpenCog classic inference control meta-learning with a
+        shortcut rule
+      - Controller-as-chainer (``inference-control/inf-ctl-month-bc-xp.metta``):
+        uses another backward chainer instance as the termination controller
+      - Continuation predicate (``inference-control/inf-ctl-month-bc-cont-xp.metta``):
+        replaces termination with a ``Continue`` dependent type
+      - Probabilistic backward chaining (``prob-chaining/prob-chaining.metta``):
+        each typing relationship carries a probability that filters base cases
+
+    For each pattern, the survey records:
+      - File path, line count, and a concise description
+      - Key concepts and data structures
+      - How it could be adopted at the pi-PLN wrapper boundary
+      - Whether it requires patham9/PLN source changes or is wrapper-only
+    """
+    repo = Path(chaining_repo)
+    if not repo.exists():
+        raise FileNotFoundError(f"trueagi-io/chaining checkout not found at {repo}")
+
+    def _read_rel(rel: str) -> str:
+        p = repo / rel
+        if not p.exists():
+            return ""
+        return p.read_text(encoding="utf-8", errors="replace")
+
+    def _line_count(text: str) -> int:
+        return text.count("\n") + 1 if text else 0
+
+    patterns: list[dict[str, Any]] = []
+
+    # 1. PLN-based inference controller
+    pln_inf_ctl = _read_rel("experimental/pln-inf-ctl/pln-inf-ctl.metta")
+    if pln_inf_ctl:
+        patterns.append({
+            "name": "PLN-based inference controller",
+            "file": "experimental/pln-inf-ctl/pln-inf-ctl.metta",
+            "line_count": _line_count(pln_inf_ctl),
+            "description": (
+                "Uses PLN queries to estimate the probability of success for each "
+                "backward chainer branch, then uses Thompson sampling to select "
+                "the best branch.  A Control structure holds a PLN knowledge base "
+                "and an estimator function.  The estimator converts the current "
+                "query and surrounding premises into a PLN statement, runs PLN "
+                "backward chaining on it, and Thompson-samples a first-order "
+                "probability from the resulting truth value."
+            ),
+            "key_concepts": [
+                "EDCall (Estimated Delayed Call) — pairs a probability estimate with a deferred branch call",
+                "Control structure — holds PLN space and estimator function",
+                "toPLN converter — maps backward chainer query (theory, proof, theorem) to PLN statement",
+                "Thompson sampling — samples first-order probability from PLN truth value (strength, confidence)",
+                "pln-bc — PLN backward chainer over judgements (statement, truth value)",
+                "𝛩 predicate — ternary relation (theory, proof, theorem) treated probabilistically",
+            ],
+            "wrapper_adoption": (
+                "Wrapper could implement an estimator that converts petta-memory "
+                "Sentences and their EC/EvidencePacket metadata into a PLN query "
+                "about branch viability, then uses the patham9/PLN chainer itself "
+                "to estimate which derivation paths are most promising before "
+                "committing to PLN.Derive.  The EDCall pattern maps naturally to "
+                "pre-computing projected STV for each candidate Sentence before "
+                "loading it into the chainer.  No patham9/PLN source changes needed; "
+                "wrapper owns the estimator and Thompson sampling logic."
+            ),
+            "requires_patham9_source_change": False,
+            "complexity": "high — requires implementing a PLN estimator and Thompson sampling in the wrapper",
+        })
+
+    # 2. Controlled backward chainer with context updaters and termination
+    inf_ctl_xp = _read_rel("experimental/inference-control/inf-ctl-xp.metta")
+    if inf_ctl_xp:
+        patterns.append({
+            "name": "Controlled backward chainer (context updaters + termination)",
+            "file": "experimental/inference-control/inf-ctl-xp.metta",
+            "line_count": _line_count(inf_ctl_xp),
+            "description": (
+                "Parameterized backward chainer that accepts control functions: "
+                "a context abstraction updater, a context argument updater, and a "
+                "termination predicate.  The chainer calls these functions at each "
+                "recursive step to decide whether to continue, prune, or update the "
+                "inference context before recursing."
+            ),
+            "key_concepts": [
+                "Context abstraction updater — updates context before recursing on proof abstraction",
+                "Context argument updater — updates context before recursing on proof argument",
+                "Termination predicate — decides whether to prune the current branch",
+                "Control structure — holds the three control functions",
+                "Curried rules — allows partial application for proof abstractions",
+            ],
+            "wrapper_adoption": (
+                "Wrapper could implement context updaters that track which "
+                "EvidencePackets have been consumed, and a termination predicate "
+                "that checks whether remaining EC support is sufficient to justify "
+                "further derivation.  This maps to the pi-PLN context selection "
+                "policy: the wrapper filters Sentences by contextual relevance "
+                "before each PLN.Query/PLN.Derive call.  No patham9/PLN source "
+                "changes needed; wrapper owns the control functions."
+            ),
+            "requires_patham9_source_change": False,
+            "complexity": "medium — requires implementing context tracking and termination logic",
+        })
+
+    # 3. Meta-learning inference control (months)
+    inf_ctl_month = _read_rel("experimental/inference-control/inf-ctl-month-xp.metta")
+    if inf_ctl_month:
+        patterns.append({
+            "name": "Meta-learning inference control (OpenCog classic reproduction)",
+            "file": "experimental/inference-control/inf-ctl-month-xp.metta",
+            "line_count": _line_count(inf_ctl_month),
+            "description": (
+                "Reproduces the OpenCog classic inference control meta-learning "
+                "experiment with months instead of letters.  Includes a shortcut "
+                "rule (January precedes all months) that the chainer should learn "
+                "to prefer over transitive chains.  Tests that the controlled "
+                "chainer converges on the shortcut after learning."
+            ),
+            "key_concepts": [
+                "Shortcut rule — a direct rule that bypasses long transitive chains",
+                "Context abstraction — tracks which rules have been applied",
+                "Meta-learning — the chainer learns which rules to prefer",
+                "Month precedence — transitively chained relation with a shortcut",
+            ],
+            "wrapper_adoption": (
+                "Provides a test scenario for evaluating whether the wrapper's "
+                "inference control can learn to prefer high-confidence promoted "
+                "beliefs (analogous to shortcut rules) over long derivation chains. "
+                "Could be used as a benchmark for the pi-PLN wrapper's context "
+                "selection and priority policies."
+            ),
+            "requires_patham9_source_change": False,
+            "complexity": "low — benchmark/test scenario, not a direct implementation pattern",
+        })
+
+    # 4. Controller-as-chainer (termination via another chainer)
+    inf_ctl_month_bc = _read_rel("experimental/inference-control/inf-ctl-month-bc-xp.metta")
+    if inf_ctl_month_bc:
+        patterns.append({
+            "name": "Controller-as-chainer (termination via backward chainer)",
+            "file": "experimental/inference-control/inf-ctl-month-bc-xp.metta",
+            "line_count": _line_count(inf_ctl_month_bc),
+            "description": (
+                "Like the meta-learning experiment but the termination predicate "
+                "is evaluated by using another instance of the backward chainer as "
+                "a controller.  A Terminate dependent type is proven by the "
+                "controller chainer to decide whether to prune a branch."
+            ),
+            "key_concepts": [
+                "Terminate dependent type — (Terminate CONTEXT) must be provable to prune",
+                "Controller chainer — a separate backward chainer instance for control decisions",
+                "Recursive control — the controller itself can recurse with its own control",
+                "Context type — explicit type for the inference context passed to control",
+            ],
+            "wrapper_adoption": (
+                "Wrapper could run a lightweight PLN.Query against the loaded "
+                "Sentences to decide whether a derivation branch is worth "
+                "continuing.  This is a meta-level use of patham9/PLN itself as "
+                "the controller, separate from the main derivation.  No source "
+                "changes needed; wrapper runs two PLN.Query calls — one for "
+                "control, one for derivation."
+            ),
+            "requires_patham9_source_change": False,
+            "complexity": "high — requires running the chainer at two levels (control + derivation)",
+        })
+
+    # 5. Continuation predicate
+    inf_ctl_month_cont = _read_rel("experimental/inference-control/inf-ctl-month-bc-cont-xp.metta")
+    if inf_ctl_month_cont:
+        patterns.append({
+            "name": "Continuation predicate (Continue dependent type)",
+            "file": "experimental/inference-control/inf-ctl-month-bc-cont-xp.metta",
+            "line_count": _line_count(inf_ctl_month_cont),
+            "description": (
+                "Replaces the termination predicate with a continuation predicate. "
+                "A Continue dependent type must be proven to justify continuing a "
+                "branch, rather than proving Terminate to prune it.  This inverts "
+                "the control logic from opt-out to opt-in."
+            ),
+            "key_concepts": [
+                "Continue dependent type — (Continue QUERY CONTEXT) must be provable to continue",
+                "Opt-in control — branches must justify themselves rather than being pruned",
+                "Control structure — holds abstraction/argument updaters and continuation checker",
+            ],
+            "wrapper_adoption": (
+                "Wrapper could require that each candidate Sentence in a multi-step "
+                "derivation passes a Continue check — e.g., its projected STV "
+                "confidence exceeds a threshold, or its EvidencePacket support "
+                "ratio is sufficient.  This is simpler than the full PLN estimator "
+                "and can be implemented as a wrapper-level filter before PLN.Derive."
+            ),
+            "requires_patham9_source_change": False,
+            "complexity": "medium — requires implementing a continuation check per derivation step",
+        })
+
+    # 6. Probabilistic backward chaining
+    prob_chain = _read_rel("experimental/prob-chaining/prob-chaining.metta")
+    if prob_chain:
+        patterns.append({
+            "name": "Probabilistic backward chaining (ProbLog-inspired)",
+            "file": "experimental/prob-chaining/prob-chaining.metta",
+            "line_count": _line_count(prob_chain),
+            "description": (
+                "Each typing relationship carries a probability that filters base "
+                "cases.  Inspired by ProbLog, the backward chainer probabilistically "
+                "includes or excludes matching facts at a rate determined by their "
+                "attached probability."
+            ),
+            "key_concepts": [
+                "Probabilistic fact filtering — base case matches are accepted with probability p",
+                "when predicate — run code if condition is true, otherwise prune",
+                "random-float — used to sample whether to accept a fact",
+                "Probability attached to typing relationships",
+            ],
+            "wrapper_adoption": (
+                "Wrapper could use STV confidence as the probability for accepting "
+                "or filtering Sentences during multi-step derivation.  This is "
+                "simpler than the full PLN estimator and directly uses existing "
+                "patham9/PLN STV values.  The ec_projected_stv() formula already "
+                "produces a projected confidence that could serve as the filter "
+                "probability.  No patham9/PLN source changes needed."
+            ),
+            "requires_patham9_source_change": False,
+            "complexity": "low — wrapper filters Sentences by projected confidence before loading",
+        })
+
+    # Categorize by adoption phase
+    by_phase: dict[str, list[str]] = {
+        "near_term": [],
+        "medium_term": [],
+        "long_term": [],
+    }
+    for p in patterns:
+        if p["complexity"].startswith("low"):
+            by_phase["near_term"].append(p["name"])
+        elif p["complexity"].startswith("medium"):
+            by_phase["medium_term"].append(p["name"])
+        else:
+            by_phase["long_term"].append(p["name"])
+
+    return {
+        "schema": "petta-memory-trueagi-chaining-inference-control-survey-v1",
+        "mode": "source-level-no-runtime-inspection",
+        "source_repo": str(repo),
+        "source_commit": "bc9beb2672953e07971b3abecc1fe67651ecddc4",
+        "pattern_count": len(patterns),
+        "patterns": patterns,
+        "adoption_by_phase": by_phase,
+        "wrapper_boundary_summary": (
+            "All six patterns can be adopted at the wrapper boundary without "
+            "modifying patham9/PLN source.  Near-term patterns (probabilistic "
+            "filtering, meta-learning benchmark) use existing STV/confidence "
+            "values as filter probabilities or test scenarios.  Medium-term "
+            "patterns (controlled chainer, continuation predicate) require "
+            "implementing context tracking and per-step checks.  Long-term "
+            "patterns (PLN estimator, controller-as-chainer) require running "
+            "PLN at two levels or implementing a Thompson sampling estimator."
+        ),
+        "pi_pln_extension_references": {
+            "inference_control_hooks": "pi-PLN extension spec defers inference control to roadmap item 4; this survey provides concrete patterns for that item",
+            "context_selection": "continuation predicate and controlled chainer patterns directly inform the context selection policy",
+            "ec_projection": "probabilistic filtering pattern uses STV confidence as filter probability, compatible with ec_projected_stv()",
+        },
+        "boundary": "source-level inspection only; no SWI/PeTTa/MeTTa runtime invoked; no memory append; no inferred-belief promotion; no OmegaClaw/GoalChainer live path",
+    }

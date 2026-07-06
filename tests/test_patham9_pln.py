@@ -22,6 +22,7 @@ from petta_memory.patham9_pln import (
     patham9_pln_query_smoke_program,
     summarize_smoke_results,
     summarize_smoke_results_file,
+    survey_trueagi_chaining_inference_control,
 )
 
 
@@ -800,6 +801,110 @@ class StoreRoundTripPatham9PlnTests(unittest.TestCase):
             self.assertLess(projected["projected_strength"], 1.0)
             self.assertGreater(projected["projected_confidence"], 0.0)
             self.assertLessEqual(projected["projected_confidence"], 1.0)
+
+
+class TrueagiChainingInferenceControlSurveyTests(unittest.TestCase):
+    """Tests for the source-level survey of trueagi-io/chaining inference-control patterns."""
+
+    def _repo(self) -> Path:
+        return Path(__file__).resolve().parents[2] / "trueagi-chaining"
+
+    def test_survey_returns_well_formed_artifact(self):
+        repo = self._repo()
+        if not repo.exists():
+            self.skipTest("trueagi-io/chaining checkout not found")
+        survey = survey_trueagi_chaining_inference_control(repo)
+
+        self.assertEqual(survey["schema"], "petta-memory-trueagi-chaining-inference-control-survey-v1")
+        self.assertEqual(survey["mode"], "source-level-no-runtime-inspection")
+        self.assertIn("bc9beb2672953e07971b3abecc1fe67651ecddc4", survey["source_commit"])
+        self.assertGreaterEqual(survey["pattern_count"], 6)
+        self.assertEqual(len(survey["patterns"]), survey["pattern_count"])
+
+    def test_survey_patterns_have_required_fields(self):
+        repo = self._repo()
+        if not repo.exists():
+            self.skipTest("trueagi-io/chaining checkout not found")
+        survey = survey_trueagi_chaining_inference_control(repo)
+
+        for pattern in survey["patterns"]:
+            self.assertIn("name", pattern)
+            self.assertIn("file", pattern)
+            self.assertIn("line_count", pattern)
+            self.assertGreater(pattern["line_count"], 0)
+            self.assertIn("description", pattern)
+            self.assertIn("key_concepts", pattern)
+            self.assertGreaterEqual(len(pattern["key_concepts"]), 2)
+            self.assertIn("wrapper_adoption", pattern)
+            self.assertIn("requires_patham9_source_change", pattern)
+            self.assertFalse(pattern["requires_patham9_source_change"])
+            self.assertIn("complexity", pattern)
+
+    def test_survey_includes_pln_inf_ctl_pattern(self):
+        repo = self._repo()
+        if not repo.exists():
+            self.skipTest("trueagi-io/chaining checkout not found")
+        survey = survey_trueagi_chaining_inference_control(repo)
+
+        names = [p["name"] for p in survey["patterns"]]
+        self.assertIn("PLN-based inference controller", names)
+        pln_ctl = next(p for p in survey["patterns"] if "PLN-based" in p["name"])
+        self.assertIn("Thompson sampling", " ".join(pln_ctl["key_concepts"]))
+        self.assertIn("EDCall", " ".join(pln_ctl["key_concepts"]))
+        self.assertIn("pln-inf-ctl.metta", pln_ctl["file"])
+
+    def test_survey_includes_probabilistic_filtering_pattern(self):
+        repo = self._repo()
+        if not repo.exists():
+            self.skipTest("trueagi-io/chaining checkout not found")
+        survey = survey_trueagi_chaining_inference_control(repo)
+
+        names = [p["name"] for p in survey["patterns"]]
+        self.assertIn("Probabilistic backward chaining (ProbLog-inspired)", names)
+        prob = next(p for p in survey["patterns"] if "Probabilistic" in p["name"])
+        self.assertIn("prob-chaining.metta", prob["file"])
+        self.assertTrue(prob["complexity"].startswith("low"))
+
+    def test_survey_adoption_by_phase_categorizes_patterns(self):
+        repo = self._repo()
+        if not repo.exists():
+            self.skipTest("trueagi-io/chaining checkout not found")
+        survey = survey_trueagi_chaining_inference_control(repo)
+
+        by_phase = survey["adoption_by_phase"]
+        self.assertIn("near_term", by_phase)
+        self.assertIn("medium_term", by_phase)
+        self.assertIn("long_term", by_phase)
+        total = len(by_phase["near_term"]) + len(by_phase["medium_term"]) + len(by_phase["long_term"])
+        self.assertEqual(total, survey["pattern_count"])
+        self.assertGreaterEqual(len(by_phase["near_term"]), 1)
+        self.assertGreaterEqual(len(by_phase["long_term"]), 1)
+
+    def test_survey_pi_pln_extension_references_are_present(self):
+        repo = self._repo()
+        if not repo.exists():
+            self.skipTest("trueagi-io/chaining checkout not found")
+        survey = survey_trueagi_chaining_inference_control(repo)
+
+        refs = survey["pi_pln_extension_references"]
+        self.assertIn("inference_control_hooks", refs)
+        self.assertIn("context_selection", refs)
+        self.assertIn("ec_projection", refs)
+        self.assertIn("roadmap item 4", refs["inference_control_hooks"])
+
+    def test_survey_boundary_text_is_non_live(self):
+        repo = self._repo()
+        if not repo.exists():
+            self.skipTest("trueagi-io/chaining checkout not found")
+        survey = survey_trueagi_chaining_inference_control(repo)
+
+        self.assertIn("source-level inspection only", survey["boundary"])
+        self.assertIn("no memory append", survey["boundary"])
+        self.assertIn("no OmegaClaw/GoalChainer live path", survey["boundary"])
+
+    def test_survey_raises_for_missing_repo(self):
+        with self.assertRaises(FileNotFoundError):
+            survey_trueagi_chaining_inference_control("/nonexistent/path/to/chaining")
 
 
 if __name__ == "__main__":
