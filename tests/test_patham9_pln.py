@@ -20,6 +20,7 @@ from petta_memory.patham9_pln import (
     patham9_pln_handoff_sentences,
     patham9_pln_multi_sentence_derivation_smoke_program,
     patham9_pln_query_smoke_program,
+    probabilistic_inference_filter,
     summarize_smoke_results,
     summarize_smoke_results_file,
     survey_trueagi_chaining_inference_control,
@@ -905,6 +906,252 @@ class TrueagiChainingInferenceControlSurveyTests(unittest.TestCase):
     def test_survey_raises_for_missing_repo(self):
         with self.assertRaises(FileNotFoundError):
             survey_trueagi_chaining_inference_control("/nonexistent/path/to/chaining")
+
+
+class ProbabilisticInferenceFilterTests(unittest.TestCase):
+    """Tests for the first inference-control mechanism: probabilistic filtering.
+
+    The filter applies EC projection to each handoff Sentence, computes a
+    composite score, and filters/ranks before loading into patham9/PLN.
+    These tests validate the filtering logic without invoking any runtime.
+    """
+
+    def _handoff(self, num_items: int = 3) -> dict:
+        """Build a handoff with mixed evidence quality for filter testing."""
+        items = []
+        # Item 0: strong STV, strong EC support (9, 1)
+        items.append({
+            "kind": "patham9-pln-sentence-input",
+            "atom": "(Sentence (Acceptable publish_redacted_summary) (stv 0.91 0.74) ((PMEvidence b-0 mc-0 pe-0 rule domain)))",
+            "term": "(Acceptable publish_redacted_summary)",
+            "stv": {"strength": 0.91, "confidence": 0.74},
+            "evidence_id": "(PMEvidence b-0 mc-0 pe-0 rule domain)",
+            "belief_id": "b-0",
+            "cluster_id": "mc-0",
+            "promotion_event": "pe-0",
+            "promotion_rule": "explicit-test",
+            "promotion_domain": "memory-architecture",
+            "source_status": "pln-ready-input-not-inferred-belief",
+            "pi_pln_extension": {
+                "contextual_evidence_packets": [
+                    {"support": 9, "opposition": 1, "statement": "(Acceptable publish_redacted_summary)"},
+                ],
+                "ec_projection_policy": "preserve packets first; later project EC",
+                "context_selection": "not-run",
+            },
+        })
+        if num_items >= 2:
+            # Item 1: moderate STV, conflicting EC (1, 9) — should rank lower
+            items.append({
+                "kind": "patham9-pln-sentence-input",
+                "atom": "(Sentence (Acceptable share_full_log) (stv 0.94 0.80) ((PMEvidence b-1 mc-1 pe-1 rule domain)))",
+                "term": "(Acceptable share_full_log)",
+                "stv": {"strength": 0.94, "confidence": 0.80},
+                "evidence_id": "(PMEvidence b-1 mc-1 pe-1 rule domain)",
+                "belief_id": "b-1",
+                "cluster_id": "mc-1",
+                "promotion_event": "pe-1",
+                "promotion_rule": "explicit-test",
+                "promotion_domain": "memory-architecture",
+                "source_status": "pln-ready-input-not-inferred-belief",
+                "pi_pln_extension": {
+                    "contextual_evidence_packets": [
+                        {"support": 1, "opposition": 9, "statement": "(Acceptable share_full_log)"},
+                    ],
+                    "ec_projection_policy": "preserve packets first; later project EC",
+                    "context_selection": "not-run",
+                },
+            })
+        if num_items >= 3:
+            # Item 2: weak STV, no EC packets — moderate score
+            items.append({
+                "kind": "patham9-pln-sentence-input",
+                "atom": "(Sentence (Requires MemoryTarget0 PLNReadyViews) (stv 0.70 0.55) ((PMEvidence b-2 mc-2 pe-2 rule domain)))",
+                "term": "(Requires MemoryTarget0 PLNReadyViews)",
+                "stv": {"strength": 0.70, "confidence": 0.55},
+                "evidence_id": "(PMEvidence b-2 mc-2 pe-2 rule domain)",
+                "belief_id": "b-2",
+                "cluster_id": "mc-2",
+                "promotion_event": "pe-2",
+                "promotion_rule": "explicit-test",
+                "promotion_domain": "memory-architecture",
+                "source_status": "pln-ready-input-not-inferred-belief",
+                "pi_pln_extension": {
+                    "contextual_evidence_packets": [],
+                    "ec_projection_policy": "preserve packets first; later project EC",
+                    "context_selection": "not-run",
+                },
+            })
+        return {
+            "schema": "petta-memory-patham9-pln-handoff-v1",
+            "item_count": len(items),
+            "items": items,
+        }
+
+    def test_filter_returns_correct_schema(self):
+        result = probabilistic_inference_filter(self._handoff())
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-inference-filter-v1")
+
+    def test_filter_input_output_counts_match(self):
+        result = probabilistic_inference_filter(self._handoff())
+        self.assertEqual(result["input_count"], 3)
+        self.assertEqual(result["output_count"], 3)
+        self.assertEqual(len(result["selected_indices"]), 3)
+        self.assertEqual(len(result["filtered_indices"]), 0)
+
+    def test_filter_no_ec_packets_uses_base_stv(self):
+        handoff = self._handoff()
+        # Item 2 has no packets; projected should equal base
+        result = probabilistic_inference_filter(handoff)
+        item2 = [pi for pi in result["items"] if pi["item_index"] == 2][0]
+        self.assertAlmostEqual(item2["projected_stv"]["strength"], 0.70)
+        self.assertAlmostEqual(item2["projected_stv"]["confidence"], 0.55)
+        self.assertEqual(item2["contextual_packet_count"], 0)
+
+    def test_filter_conflicting_ec_lowers_projected_strength(self):
+        handoff = self._handoff()
+        result = probabilistic_inference_filter(handoff)
+        item1 = [pi for pi in result["items"] if pi["item_index"] == 1][0]
+        # EC (1, 9) should lower strength from 0.94 to ~0.511
+        self.assertLess(item1["projected_stv"]["strength"], 0.60)
+        self.assertGreater(item1["projected_stv"]["confidence"], 0.80)  # confidence rises
+
+    def test_filter_ranks_by_composite_score(self):
+        handoff = self._handoff()
+        result = probabilistic_inference_filter(handoff)
+        # Item 0 (strong support) should rank first, item 1 (conflicting) should rank lower
+        ranking = result["ranking"]
+        self.assertEqual(ranking[0]["item_index"], 0)
+        # Item 1 with conflicting EC should have lower score than item 0
+        item0_score = [pi for pi in result["items"] if pi["item_index"] == 0][0]["composite_score"]
+        item1_score = [pi for pi in result["items"] if pi["item_index"] == 1][0]["composite_score"]
+        self.assertGreater(item0_score, item1_score)
+
+    def test_filter_min_confidence_excludes_low_confidence_items(self):
+        handoff = self._handoff(num_items=3)
+        # Item 2 has confidence 0.55; set threshold above it
+        result = probabilistic_inference_filter(handoff, min_confidence=0.60)
+        self.assertEqual(result["output_count"], 2)
+        self.assertNotIn(2, result["selected_indices"])
+        self.assertIn(2, result["filtered_indices"])
+        excluded = [pi for pi in result["items"] if pi["item_index"] == 2][0]
+        self.assertFalse(excluded["included"])
+        self.assertIsNotNone(excluded["filter_reason"])
+        self.assertIn("min_confidence", excluded["filter_reason"])
+
+    def test_filter_top_k_keeps_only_k_items(self):
+        handoff = self._handoff()
+        result = probabilistic_inference_filter(handoff, top_k=1)
+        self.assertEqual(result["output_count"], 1)
+        self.assertEqual(len(result["selected_indices"]), 1)
+        self.assertEqual(len(result["filtered_indices"]), 2)
+        # The top item should be item 0 (strong support, high composite score)
+        self.assertEqual(result["selected_indices"][0], 0)
+
+    def test_filter_top_k_with_min_confidence_combines_both(self):
+        handoff = self._handoff()
+        # Set confidence threshold that item 2 fails, then top_k=1
+        result = probabilistic_inference_filter(handoff, min_confidence=0.60, top_k=1)
+        self.assertEqual(result["output_count"], 1)
+        # Only items 0 and 1 pass confidence; top_k=1 picks the best (item 0)
+        self.assertEqual(result["selected_indices"][0], 0)
+        self.assertIn(2, result["filtered_indices"])
+
+    def test_filter_empty_handoff_returns_empty_result(self):
+        handoff = {
+            "schema": "petta-memory-patham9-pln-handoff-v1",
+            "item_count": 0,
+            "items": [],
+        }
+        result = probabilistic_inference_filter(handoff)
+        self.assertEqual(result["input_count"], 0)
+        self.assertEqual(result["output_count"], 0)
+        self.assertEqual(result["items"], [])
+        self.assertEqual(result["selected_indices"], [])
+        self.assertEqual(result["filtered_indices"], [])
+        self.assertEqual(result["ranking"], [])
+
+    def test_filter_rejects_wrong_schema(self):
+        with self.assertRaises(ValueError):
+            probabilistic_inference_filter({"schema": "wrong"})
+
+    def test_filter_rejects_out_of_range_min_confidence(self):
+        with self.assertRaises(ValueError):
+            probabilistic_inference_filter(self._handoff(), min_confidence=-0.1)
+        with self.assertRaises(ValueError):
+            probabilistic_inference_filter(self._handoff(), min_confidence=1.1)
+
+    def test_filter_rejects_negative_top_k(self):
+        with self.assertRaises(ValueError):
+            probabilistic_inference_filter(self._handoff(), top_k=-1)
+
+    def test_filter_boundary_text_is_non_live(self):
+        result = probabilistic_inference_filter(self._handoff())
+        self.assertIn("non-live", result["boundary"])
+        self.assertIn("no memory append", result["boundary"])
+        self.assertIn("no inferred-belief promotion", result["boundary"])
+        self.assertIn("no OmegaClaw/GoalChainer live path", result["boundary"])
+
+    def test_filter_policy_records_source_pattern(self):
+        result = probabilistic_inference_filter(self._handoff())
+        policy = result["filter_policy"]
+        self.assertEqual(policy["scoring_formula"], "projected_strength * projected_confidence")
+        self.assertIn("probabilistic filtering", policy["source_pattern"])
+        self.assertEqual(policy["min_confidence"], 0.0)
+        self.assertIsNone(policy["top_k"])
+
+    def test_filter_composite_score_is_strength_times_confidence(self):
+        handoff = self._handoff(num_items=1)
+        result = probabilistic_inference_filter(handoff)
+        item0 = result["items"][0]
+        expected = item0["projected_stv"]["strength"] * item0["projected_stv"]["confidence"]
+        self.assertAlmostEqual(item0["composite_score"], expected)
+
+
+class StoreRoundTripInferenceFilterTests(unittest.TestCase):
+    """Empirical round-trip: store -> handoff -> inference filter."""
+
+    def test_roundtrip_inference_filter_from_store(self):
+        from petta_memory.store import MediumMemoryStore
+
+        cluster = """
+(MemoryCluster mc-if-a)
+(SchemaVersion mc-if-a medium-memory-v1)
+(ClusterType mc-if-a belief-promotion)
+(ClusterOpenedAt mc-if-a "2026-07-05 22:00 PDT")
+(ClusterSource mc-if-a src-test)
+(Contains mc-if-a pe-if-a)
+(Contains mc-if-a b-if-a)
+(ClusterStatus mc-if-a active)
+(PromotionEvent pe-if-a)
+(PromotesFrom pe-if-a qc-if-a)
+(PromotesTo pe-if-a b-if-a)
+(PromotionRule pe-if-a explicit-test-promotion)
+(PromotionTrust pe-if-a 0.85)
+(PromotionDomain pe-if-a memory-architecture)
+(DerivedBelief b-if-a)
+(BeliefContent b-if-a (Requires MemoryTarget0 PLNReadyViews))
+(TruthValue b-if-a (stv 0.88 0.72))
+(EvidenceFor b-if-a qc-if-a)
+(EvidenceSupportCount b-if-a 9.0)
+(EvidenceOppositionCount b-if-a 1.0)
+"""
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "inf_filter_memory.metta")
+            store.append_cluster(cluster)
+            cache = store.pettachainer_handoff_cache()
+
+        handoff = patham9_pln_handoff_sentences(cache)
+        result = probabilistic_inference_filter(handoff)
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-inference-filter-v1")
+        self.assertEqual(result["input_count"], 1)
+        self.assertEqual(result["output_count"], 1)
+        self.assertEqual(len(result["selected_indices"]), 1)
+        self.assertEqual(len(result["filtered_indices"]), 0)
+        # EC (9, 1) should project strength above 0.80
+        item = result["items"][0]
+        self.assertGreater(item["projected_stv"]["strength"], 0.80)
+        self.assertGreater(item["composite_score"], 0.0)
 
 
 if __name__ == "__main__":

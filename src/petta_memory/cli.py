@@ -9,6 +9,7 @@ from .goalchainer_smoke import run_goalchainer_handoff_smoke, run_goalchainer_pr
 from .patham9_pln import (
     patham9_pi_pln_extension_spec,
     patham9_pln_handoff_sentences,
+    probabilistic_inference_filter,
     run_patham9_pln_derivation_smoke,
     run_patham9_pln_derivation_ec_projection_smoke,
     run_patham9_pln_ec_projection_smoke,
@@ -145,6 +146,14 @@ def build_parser() -> argparse.ArgumentParser:
         default="../trueagi-chaining",
         help="Path to local trueagi-io/chaining checkout",
     )
+
+    inf_filter = sub.add_parser(
+        "pi-pln-inference-filter",
+        help="Apply probabilistic inference-control filter to handoff Sentences",
+    )
+    inf_filter.add_argument("--cache-id", default="petta-memory-pi-pln-inference-filter")
+    inf_filter.add_argument("--min-confidence", type=float, default=0.0, help="Minimum projected confidence for inclusion")
+    inf_filter.add_argument("--top-k", type=int, default=None, help="Keep only top-k items by composite score")
 
     goal_smoke = sub.add_parser(
         "goalchainer-smoke",
@@ -287,6 +296,16 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.cmd == "trueagi-inf-ctl-survey":
             print(json.dumps(survey_trueagi_chaining_inference_control(args.chaining_repo), indent=2, sort_keys=True))
+            return 0
+        if args.cmd == "pi-pln-inference-filter":
+            cache = store.pettachainer_handoff_cache(cache_id=args.cache_id)
+            handoff = patham9_pln_handoff_sentences(cache)
+            result = probabilistic_inference_filter(
+                handoff,
+                min_confidence=args.min_confidence,
+                top_k=args.top_k,
+            )
+            print(json.dumps(result, indent=2, sort_keys=True))
             return 0
         if args.cmd == "goalchainer-smoke":
             cache = store.goalchainer_handoff_cache(cache_id=args.cache_id)

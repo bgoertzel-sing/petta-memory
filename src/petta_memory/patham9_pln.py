@@ -1969,3 +1969,157 @@ def survey_trueagi_chaining_inference_control(chaining_repo: str | Path) -> Dict
         },
         "boundary": "source-level inspection only; no SWI/PeTTa/MeTTa runtime invoked; no memory append; no inferred-belief promotion; no OmegaClaw/GoalChainer live path",
     }
+
+
+_INFERENCE_FILTER_BOUNDARY = (
+    "non-live wrapper-only inference-control filter; no SWI/PeTTa/MeTTa runtime invoked; "
+    "no memory append; no inferred-belief promotion; no patham9/PLN source change; "
+    "no OmegaClaw/GoalChainer live path"
+)
+
+
+def probabilistic_inference_filter(
+    handoff: dict[str, Any],
+    *,
+    min_confidence: float = 0.0,
+    top_k: int | None = None,
+) -> dict[str, Any]:
+    """Probabilistic inference-control filter for pi-PLN wrapper.
+
+    This is the first concrete inference-control mechanism, implementing the
+    near-term "probabilistic filtering" pattern identified in the trueagi-io/
+    chaining inference-control survey (commit ``cd18b51``).  It pre-evaluates
+    candidate Sentences using the already-tested EC projection formula,
+    computes a composite score ``(projected_strength * projected_confidence)``,
+    and filters/ranks them before loading into the patham9/PLN chainer.
+
+    The filter is non-live and wrapper-only:
+    - No SWI/PeTTa/MeTTa runtime invoked
+    - No memory append or inferred-belief promotion
+    - No patham9/PLN source changes
+    - No OmegaClaw/GoalChainer live path
+
+    Args:
+        handoff: A ``petta-memory-patham9-pln-handoff-v1`` dict from
+            :func:`patham9_pln_handoff_sentences`.
+        min_confidence: Minimum projected confidence for inclusion.
+            Items below this threshold are filtered out.  Default 0.0
+            (no filtering by confidence).
+        top_k: If set, keep only the top-k items by composite score.
+            When ``None``, keep all items that pass the confidence threshold.
+
+    Returns:
+        A dict with schema ``petta-memory-pi-pln-inference-filter-v1``.
+    """
+    if handoff.get("schema") != "petta-memory-patham9-pln-handoff-v1":
+        raise ValueError("expected petta-memory-patham9-pln-handoff-v1 handoff")
+    if min_confidence < 0 or min_confidence > 1:
+        raise ValueError(f"min_confidence {min_confidence} out of [0, 1]")
+    if top_k is not None and top_k < 0:
+        raise ValueError(f"top_k {top_k} must be non-negative or None")
+
+    items = list(handoff.get("items", []))
+    if not items:
+        return {
+            "schema": "petta-memory-pi-pln-inference-filter-v1",
+            "mode": "design-specification-no-runtime",
+            "filter_policy": {
+                "min_confidence": min_confidence,
+                "top_k": top_k,
+                "scoring_formula": "projected_strength * projected_confidence",
+            },
+            "input_count": 0,
+            "output_count": 0,
+            "items": [],
+            "selected_indices": [],
+            "filtered_indices": [],
+            "ranking": [],
+            "boundary": _INFERENCE_FILTER_BOUNDARY,
+        }
+
+    per_item: list[dict[str, Any]] = []
+    for index, item in enumerate(items):
+        base_strength = float(item["stv"]["strength"])
+        base_confidence = float(item["stv"]["confidence"])
+        packets = item.get("pi_pln_extension", {}).get("contextual_evidence_packets", [])
+        projection = ec_projected_stv(base_strength, base_confidence, packets)
+        projected_strength = projection["projected_strength"]
+        projected_confidence = projection["projected_confidence"]
+        composite_score = projected_strength * projected_confidence
+        passes_confidence = projected_confidence >= min_confidence
+        per_item.append({
+            "item_index": index,
+            "term": item.get("term"),
+            "belief_id": item.get("belief_id"),
+            "base_stv": item["stv"],
+            "projected_stv": {
+                "strength": projected_strength,
+                "confidence": projected_confidence,
+            },
+            "composite_score": composite_score,
+            "contextual_packet_count": len(packets),
+            "passes_confidence_threshold": passes_confidence,
+            "included": passes_confidence,
+            "filter_reason": None if passes_confidence else (
+                f"projected_confidence {projected_confidence:.4f} < min_confidence {min_confidence}"
+            ),
+        })
+
+    # Apply confidence threshold, then rank by composite score for top_k
+    candidates = [pi for pi in per_item if pi["passes_confidence_threshold"]]
+    candidates.sort(key=lambda pi: pi["composite_score"], reverse=True)
+
+    selected_indices: list[int] = []
+    filtered_indices: list[int] = []
+
+    if top_k is not None and top_k < len(candidates):
+        kept_set = set(pi["item_index"] for pi in candidates[:top_k])
+        for pi in per_item:
+            if pi["item_index"] not in kept_set and pi["included"]:
+                pi["included"] = False
+                rank_in_candidates = next(
+                    (r for r, c in enumerate(candidates) if c["item_index"] == pi["item_index"]),
+                    len(candidates),
+                )
+                pi["filter_reason"] = f"excluded by top_k={top_k} (rank {rank_in_candidates + 1})"
+        selected_indices = [pi["item_index"] for pi in candidates[:top_k]]
+        filtered_indices = [pi["item_index"] for pi in per_item if not pi["included"]]
+    else:
+        selected_indices = [pi["item_index"] for pi in candidates]
+        filtered_indices = [pi["item_index"] for pi in per_item if not pi["included"]]
+
+    ranking = [
+        {
+            "rank": rank + 1,
+            "item_index": pi["item_index"],
+            "composite_score": pi["composite_score"],
+            "term": pi["term"],
+        }
+        for rank, pi in enumerate(candidates[:top_k]) if top_k is not None
+    ] or [
+        {
+            "rank": rank + 1,
+            "item_index": pi["item_index"],
+            "composite_score": pi["composite_score"],
+            "term": pi["term"],
+        }
+        for rank, pi in enumerate(candidates)
+    ]
+
+    return {
+        "schema": "petta-memory-pi-pln-inference-filter-v1",
+        "mode": "design-specification-no-runtime",
+        "filter_policy": {
+            "min_confidence": min_confidence,
+            "top_k": top_k,
+            "scoring_formula": "projected_strength * projected_confidence",
+            "source_pattern": "probabilistic filtering from trueagi-io/chaining survey (near-term)",
+        },
+        "input_count": len(items),
+        "output_count": len(selected_indices),
+        "items": per_item,
+        "selected_indices": selected_indices,
+        "filtered_indices": filtered_indices,
+        "ranking": ranking,
+        "boundary": _INFERENCE_FILTER_BOUNDARY,
+    }
