@@ -623,5 +623,184 @@ class Patham9PlnMultiSentenceDerivationTests(unittest.TestCase):
         self.assertIn("(0 1)", smoke["expected_result"])
 
 
+# --- Multi-belief cluster fixtures for round-trip empirical tests ---
+
+_PROMOTED_BELIEF_A = """
+(MemoryCluster mc-rt-a)
+(SchemaVersion mc-rt-a medium-memory-v1)
+(ClusterType mc-rt-a belief-promotion)
+(ClusterOpenedAt mc-rt-a "2026-07-05 19:00 PDT")
+(ClusterSource mc-rt-a src-test)
+(Contains mc-rt-a pe-rt-a)
+(Contains mc-rt-a b-rt-a)
+(ClusterStatus mc-rt-a active)
+(PromotionEvent pe-rt-a)
+(PromotesFrom pe-rt-a qc-rt-a)
+(PromotesTo pe-rt-a b-rt-a)
+(PromotionRule pe-rt-a explicit-test-promotion)
+(PromotionTrust pe-rt-a 0.85)
+(PromotionDomain pe-rt-a memory-architecture)
+(DerivedBelief b-rt-a)
+(BeliefContent b-rt-a (Requires MemoryTarget0 PLNReadyViews))
+(TruthValue b-rt-a (stv 0.88 0.72))
+(EvidenceFor b-rt-a qc-rt-a)
+(EvidenceSupportCount b-rt-a 9.0)
+(EvidenceOppositionCount b-rt-a 1.0)
+"""
+
+_PROMOTED_BELIEF_B = """
+(MemoryCluster mc-rt-b)
+(SchemaVersion mc-rt-b medium-memory-v1)
+(ClusterType mc-rt-b belief-promotion)
+(ClusterOpenedAt mc-rt-b "2026-07-05 19:01 PDT")
+(ClusterSource mc-rt-b src-test)
+(Contains mc-rt-b pe-rt-b)
+(Contains mc-rt-b b-rt-b)
+(ClusterStatus mc-rt-b active)
+(PromotionEvent pe-rt-b)
+(PromotesFrom pe-rt-b qc-rt-b)
+(PromotesTo pe-rt-b b-rt-b)
+(PromotionRule pe-rt-b explicit-test-promotion)
+(PromotionTrust pe-rt-b 0.80)
+(PromotionDomain pe-rt-b memory-architecture)
+(DerivedBelief b-rt-b)
+(BeliefContent b-rt-b (Requires MemoryTarget1 PLNReadyViews))
+(TruthValue b-rt-b (stv 0.82 0.68))
+(EvidenceFor b-rt-b qc-rt-b)
+(EvidenceSupportCount b-rt-b 7.0)
+(EvidenceOppositionCount b-rt-b 3.0)
+"""
+
+
+class StoreRoundTripPatham9PlnTests(unittest.TestCase):
+    """Empirical round-trip tests: MediumMemoryStore -> handoff cache -> patham9/PLN.
+
+    These tests exercise the full artifact pipeline from stored promoted
+    beliefs through to a patham9/PLN derivation program, without invoking
+    the SWI/PeTTa runtime.  They validate that real store-promoted beliefs
+    survive the handoff chain with correct STV, provenance, and boundary
+    metadata.
+    """
+
+    def _store_with_two_promoted_beliefs(self, td: str):
+        from petta_memory.store import MediumMemoryStore
+        store = MediumMemoryStore(Path(td) / "roundtrip_memory.metta")
+        store.append_cluster(_PROMOTED_BELIEF_A)
+        store.append_cluster(_PROMOTED_BELIEF_B)
+        return store
+
+    def test_roundtrip_handoff_cache_from_store(self):
+        """Store -> pettachainer_handoff_cache produces well-formed items."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store_with_two_promoted_beliefs(td)
+            cache = store.pettachainer_handoff_cache()
+
+        self.assertEqual(cache["schema"], "petta-memory-pettachainer-handoff-v1")
+        self.assertEqual(cache["item_count"], 4)  # 2 STV + 2 EvidencePacket
+        kinds = [item["kind"] for item in cache["items"]]
+        self.assertEqual(kinds.count("pettachainer-stv-statement"), 2)
+        self.assertEqual(kinds.count("pettachainer-evidence-packet"), 2)
+        belief_ids = {item["belief_id"] for item in cache["items"]}
+        self.assertEqual(belief_ids, {"b-rt-a", "b-rt-b"})
+        for item in cache["items"]:
+            self.assertEqual(item["item_status"], "pln-ready-input-not-inferred-belief")
+            self.assertEqual(item["promotion_domain"], "memory-architecture")
+
+    def test_roundtrip_handoff_sentences_preserve_stv_and_provenance(self):
+        """Handoff cache -> patham9_pln_handoff_sentences preserves STV and provenance."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store_with_two_promoted_beliefs(td)
+            cache = store.pettachainer_handoff_cache()
+
+        sentences = patham9_pln_handoff_sentences(cache)
+        self.assertEqual(sentences["schema"], "petta-memory-patham9-pln-handoff-v1")
+        self.assertEqual(sentences["item_count"], 2)  # only STV statements become Sentences
+        for item in sentences["items"]:
+            self.assertEqual(item["kind"], "patham9-pln-sentence-input")
+            self.assertIn("(Sentence ", item["atom"])
+            self.assertIn("(stv ", item["atom"])
+            self.assertIn("(PMEvidence ", item["atom"])
+            # EC packets preserved in pi-PLN extension block
+            packets = item["pi_pln_extension"]["contextual_evidence_packets"]
+            self.assertEqual(len(packets), 1)
+            self.assertIn(packets[0]["support"], ("9.0", "7.0"))
+            self.assertIn(packets[0]["opposition"], ("1.0", "3.0"))
+
+    def test_roundtrip_multi_sentence_program_from_store(self):
+        """Full round-trip: store -> cache -> sentences -> derivation program."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store_with_two_promoted_beliefs(td)
+            cache = store.pettachainer_handoff_cache()
+
+        sentences = patham9_pln_handoff_sentences(cache)
+        smoke = patham9_pln_multi_sentence_derivation_smoke_program(sentences)
+
+        self.assertEqual(smoke["schema"], "petta-memory-patham9-pln-multi-sentence-derivation-smoke-program-v1")
+        self.assertEqual(smoke["handoff_sentence_count"], 2)
+        self.assertEqual(smoke["sentence_count"], 3)  # 2 handoff + 1 bridge
+
+        # Both terms appear in the program
+        self.assertIn("MemoryTarget0", smoke["program"])
+        self.assertIn("MemoryTarget1", smoke["program"])
+
+        # Bridge implication and PLN.Query appear
+        self.assertIn("Implication", smoke["program"])
+        self.assertIn("(PLN.Query", smoke["program"])
+        self.assertIn("PMDerivedFromMultiHandoff", smoke["program"])
+
+        # Stamp sidecar has 2 source + 1 bridge = 3 entries
+        self.assertEqual(len(smoke["stamp_sidecar"]), 3)
+        self.assertIn("(0)", smoke["stamp_sidecar"])
+        self.assertIn("(1)", smoke["stamp_sidecar"])
+        self.assertIn("(2)", smoke["stamp_sidecar"])
+        self.assertEqual(smoke["stamp_sidecar"]["(0)"]["kind"], "petta-memory-source-sentence")
+        self.assertEqual(smoke["stamp_sidecar"]["(2)"]["kind"], "synthetic-non-live-bridge-implication")
+
+        # Boundary text
+        self.assertIn("no memory append", smoke["boundary"])
+        self.assertIn("no inferred-belief promotion", smoke["boundary"])
+
+        # Expected result references stamps 0 and 2 (first source + bridge)
+        self.assertIn("(0 2)", smoke["expected_result"])
+
+    def test_roundtrip_single_belief_store(self):
+        """Round-trip with a single promoted belief: 1 STV + 1 packet -> 1 Sentence."""
+        with tempfile.TemporaryDirectory() as td:
+            from petta_memory.store import MediumMemoryStore
+            store = MediumMemoryStore(Path(td) / "single.metta")
+            store.append_cluster(_PROMOTED_BELIEF_A)
+            cache = store.pettachainer_handoff_cache()
+
+        self.assertEqual(cache["item_count"], 2)  # 1 STV + 1 EvidencePacket
+        sentences = patham9_pln_handoff_sentences(cache)
+        self.assertEqual(sentences["item_count"], 1)
+        smoke = patham9_pln_multi_sentence_derivation_smoke_program(sentences)
+        self.assertEqual(smoke["handoff_sentence_count"], 1)
+        self.assertEqual(smoke["sentence_count"], 2)
+        self.assertIn("MemoryTarget0", smoke["program"])
+
+    def test_roundtrip_ec_projection_from_store_packets(self):
+        """EC packets from the store survive into the pi-PLN extension block and
+        can feed ec_projected_stv() for a projected-vs-direct comparison."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store_with_two_promoted_beliefs(td)
+            cache = store.pettachainer_handoff_cache()
+
+        sentences = patham9_pln_handoff_sentences(cache)
+        for item in sentences["items"]:
+            packets = item["pi_pln_extension"]["contextual_evidence_packets"]
+            self.assertEqual(len(packets), 1)
+            # Each packet has EC counts usable by ec_projected_stv()
+            support = float(packets[0]["support"])
+            opposition = float(packets[0]["opposition"])
+            base_s = float(item["stv"]["strength"])
+            base_c = float(item["stv"]["confidence"])
+            projected = ec_projected_stv(base_s, base_c, [{"support": support, "opposition": opposition}])
+            self.assertGreater(projected["projected_strength"], 0.0)
+            self.assertLess(projected["projected_strength"], 1.0)
+            self.assertGreater(projected["projected_confidence"], 0.0)
+            self.assertLessEqual(projected["projected_confidence"], 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()
