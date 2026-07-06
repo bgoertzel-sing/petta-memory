@@ -2123,3 +2123,231 @@ def probabilistic_inference_filter(
         "ranking": ranking,
         "boundary": _INFERENCE_FILTER_BOUNDARY,
     }
+
+
+_CONTEXT_SELECTION_BOUNDARY = (
+    "non-live wrapper-only context-selection filter; no SWI/PeTTa/MeTTa runtime invoked; "
+    "no memory append or inferred-belief promotion; no patham9/PLN source change; "
+    "no OmegaClaw/GoalChainer live path"
+)
+
+
+def context_selection_wrapper(
+    handoff: dict[str, Any],
+    *,
+    domain: str | None = None,
+    cluster_id: str | None = None,
+    promotion_rule: str | None = None,
+    min_packet_relevance: float = 0.0,
+) -> dict[str, Any]:
+    """Context-selection inference-control wrapper for pi-PLN.
+
+    This is the second concrete inference-control mechanism, implementing the
+    near-term "context selection" pattern: before sending Sentences to the
+    patham9/PLN chainer, filter and score contextual EvidencePackets by
+    relevance to the target query context.  This reduces noise from
+    irrelevant evidence and sharpens EC projection results.
+
+    The wrapper operates in two stages:
+    1. **Packet filtering**: select only EvidencePackets whose domain,
+       cluster_id, or promotion_rule matches the query context.
+    2. **Packet relevance scoring**: score each remaining packet by an
+       evidence-weighted relevance formula so downstream EC projection
+       can optionally weight by relevance.
+
+    The wrapper is non-live and wrapper-only:
+    - No SWI/PeTTa/MeTTa runtime invoked
+    - No memory append or inferred-belief promotion
+    - No patham9/PLN source changes
+    - No OmegaClaw/GoalChainer live path
+
+    Args:
+        handoff: A ``petta-memory-patham9-pln-handoff-v1`` dict from
+            :func:`patham9_pln_handoff_sentences`.
+        domain: If set, select only EvidencePackets whose ``promotion_domain``
+            matches this value.
+        cluster_id: If set, select only EvidencePackets whose ``cluster_id``
+            matches this value.
+        promotion_rule: If set, select only EvidencePackets whose
+            ``promotion_rule`` matches this value.
+        min_packet_relevance: Minimum relevance score [0, 1] for a packet
+            to be included.  Packets below this threshold are filtered out.
+            Default 0.0 (no filtering by relevance).
+
+    Returns:
+        A dict with schema ``petta-memory-pi-pln-context-selection-v1``.
+    """
+    if handoff.get("schema") != "petta-memory-patham9-pln-handoff-v1":
+        raise ValueError("expected petta-memory-patham9-pln-handoff-v1 handoff")
+    if min_packet_relevance < 0 or min_packet_relevance > 1:
+        raise ValueError(f"min_packet_relevance {min_packet_relevance} out of [0, 1]")
+
+    items = list(handoff.get("items", []))
+    if not items:
+        return {
+            "schema": "petta-memory-pi-pln-context-selection-v1",
+            "mode": "design-specification-no-runtime",
+            "selection_policy": {
+                "domain": domain,
+                "cluster_id": cluster_id,
+                "promotion_rule": promotion_rule,
+                "min_packet_relevance": min_packet_relevance,
+                "relevance_formula": "evidence_weight = (support + opposition) / (support + opposition + 2); relevance = evidence_weight * domain_match",
+            },
+            "input_count": 0,
+            "output_count": 0,
+            "items": [],
+            "selected_indices": [],
+            "filtered_indices": [],
+            "total_packets_in": 0,
+            "total_packets_out": 0,
+            "boundary": _CONTEXT_SELECTION_BOUNDARY,
+        }
+
+    # Collect filter criteria (None means no filtering on that dimension)
+    has_domain_filter = domain is not None
+    has_cluster_filter = cluster_id is not None
+    has_rule_filter = promotion_rule is not None
+    has_relevance_filter = min_packet_relevance > 0.0
+
+    per_item: list[dict[str, Any]] = []
+    total_packets_in = 0
+    total_packets_out = 0
+    selected_indices: list[int] = []
+    filtered_indices: list[int] = []
+
+    for index, item in enumerate(items):
+        packets = item.get("pi_pln_extension", {}).get("contextual_evidence_packets", [])
+        total_packets_in += len(packets)
+
+        kept_packets: list[dict[str, Any]] = []
+        packet_summaries: list[dict[str, Any]] = []
+
+        for packet in packets:
+            packet_domain = str(packet.get("promotion_domain", ""))
+            packet_cluster = str(packet.get("cluster_id", ""))
+            packet_rule = str(packet.get("promotion_rule", ""))
+
+            # Apply context filters
+            domain_match = (not has_domain_filter) or (packet_domain == domain)
+            cluster_match = (not has_cluster_filter) or (packet_cluster == cluster_id)
+            rule_match = (not has_rule_filter) or (packet_rule == promotion_rule)
+
+            if not (domain_match and cluster_match and rule_match):
+                packet_summaries.append({
+                    "support": packet.get("support", 0),
+                    "opposition": packet.get("opposition", 0),
+                    "included": False,
+                    "filter_reason": _packet_filter_reason(
+                        domain_match, cluster_match, rule_match,
+                        domain, cluster_id, promotion_rule,
+                    ),
+                })
+                continue
+
+            # Compute relevance score
+            support = float(packet.get("support", 0))
+            opposition = float(packet.get("opposition", 0))
+            total = support + opposition
+            if total <= 0:
+                relevance = 0.0
+            else:
+                evidence_weight = total / (total + 2.0)
+                relevance = evidence_weight  # domain_match is already confirmed
+
+            if has_relevance_filter and relevance < min_packet_relevance:
+                packet_summaries.append({
+                    "support": support,
+                    "opposition": opposition,
+                    "relevance": round(relevance, 6),
+                    "included": False,
+                    "filter_reason": f"relevance {relevance:.4f} < min_packet_relevance {min_packet_relevance}",
+                })
+                continue
+
+            kept_packets.append(packet)
+            packet_summaries.append({
+                "support": support,
+                "opposition": opposition,
+                "relevance": round(relevance, 6),
+                "included": True,
+                "filter_reason": None,
+            })
+
+        total_packets_out += len(kept_packets)
+
+        # Check if item still has any relevant evidence
+        has_remaining_evidence = len(kept_packets) > 0
+        # Item is included if it has kept packets OR if it had no packets to begin with
+        # (items without packets are not filtered by context selection)
+        item_included = has_remaining_evidence or len(packets) == 0
+
+        if item_included:
+            selected_indices.append(index)
+        else:
+            filtered_indices.append(index)
+
+        # Build filtered item with only kept packets
+        filtered_item = dict(item)
+        filtered_extension = dict(item.get("pi_pln_extension", {}))
+        filtered_extension["contextual_evidence_packets"] = kept_packets
+        filtered_extension["context_selection_applied"] = True
+        filtered_extension["context_selection_criteria"] = {
+            "domain": domain,
+            "cluster_id": cluster_id,
+            "promotion_rule": promotion_rule,
+            "min_packet_relevance": min_packet_relevance,
+        }
+        filtered_item["pi_pln_extension"] = filtered_extension
+
+        per_item.append({
+            "item_index": index,
+            "term": item.get("term"),
+            "belief_id": item.get("belief_id"),
+            "original_packet_count": len(packets),
+            "kept_packet_count": len(kept_packets),
+            "packets_in": packet_summaries,
+            "included": item_included,
+            "filter_reason": None if item_included else (
+                "all contextual evidence packets filtered by context selection"
+            ),
+        })
+
+    return {
+        "schema": "petta-memory-pi-pln-context-selection-v1",
+        "mode": "design-specification-no-runtime",
+        "selection_policy": {
+            "domain": domain,
+            "cluster_id": cluster_id,
+            "promotion_rule": promotion_rule,
+            "min_packet_relevance": min_packet_relevance,
+            "relevance_formula": "evidence_weight = (support + opposition) / (support + opposition + 2); relevance = evidence_weight * context_match",
+            "source_pattern": "context selection from trueagi-io/chaining survey (near-term)",
+        },
+        "input_count": len(items),
+        "output_count": len(selected_indices),
+        "items": per_item,
+        "selected_indices": selected_indices,
+        "filtered_indices": filtered_indices,
+        "total_packets_in": total_packets_in,
+        "total_packets_out": total_packets_out,
+        "boundary": _CONTEXT_SELECTION_BOUNDARY,
+    }
+
+
+def _packet_filter_reason(
+    domain_match: bool,
+    cluster_match: bool,
+    rule_match: bool,
+    domain: str | None,
+    cluster_id: str | None,
+    promotion_rule: str | None,
+) -> str:
+    reasons: list[str] = []
+    if not domain_match and domain is not None:
+        reasons.append(f"domain mismatch (expected {domain!r})")
+    if not cluster_match and cluster_id is not None:
+        reasons.append(f"cluster_id mismatch (expected {cluster_id!r})")
+    if not rule_match and promotion_rule is not None:
+        reasons.append(f"promotion_rule mismatch (expected {promotion_rule!r})")
+    return "; ".join(reasons) if reasons else "unknown"

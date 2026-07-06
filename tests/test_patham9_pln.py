@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from petta_memory.patham9_pln import (
     classify_smoke_result,
     classify_smoke_result_with_retry,
+    context_selection_wrapper,
     ec_projected_stv,
     parse_metta_test_output,
     patham9_pln_api_surface,
@@ -1152,6 +1153,278 @@ class StoreRoundTripInferenceFilterTests(unittest.TestCase):
         item = result["items"][0]
         self.assertGreater(item["projected_stv"]["strength"], 0.80)
         self.assertGreater(item["composite_score"], 0.0)
+
+
+class ContextSelectionWrapperTests(unittest.TestCase):
+    """Tests for the second inference-control mechanism: context selection.
+
+    The wrapper filters EvidencePackets by domain/cluster/promotion_rule and
+    scores them for relevance before PLN invocation.  These tests validate the
+    filtering and scoring logic without invoking any runtime.
+    """
+
+    def _handoff(self, num_items: int = 3) -> dict:
+        """Build a handoff with mixed evidence contexts for selection testing."""
+        items = []
+        # Item 0: packets from domain-a, cluster mc-0
+        items.append({
+            "kind": "patham9-pln-sentence-input",
+            "atom": "(Sentence (Acceptable publish_redacted_summary) (stv 0.91 0.74) ((PMEvidence b-0 mc-0 pe-0 rule domain)))",
+            "term": "(Acceptable publish_redacted_summary)",
+            "stv": {"strength": 0.91, "confidence": 0.74},
+            "evidence_id": "(PMEvidence b-0 mc-0 pe-0 rule domain)",
+            "belief_id": "b-0",
+            "cluster_id": "mc-0",
+            "promotion_event": "pe-0",
+            "promotion_rule": "explicit-test",
+            "promotion_domain": "memory-architecture",
+            "source_status": "pln-ready-input-not-inferred-belief",
+            "pi_pln_extension": {
+                "contextual_evidence_packets": [
+                    {"support": 9, "opposition": 1, "statement": "(Acceptable publish_redacted_summary)",
+                     "promotion_domain": "domain-a", "cluster_id": "mc-0", "promotion_rule": "explicit-test"},
+                    {"support": 3, "opposition": 7, "statement": "(Acceptable publish_redacted_summary)",
+                     "promotion_domain": "domain-b", "cluster_id": "mc-0", "promotion_rule": "explicit-test"},
+                ],
+                "ec_projection_policy": "preserve packets first; later project EC",
+                "context_selection": "not-run",
+            },
+        })
+        if num_items >= 2:
+            # Item 1: packets from domain-b, cluster mc-1
+            items.append({
+                "kind": "patham9-pln-sentence-input",
+                "atom": "(Sentence (Acceptable share_full_log) (stv 0.94 0.80) ((PMEvidence b-1 mc-1 pe-1 rule domain)))",
+                "term": "(Acceptable share_full_log)",
+                "stv": {"strength": 0.94, "confidence": 0.80},
+                "evidence_id": "(PMEvidence b-1 mc-1 pe-1 rule domain)",
+                "belief_id": "b-1",
+                "cluster_id": "mc-1",
+                "promotion_event": "pe-1",
+                "promotion_rule": "explicit-test",
+                "promotion_domain": "memory-architecture",
+                "source_status": "pln-ready-input-not-inferred-belief",
+                "pi_pln_extension": {
+                    "contextual_evidence_packets": [
+                        {"support": 5, "opposition": 5, "statement": "(Acceptable share_full_log)",
+                         "promotion_domain": "domain-b", "cluster_id": "mc-1", "promotion_rule": "explicit-test"},
+                    ],
+                    "ec_projection_policy": "preserve packets first; later project EC",
+                    "context_selection": "not-run",
+                },
+            })
+        if num_items >= 3:
+            # Item 2: no EC packets — should pass through context selection unchanged
+            items.append({
+                "kind": "patham9-pln-sentence-input",
+                "atom": "(Sentence (Requires MemoryTarget0 PLNReadyViews) (stv 0.70 0.55) ((PMEvidence b-2 mc-2 pe-2 rule domain)))",
+                "term": "(Requires MemoryTarget0 PLNReadyViews)",
+                "stv": {"strength": 0.70, "confidence": 0.55},
+                "evidence_id": "(PMEvidence b-2 mc-2 pe-2 rule domain)",
+                "belief_id": "b-2",
+                "cluster_id": "mc-2",
+                "promotion_event": "pe-2",
+                "promotion_rule": "explicit-test",
+                "promotion_domain": "memory-architecture",
+                "source_status": "pln-ready-input-not-inferred-belief",
+                "pi_pln_extension": {
+                    "contextual_evidence_packets": [],
+                    "ec_projection_policy": "preserve packets first; later project EC",
+                    "context_selection": "not-run",
+                },
+            })
+        return {
+            "schema": "petta-memory-patham9-pln-handoff-v1",
+            "item_count": len(items),
+            "items": items,
+        }
+
+    def test_selection_returns_correct_schema(self):
+        result = context_selection_wrapper(self._handoff())
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-context-selection-v1")
+
+    def test_selection_no_filters_keeps_all_packets(self):
+        result = context_selection_wrapper(self._handoff())
+        self.assertEqual(result["input_count"], 3)
+        self.assertEqual(result["output_count"], 3)
+        self.assertEqual(result["total_packets_in"], 3)
+        self.assertEqual(result["total_packets_out"], 3)
+        self.assertEqual(len(result["selected_indices"]), 3)
+        self.assertEqual(len(result["filtered_indices"]), 0)
+
+    def test_selection_domain_filter_keeps_matching_packets(self):
+        result = context_selection_wrapper(self._handoff(), domain="domain-a")
+        # Item 0 has one domain-a packet and one domain-b packet
+        self.assertEqual(result["total_packets_in"], 3)
+        self.assertEqual(result["total_packets_out"], 1)
+        # Item 0 is included (it still has a domain-a packet)
+        self.assertIn(0, result["selected_indices"])
+        # Item 1 is filtered out (all its packets are domain-b)
+        self.assertIn(1, result["filtered_indices"])
+        # Item 2 is included (no packets to filter)
+        self.assertIn(2, result["selected_indices"])
+
+    def test_selection_cluster_filter_keeps_matching_packets(self):
+        result = context_selection_wrapper(self._handoff(), cluster_id="mc-1")
+        # Only item 1's packets match cluster mc-1
+        self.assertEqual(result["total_packets_out"], 1)
+        self.assertIn(1, result["selected_indices"])
+        # Item 0 is filtered out (all its packets are cluster mc-0)
+        self.assertIn(0, result["filtered_indices"])
+        # Item 2 is included (no packets)
+        self.assertIn(2, result["selected_indices"])
+
+    def test_selection_promotion_rule_filter(self):
+        result = context_selection_wrapper(self._handoff(), promotion_rule="explicit-test")
+        # All packets have promotion_rule=explicit-test, so all kept
+        self.assertEqual(result["total_packets_out"], 3)
+        self.assertEqual(len(result["selected_indices"]), 3)
+
+    def test_selection_no_matching_domain_filters_item(self):
+        result = context_selection_wrapper(self._handoff(), domain="domain-z")
+        # No packets match domain-z, but item 2 has no packets so passes through
+        self.assertEqual(result["total_packets_out"], 0)
+        self.assertIn(2, result["selected_indices"])
+        self.assertIn(0, result["filtered_indices"])
+        self.assertIn(1, result["filtered_indices"])
+
+    def test_selection_min_relevance_filters_low_evidence_packets(self):
+        handoff = self._handoff(num_items=1)
+        # Add a low-evidence packet to item 0 with same domain
+        handoff["items"][0]["pi_pln_extension"]["contextual_evidence_packets"].append(
+            {"support": 1, "opposition": 0, "statement": "test",
+             "promotion_domain": "domain-a", "cluster_id": "mc-0", "promotion_rule": "explicit-test"}
+        )
+        # total=1, evidence_weight=1/3=0.333
+        result = context_selection_wrapper(handoff, domain="domain-a", min_packet_relevance=0.5)
+        item0 = result["items"][0]
+        kept = [p for p in item0["packets_in"] if p["included"]]
+        filtered = [p for p in item0["packets_in"] if not p["included"]]
+        self.assertEqual(len(kept), 1)  # only (9, 1) survives
+        self.assertEqual(len(filtered), 2)  # (3, 7) domain-b + (1, 0) low relevance
+        # The low-evidence packet should be filtered by relevance
+        rel_filtered = [p for p in filtered if "relevance" in p.get("filter_reason", "")]
+        self.assertEqual(len(rel_filtered), 1)
+        self.assertEqual(rel_filtered[0]["support"], 1)
+        self.assertEqual(rel_filtered[0]["opposition"], 0)
+
+    def test_selection_empty_handoff_returns_empty_result(self):
+        empty_handoff = {
+            "schema": "petta-memory-patham9-pln-handoff-v1",
+            "item_count": 0,
+            "items": [],
+        }
+        result = context_selection_wrapper(empty_handoff)
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-context-selection-v1")
+        self.assertEqual(result["input_count"], 0)
+        self.assertEqual(result["output_count"], 0)
+        self.assertEqual(result["total_packets_in"], 0)
+        self.assertEqual(result["total_packets_out"], 0)
+
+    def test_selection_rejects_wrong_schema(self):
+        with self.assertRaises(ValueError):
+            context_selection_wrapper({"schema": "wrong-schema"})
+
+    def test_selection_rejects_out_of_range_min_relevance(self):
+        with self.assertRaises(ValueError):
+            context_selection_wrapper(self._handoff(), min_packet_relevance=-0.1)
+        with self.assertRaises(ValueError):
+            context_selection_wrapper(self._handoff(), min_packet_relevance=1.5)
+
+    def test_selection_boundary_text_is_non_live(self):
+        result = context_selection_wrapper(self._handoff())
+        boundary = result["boundary"]
+        self.assertIn("non-live", boundary)
+        self.assertIn("no memory append", boundary)
+        self.assertIn("no OmegaClaw/GoalChainer live path", boundary)
+
+    def test_selection_policy_records_criteria(self):
+        result = context_selection_wrapper(
+            self._handoff(),
+            domain="domain-a",
+            cluster_id="mc-0",
+            promotion_rule="explicit-test",
+            min_packet_relevance=0.3,
+        )
+        policy = result["selection_policy"]
+        self.assertEqual(policy["domain"], "domain-a")
+        self.assertEqual(policy["cluster_id"], "mc-0")
+        self.assertEqual(policy["promotion_rule"], "explicit-test")
+        self.assertEqual(policy["min_packet_relevance"], 0.3)
+        self.assertIn("context selection", policy["source_pattern"])
+
+    def test_selection_packet_summaries_record_filter_reasons(self):
+        result = context_selection_wrapper(self._handoff(), domain="domain-a")
+        item0 = result["items"][0]
+        # Item 0 has 2 packets: one domain-a, one domain-b
+        self.assertEqual(item0["original_packet_count"], 2)
+        self.assertEqual(item0["kept_packet_count"], 1)
+        # The filtered packet should have a filter_reason
+        filtered_packets = [p for p in item0["packets_in"] if not p["included"]]
+        self.assertEqual(len(filtered_packets), 1)
+        self.assertIn("domain mismatch", filtered_packets[0]["filter_reason"])
+
+    def test_selection_combined_domain_and_cluster_filter(self):
+        result = context_selection_wrapper(
+            self._handoff(),
+            domain="domain-a",
+            cluster_id="mc-0",
+        )
+        # Only packets matching both domain-a AND cluster mc-0 survive
+        self.assertEqual(result["total_packets_out"], 1)
+        self.assertIn(0, result["selected_indices"])
+
+    def test_selection_items_without_packets_pass_through(self):
+        result = context_selection_wrapper(self._handoff(), domain="domain-a")
+        # Item 2 has no packets, should pass through
+        self.assertIn(2, result["selected_indices"])
+        item2 = result["items"][2]
+        self.assertTrue(item2["included"])
+        self.assertEqual(item2["original_packet_count"], 0)
+        self.assertEqual(item2["kept_packet_count"], 0)
+
+
+class StoreRoundTripContextSelectionTests(unittest.TestCase):
+    """Empirical round-trip: store -> handoff -> context selection."""
+
+    def test_roundtrip_context_selection_from_store(self):
+        from petta_memory.store import MediumMemoryStore
+
+        cluster = """
+(MemoryCluster mc-cs-a)
+(SchemaVersion mc-cs-a medium-memory-v1)
+(ClusterType mc-cs-a belief-promotion)
+(ClusterOpenedAt mc-cs-a "2026-07-06 01:00 PDT")
+(ClusterSource mc-cs-a src-test)
+(Contains mc-cs-a pe-cs-a)
+(Contains mc-cs-a b-cs-a)
+(ClusterStatus mc-cs-a active)
+(PromotionEvent pe-cs-a)
+(PromotesFrom pe-cs-a qc-cs-a)
+(PromotesTo pe-cs-a b-cs-a)
+(PromotionRule pe-cs-a explicit-test-promotion)
+(PromotionTrust pe-cs-a 0.85)
+(PromotionDomain pe-cs-a memory-architecture)
+(DerivedBelief b-cs-a)
+(BeliefContent b-cs-a (Requires MemoryTarget0 PLNReadyViews))
+(TruthValue b-cs-a (stv 0.88 0.72))
+(EvidenceFor b-cs-a qc-cs-a)
+(EvidenceSupportCount b-cs-a 9.0)
+(EvidenceOppositionCount b-cs-a 1.0)
+"""
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "cs_memory.metta")
+            store.append_cluster(cluster)
+            cache = store.pettachainer_handoff_cache()
+
+        handoff = patham9_pln_handoff_sentences(cache)
+        result = context_selection_wrapper(handoff)
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-context-selection-v1")
+        self.assertEqual(result["input_count"], 1)
+        self.assertEqual(result["output_count"], 1)
+        self.assertEqual(len(result["selected_indices"]), 1)
+        self.assertGreater(result["total_packets_in"], 0)
+        self.assertGreater(result["total_packets_out"], 0)
 
 
 if __name__ == "__main__":
