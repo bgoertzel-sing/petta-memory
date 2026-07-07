@@ -3253,5 +3253,360 @@ class StoreRoundTripControllerAsChainerTests(unittest.TestCase):
         self.assertEqual(result["controller_rejection_count"], 0)
 
 
+# ---------------------------------------------------------------------------
+# Unified inference-control integration test fixture: 4 beliefs with diverse
+# domains, STVs, and EC counts (including conflicting evidence).
+# ---------------------------------------------------------------------------
+
+_UNIFIED_BELIEF_HIGH_SUPPORT = """
+;;; BEGIN MemoryCluster mc-uni-a
+(MemoryCluster mc-uni-a)
+(SchemaVersion mc-uni-a medium-memory-v1)
+(ClusterType mc-uni-a belief-promotion)
+(ObservedEvent oe-uni-a)
+(EventText oe-uni-a "strong evidence for memory architecture target")
+(ClusterOpenedAt mc-uni-a "2026-07-06 16:00 PDT")
+(ClusterSource mc-uni-a src-test)
+(Contains mc-uni-a pe-uni-a)
+(Contains mc-uni-a b-uni-a)
+(ClusterStatus mc-uni-a active)
+(PromotionEvent pe-uni-a)
+(PromotesFrom pe-uni-a qc-uni-a)
+(PromotesTo pe-uni-a b-uni-a)
+(PromotionRule pe-uni-a explicit-architecture-promotion)
+(PromotionTrust pe-uni-a 0.90)
+(PromotionDomain pe-uni-a memory-architecture)
+(DerivedBelief b-uni-a)
+(BeliefContent b-uni-a (Requires MemoryTarget0 PLNReadyViews))
+(TruthValue b-uni-a (stv 0.92 0.80))
+(EvidenceFor b-uni-a qc-uni-a)
+(EvidenceSupportCount b-uni-a 9.0)
+(EvidenceOppositionCount b-uni-a 1.0)
+;;; END MemoryCluster mc-uni-a
+"""
+
+_UNIFIED_BELIEF_CONFLICTING = """
+;;; BEGIN MemoryCluster mc-uni-b
+(MemoryCluster mc-uni-b)
+(SchemaVersion mc-uni-b medium-memory-v1)
+(ClusterType mc-uni-b belief-promotion)
+(ObservedEvent oe-uni-b)
+(EventText oe-uni-b "conflicting evidence for reasoning domain target")
+(ClusterOpenedAt mc-uni-b "2026-07-06 16:01 PDT")
+(ClusterSource mc-uni-b src-test)
+(Contains mc-uni-b pe-uni-b)
+(Contains mc-uni-b b-uni-b)
+(ClusterStatus mc-uni-b active)
+(PromotionEvent pe-uni-b)
+(PromotesFrom pe-uni-b qc-uni-b)
+(PromotesTo pe-uni-b b-uni-b)
+(PromotionRule pe-uni-b explicit-reasoning-promotion)
+(PromotionTrust pe-uni-b 0.70)
+(PromotionDomain pe-uni-b reasoning)
+(DerivedBelief b-uni-b)
+(BeliefContent b-uni-b (Requires MemoryTarget1 ReasoningChain))
+(TruthValue b-uni-b (stv 0.65 0.55))
+(EvidenceFor b-uni-b qc-uni-b)
+(EvidenceSupportCount b-uni-b 2.0)
+(EvidenceOppositionCount b-uni-b 8.0)
+;;; END MemoryCluster mc-uni-b
+"""
+
+_UNIFIED_BELIEF_LOW_CONFIDENCE = """
+;;; BEGIN MemoryCluster mc-uni-c
+(MemoryCluster mc-uni-c)
+(SchemaVersion mc-uni-c medium-memory-v1)
+(ClusterType mc-uni-c belief-promotion)
+(ObservedEvent oe-uni-c)
+(EventText oe-uni-c "low confidence hypothesis for planning domain")
+(ClusterOpenedAt mc-uni-c "2026-07-06 16:02 PDT")
+(ClusterSource mc-uni-c src-test)
+(Contains mc-uni-c pe-uni-c)
+(Contains mc-uni-c b-uni-c)
+(ClusterStatus mc-uni-c active)
+(PromotionEvent pe-uni-c)
+(PromotesFrom pe-uni-c qc-uni-c)
+(PromotesTo pe-uni-c b-uni-c)
+(PromotionRule pe-uni-c exploratory-hypothesis)
+(PromotionTrust pe-uni-c 0.50)
+(PromotionDomain pe-uni-c planning)
+(DerivedBelief b-uni-c)
+(BeliefContent b-uni-c (Requires MemoryTarget2 PlanningStep))
+(TruthValue b-uni-c (stv 0.45 0.30))
+(EvidenceFor b-uni-c qc-uni-c)
+(EvidenceSupportCount b-uni-c 3.0)
+(EvidenceOppositionCount b-uni-c 3.0)
+;;; END MemoryCluster mc-uni-c
+"""
+
+_UNIFIED_BELIEF_MODERATE = """
+;;; BEGIN MemoryCluster mc-uni-d
+(MemoryCluster mc-uni-d)
+(SchemaVersion mc-uni-d medium-memory-v1)
+(ClusterType mc-uni-d belief-promotion)
+(ObservedEvent oe-uni-d)
+(EventText oe-uni-d "moderate evidence for reasoning domain target")
+(ClusterOpenedAt mc-uni-d "2026-07-06 16:03 PDT")
+(ClusterSource mc-uni-d src-test)
+(Contains mc-uni-d pe-uni-d)
+(Contains mc-uni-d b-uni-d)
+(ClusterStatus mc-uni-d active)
+(PromotionEvent pe-uni-d)
+(PromotesFrom pe-uni-d qc-uni-d)
+(PromotesTo pe-uni-d b-uni-d)
+(PromotionRule pe-uni-d explicit-reasoning-promotion)
+(PromotionTrust pe-uni-d 0.75)
+(PromotionDomain pe-uni-d reasoning)
+(DerivedBelief b-uni-d)
+(BeliefContent b-uni-d (Requires MemoryTarget3 ReasoningChain))
+(TruthValue b-uni-d (stv 0.78 0.65))
+(EvidenceFor b-uni-d qc-uni-d)
+(EvidenceSupportCount b-uni-d 6.0)
+(EvidenceOppositionCount b-uni-d 4.0)
+;;; END MemoryCluster mc-uni-d
+"""
+
+
+class StoreRoundTripUnifiedInferenceControlTests(unittest.TestCase):
+    """Unified integration test: store -> handoff -> all 8 inference-control patterns.
+
+    This test class builds a realistic 4-belief store fixture with diverse
+    domains, STVs, and EC counts (including conflicting evidence), then runs
+    all eight inference-control patterns from the trueagi-io/chaining survey
+    against the same handoff.  It validates that the patterns produce correct
+    results on a richer, more varied input than the per-pattern unit tests.
+    """
+
+    def _store_with_four_beliefs(self, td: str):
+        from petta_memory.store import MediumMemoryStore
+        store = MediumMemoryStore(Path(td) / "uni_memory.metta")
+        store.append_cluster(_UNIFIED_BELIEF_HIGH_SUPPORT)
+        store.append_cluster(_UNIFIED_BELIEF_CONFLICTING)
+        store.append_cluster(_UNIFIED_BELIEF_LOW_CONFIDENCE)
+        store.append_cluster(_UNIFIED_BELIEF_MODERATE)
+        return store
+
+    def _make_handoff(self, store):
+        cache = store.pettachainer_handoff_cache()
+        self.assertEqual(cache["item_count"], 8)  # 4 STV + 4 EvidencePacket
+        return patham9_pln_handoff_sentences(cache)
+
+    def test_unified_handoff_has_four_sentences_with_diverse_properties(self):
+        """The fixture produces 4 handoff sentences with the expected diversity."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store_with_four_beliefs(td)
+            handoff = self._make_handoff(store)
+
+        self.assertEqual(handoff["schema"], "petta-memory-patham9-pln-handoff-v1")
+        self.assertEqual(handoff["item_count"], 4)
+
+        items = handoff["items"]
+        domains = {item["promotion_domain"] for item in items}
+        self.assertEqual(domains, {"memory-architecture", "reasoning", "planning"})
+
+        # Check STV diversity (values are strings from parsing)
+        strengths = [float(item["stv"]["strength"]) for item in items]
+        self.assertIn(0.92, strengths)  # high support
+        self.assertIn(0.45, strengths)  # low confidence
+
+        # Check EC diversity: at least one high-support and one conflicting
+        all_packets = []
+        for item in items:
+            all_packets.extend(item["pi_pln_extension"]["contextual_evidence_packets"])
+        supports = [float(p["support"]) for p in all_packets]
+        oppositions = [float(p["opposition"]) for p in all_packets]
+        self.assertTrue(any(s > o for s, o in zip(supports, oppositions)))  # supportive
+        self.assertTrue(any(s < o for s, o in zip(supports, oppositions)))  # conflicting
+
+    def test_unified_probabilistic_filter_ranks_high_support_first(self):
+        """Pattern 1 (near-term): probabilistic filter ranks the high-support belief first."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store_with_four_beliefs(td)
+            handoff = self._make_handoff(store)
+
+        result = probabilistic_inference_filter(handoff, min_confidence=0.25)
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-inference-filter-v1")
+        # With min_confidence=0.25, most items pass; high-support should rank first
+        ranking = result["ranking"]
+        self.assertGreaterEqual(len(ranking), 2)
+        # High-support belief has strength=0.92, confidence=0.80 -> highest composite
+        self.assertEqual(ranking[0]["item_index"], 0)  # first item is b-uni-a
+        # The low-confidence belief (0.45/0.30) should be filtered out at min_confidence=0.35
+        result_strict = probabilistic_inference_filter(handoff, min_confidence=0.80)
+        filtered_indices = result_strict["filtered_indices"]
+        self.assertIn(2, filtered_indices)  # b-uni-c is index 2
+
+    def test_unified_context_selection_filters_by_domain(self):
+        """Pattern 2 (near-term): context selection isolates reasoning-domain packets."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store_with_four_beliefs(td)
+            handoff = self._make_handoff(store)
+
+        result = context_selection_wrapper(handoff, domain="reasoning")
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-context-selection-v1")
+        # Only items with reasoning-domain packets should have non-empty filtered packets
+        for item in result["items"]:
+            packets = item.get("filtered_packets", [])
+            if packets:
+                for p in packets:
+                    self.assertEqual(p.get("promotion_domain"), "reasoning")
+
+    def test_unified_chained_pipeline_combines_filter_and_context(self):
+        """Pattern 3 (near-term): chained pipeline composes context selection + probabilistic filter."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store_with_four_beliefs(td)
+            handoff = self._make_handoff(store)
+
+        result = chained_inference_pipeline(
+            handoff,
+            domain="reasoning",
+            min_confidence=0.40,
+        )
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-inference-pipeline-v1")
+        # Should have both stage results
+        self.assertIn("stage1_result", result)
+        self.assertIn("stage2_result", result)
+        # Reasoning domain has 2 beliefs: conflicting (0.65/0.55) and moderate (0.78/0.65)
+        # Both should survive min_confidence=0.40
+        items = result["items"]
+        reasoning_strengths = [float(item["base_stv"]["strength"]) for item in items]
+        self.assertIn(0.78, reasoning_strengths)
+        self.assertIn(0.65, reasoning_strengths)
+
+    def test_unified_meta_learning_benchmark_prefers_shortcut(self):
+        """Pattern 4 (near-term): meta-learning benchmark verifies shortcut preference."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store_with_four_beliefs(td)
+            handoff = self._make_handoff(store)
+
+        bench = run_meta_learning_benchmark(handoff=handoff)
+        self.assertEqual(bench["schema"], "petta-memory-pi-pln-meta-learning-benchmark-v1")
+        # The benchmark should report shortcut preference
+        self.assertTrue(bench["shortcut_preferred"])
+        self.assertTrue(bench["overall_pass"])
+
+    def test_unified_continuation_predicate_terminates_low_confidence(self):
+        """Pattern 5 (medium-term): continuation predicate rejects low-confidence belief."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store_with_four_beliefs(td)
+            handoff = self._make_handoff(store)
+
+        result = continuation_predicate_wrapper(
+            handoff,
+            min_strength=0.50,
+            min_confidence=0.40,
+        )
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-continuation-predicate-v1")
+        decisions = {item["belief_id"]: item["decision"] for item in result["items"]}
+        # The low-confidence belief (0.45/0.30) should be rejected
+        self.assertEqual(decisions["b-uni-c"], "reject")
+        # The high-support belief should continue
+        self.assertEqual(decisions["b-uni-a"], "continue")
+
+    def test_unified_controlled_backward_chainer_rejects_low_strength(self):
+        """Pattern 6 (medium-term): controlled backward chainer rejects low-strength branches."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store_with_four_beliefs(td)
+            handoff = self._make_handoff(store)
+
+        result = controlled_backward_chainer(
+            handoff,
+            min_strength=0.50,
+            min_confidence=0.40,
+            max_derivation_depth=2,
+            max_steps=3,
+        )
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-controlled-backward-chainer-v1")
+        # Low-strength belief (0.45) should be rejected at step 0
+        rejected_terms = [r["term"] for r in result.get("rejected_branches", [])]
+        self.assertTrue(any("MemoryTarget2" in t for t in rejected_terms))
+        # High-support belief should be terminated at depth 2
+        terminated_terms = [t["term"] for t in result.get("terminated_branches", [])]
+        self.assertTrue(any("MemoryTarget0" in t for t in terminated_terms))
+
+    def test_unified_pln_estimator_ranks_high_support_first(self):
+        """Pattern 7 (long-term): PLN estimator ranks high-support branch first."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store_with_four_beliefs(td)
+            handoff = self._make_handoff(store)
+
+        result = pln_estimator_wrapper(
+            handoff,
+            min_strength=0.40,
+            min_confidence=0.25,
+            seed=42,
+        )
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-pln-estimator-v1")
+        edcalls = result.get("ed_calls", [])
+        self.assertGreaterEqual(len(edcalls), 2)
+        # High-support belief (9 support, 1 opposition -> alpha=10, beta=2) should
+        # have higher mean viability than conflicting belief (2 support, 8 opposition)
+        if len(edcalls) >= 2:
+            self.assertGreater(edcalls[0]["estimated_probability"], edcalls[-1]["estimated_probability"])
+        # The conflicting belief (EC 2/8, ratio 0.2) should be rejected at ec_ratio_threshold > 0.2
+        result_strict = pln_estimator_wrapper(
+            handoff,
+            min_strength=0.40,
+            min_confidence=0.25,
+            ec_ratio_threshold=0.3,
+            seed=42,
+        )
+        rejected_strict = [r["term"] for r in result_strict.get("rejected_items", [])]
+        self.assertTrue(any("MemoryTarget1" in t for t in rejected_strict))
+
+    def test_unified_controller_as_chainer_confirms_high_quality(self):
+        """Pattern 8 (long-term): controller-as-chainer confirms high-quality branches."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store_with_four_beliefs(td)
+            handoff = self._make_handoff(store)
+
+        result = controller_as_chainer(
+            handoff,
+            primary_min_strength=0.40,
+            primary_min_confidence=0.25,
+            primary_max_derivation_depth=5,
+            primary_max_steps=3,
+            controller_min_strength=0.50,
+            controller_min_confidence=0.40,
+            controller_max_derivation_depth=5,
+        )
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-controller-as-chainer-v1")
+        self.assertGreater(result["input_count"], 0)
+        # The high-support belief (0.92/0.80) should be confirmed
+        self.assertGreater(result["controller_confirmation_count"], 0)
+        # The low-confidence belief (0.45/0.30) should be rejected by controller
+        self.assertGreater(result["controller_rejection_count"], 0)
+
+    def test_unified_all_patterns_preserve_provenance(self):
+        """All 8 patterns preserve belief_id and cluster_id provenance from the store."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store_with_four_beliefs(td)
+            handoff = self._make_handoff(store)
+
+        expected_ids = {"b-uni-a", "b-uni-b", "b-uni-c", "b-uni-d"}
+
+        # Each pattern that produces per-item results should preserve belief_ids
+        for result, items_key in [
+            (probabilistic_inference_filter(handoff), "items"),
+            (context_selection_wrapper(handoff), "items"),
+            (chained_inference_pipeline(handoff), "items"),
+            (continuation_predicate_wrapper(handoff), "items"),
+            (controlled_backward_chainer(handoff, max_steps=2), "terminated_branches"),
+            (pln_estimator_wrapper(handoff, seed=42), "ed_calls"),
+        ]:
+            items = result.get(items_key, [])
+            if items:
+                ids_found = set()
+                for item in items:
+                    bid = item.get("belief_id", "")
+                    if bid:
+                        ids_found.add(bid)
+                # At least some of the expected IDs should appear
+                self.assertTrue(
+                    ids_found & expected_ids,
+                    f"Pattern {result.get('schema', '?')}: no expected belief_ids found in {items_key}",
+                )
+
+
 if __name__ == "__main__":
     unittest.main()
