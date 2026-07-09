@@ -33,6 +33,12 @@ DEFAULT_REQUEST = (
 _ACCEPTABLE_STV_RE = re.compile(
     r"\(Acceptable\s+(?P<action>[A-Za-z0-9_:-]+)\)\s+\(STV\s+(?P<strength>[0-9.eE+-]+)\s+(?P<confidence>[0-9.eE+-]+)\)"
 )
+_REQUIRES_STV_RE = re.compile(
+    r"\(Requires\s+(?P<target>[A-Za-z0-9_:-]+)\)\s+\(STV\s+(?P<strength>[0-9.eE+-]+)\s+(?P<confidence>[0-9.eE+-]+)\)"
+)
+_NOT_APPLICABLE_STV_RE = re.compile(
+    r"\(NotApplicable\s+(?P<action>[A-Za-z0-9_:-]+)\).*\(STV\s+(?P<strength>[0-9.eE+-]+)\s+(?P<confidence>[0-9.eE+-]+)\)"
+)
 _EVIDENCE_PACKET_ACCEPTABLE_RE = re.compile(
     r"\(EvidencePacket\s+\(Acceptable\s+(?P<action>[A-Za-z0-9_:-]+)\)\s+"
     r"\(EC\s+(?P<support>[0-9.eE+-]+)\s+(?P<opposition>[0-9.eE+-]+)\)"
@@ -147,6 +153,7 @@ def run_goalchainer_precompiled_handoff_smoke(
     goalchainer_repo: str | Path = DEFAULT_GOALCHAINER_REPO,
     request: str = DEFAULT_REQUEST,
     include_heuristic_memory_probe: bool = False,
+    admitted_patham9_handoff: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """Run GoalChainer's decision engine from a precompiled handoff cache.
 
@@ -172,7 +179,7 @@ def run_goalchainer_precompiled_handoff_smoke(
         inserted = True
     try:
         from goal_chainer.explain import explain_decisions
-        from goal_chainer.models import EvidenceProjection
+        from goal_chainer.models import CandidateAction, EvidenceProjection, Goal, GoalScenario, Norm
         from goal_chainer.scenarios import incident_response_scenario
         from goal_chainer.scoring import DecisionEngine
 
@@ -193,7 +200,8 @@ def run_goalchainer_precompiled_handoff_smoke(
                     expectation=row["expectation"],
                 )
 
-        scenario = incident_response_scenario(request)
+        _mark_patham9_admitted(action_evidence, admitted_patham9_handoff)
+        scenario = _project_control_scenario(action_evidence) or incident_response_scenario(request)
         reasoner = PrecompiledHandoffReasoner()
         decisions = DecisionEngine(reasoner).rank(scenario)
         reasoner_result = {
@@ -376,14 +384,27 @@ def _action_evidence_from_handoff(items: list[object]) -> dict[str, dict[str, An
         atom = str(item.get("atom", ""))
         if item.get("goalchainer_slot") == "acceptability-belief-evidence":
             match = _ACCEPTABLE_STV_RE.search(atom)
+            source_pattern = "Acceptable"
+            deontic = "permitted"
+            if match is None:
+                match = _REQUIRES_STV_RE.search(atom)
+                source_pattern = "Requires"
+                deontic = "obligated"
+            if match is None:
+                match = _NOT_APPLICABLE_STV_RE.search(atom)
+                source_pattern = "NotApplicable"
+                deontic = "forbidden"
             if match is None:
                 continue
-            action = match.group("action")
+            action = _goalchainer_action_id(match.groupdict().get("action") or match.groupdict().get("target") or "")
             strength = _bounded_float(match.group("strength"), "strength")
             confidence = _bounded_float(match.group("confidence"), "confidence")
+            if source_pattern == "NotApplicable":
+                strength = round(1.0 - strength, 6)
             candidate = {
                 "action_id": action,
-                "deontic": _default_deontic(action),
+                "source_pattern": source_pattern,
+                "deontic": deontic if deontic != "permitted" else _default_deontic(action),
                 "expectation": _expectation(strength, confidence),
                 "strength": strength,
                 "confidence": confidence,
@@ -394,6 +415,7 @@ def _action_evidence_from_handoff(items: list[object]) -> dict[str, dict[str, An
                     f"belief_id={item.get('belief_id')} cluster_id={item.get('cluster_id')} promotion_event={item.get('promotion_event')}",
                 ],
                 "contextual_evidence": [],
+                "patham9_admitted": False,
             }
             old = stv_rows.get(action)
             if old is None or candidate["confidence"] > old["confidence"]:
@@ -451,6 +473,159 @@ def _action_evidence_from_handoff(items: list[object]) -> dict[str, dict[str, An
                 "PeTTaChainer compileadd not invoked"
             )
     return stv_rows
+
+
+def _mark_patham9_admitted(
+    action_evidence: dict[str, dict[str, Any]],
+    admitted_patham9_handoff: dict[str, object] | None,
+) -> None:
+    if not isinstance(admitted_patham9_handoff, dict):
+        return
+    for item in admitted_patham9_handoff.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        term = str(item.get("term", ""))
+        match = _ACCEPTABLE_STV_RE.search(term) or re.search(r"^\(Acceptable\s+(?P<action>[A-Za-z0-9_:-]+)\)$", term)
+        if match is None:
+            continue
+        action = _goalchainer_action_id(match.group("action"))
+        row = action_evidence.get(action)
+        if row is None:
+            continue
+        row["patham9_admitted"] = True
+        row["proofs"].append(
+            "patham9/PLN admitted this branch before GoalChainer appraisal; treated as acceptability evidence"
+        )
+
+
+def _project_control_scenario(action_evidence: dict[str, dict[str, Any]]) -> Any | None:
+    """Build a small dynamic GoalChainer scenario for project-control decisions.
+
+    This keeps the GoalChainer scoring/appraisal engine in the loop when the
+    memory evidence is not about the default incident-redaction demo.  The first
+    concrete target is the ThreadKeeper canary decision: a required PR
+    reconciliation step should outrank the canary install as the immediate next
+    action, while the patham9-admitted canary remains the next admissible branch.
+    """
+    if not (
+        "install_threadkeeper_canary_on_protomegabot" in action_evidence
+        or "reconcile_threadkeeper_pr" in action_evidence
+    ):
+        return None
+    from goal_chainer.models import CandidateAction, Goal, GoalScenario, Norm
+
+    goals = (
+        Goal(
+            id="preserve_sequence_integrity",
+            owner="project-control",
+            statement="Respect ordering constraints before live deployment.",
+            weight=0.95,
+            kind="collective",
+            required=True,
+        ),
+        Goal(
+            id="advance_bounded_canary",
+            owner="protobots",
+            statement="Advance the approved bounded ThreadKeeper canary path.",
+            weight=0.90,
+            kind="collective",
+            required=True,
+        ),
+        Goal(
+            id="preserve_agent_safety",
+            owner="protomegabot",
+            statement="Keep rollback, supervision, and stop conditions explicit.",
+            weight=0.90,
+            kind="individual",
+            required=True,
+        ),
+    )
+    actions = (
+        CandidateAction(
+            id="reconcile_threadkeeper_pr",
+            label="Reconcile ThreadKeeper PR",
+            description="Reconcile the pending ThreadKeeper PR before live canary installation.",
+            satisfies=("preserve_sequence_integrity", "advance_bounded_canary", "preserve_agent_safety"),
+            evidence_query="(: $prf (Requires ThreadKeeperPRReconciliation) $tv)",
+            evidence_atoms=(),
+            default_strength=0.85,
+            default_confidence=0.80,
+        ),
+        CandidateAction(
+            id="install_threadkeeper_canary_on_protomegabot",
+            label="Install ThreadKeeper canary on ProtomegaBot",
+            description="Run a supervised ThreadKeeper canary with rollback and stop conditions.",
+            satisfies=("advance_bounded_canary", "preserve_agent_safety"),
+            evidence_query="(: $prf (Acceptable install_threadkeeper_canary_on_protomegabot) $tv)",
+            evidence_atoms=(),
+            default_strength=0.70,
+            default_confidence=0.75,
+        ),
+        CandidateAction(
+            id="defer_until_more_synthetic_tests",
+            label="Defer for more synthetic tests",
+            description="Delay live canary work and run more synthetic-only checks.",
+            satisfies=("preserve_agent_safety",),
+            evidence_query="(: $prf (Acceptable defer_until_more_synthetic_tests) $tv)",
+            evidence_atoms=(),
+            default_strength=0.42,
+            default_confidence=0.60,
+        ),
+        CandidateAction(
+            id="ask_ben_again",
+            label="Ask Ben again",
+            description="Ask for approval again despite existing approval evidence.",
+            satisfies=(),
+            evidence_query="(: $prf (NotApplicable ask_ben_again) $tv)",
+            evidence_atoms=(),
+            default_strength=0.30,
+            default_confidence=0.70,
+        ),
+        CandidateAction(
+            id="remove_threadkeeper",
+            label="Remove ThreadKeeper",
+            description="Remove ThreadKeeper before a canary failure has occurred.",
+            satisfies=("preserve_agent_safety",),
+            evidence_query="(: $prf (NotApplicable remove_threadkeeper) $tv)",
+            evidence_atoms=(),
+            default_strength=0.28,
+            default_confidence=0.70,
+        ),
+    )
+    norms = (
+        Norm(
+            id="pr-before-canary",
+            mode="oblige",
+            target_action="reconcile_threadkeeper_pr",
+            priority=20,
+            reason="PR reconciliation is pending and should precede the live canary.",
+        ),
+        Norm(
+            id="approved-bounded-canary",
+            mode="permit",
+            target_action="install_threadkeeper_canary_on_protomegabot",
+            priority=12,
+            reason="Ben approved the canary and patham9/PLN admitted it under bounded-risk evidence.",
+        ),
+    )
+    notes = (
+        "Patham9/PLN admitted the canary acceptability branch, but the pending PR reconciliation remains the immediate ordering constraint.",
+        "Guardrails required before the canary: rollback path, supervised log, stop conditions for runaway loops, persona/session corruption, private bridge activation, and queue-claim errors.",
+        "Asking Ben again is held because approval evidence is already present; removing ThreadKeeper is held unless canary failure evidence appears.",
+    )
+    return GoalScenario(
+        title="ThreadKeeper project-control canary decision",
+        goals=goals,
+        norms=norms,
+        actions=actions,
+        notes=notes,
+    )
+
+
+def _goalchainer_action_id(raw: str) -> str:
+    return {
+        "ThreadKeeperPRReconciliation": "reconcile_threadkeeper_pr",
+    }.get(raw, raw)
 
 
 def _default_action_evidence(action: Any) -> dict[str, Any]:

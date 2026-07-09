@@ -32,6 +32,7 @@ def run_petta_memory_goalchainer_live_bridge(
     pln_repo: str | Path = DEFAULT_PLN_REPO,
     patham9_timeout_sec: float = 30.0,
     patham9_runner: Callable[..., dict[str, Any]] = run_patham9_pln_multi_sentence_derivation_smoke,
+    goalchainer_runner: Callable[..., dict[str, Any]] = run_goalchainer_precompiled_handoff_smoke,
 ) -> dict[str, Any]:
     """Run the first read-only live bridge from a journal into GoalChainer.
 
@@ -70,6 +71,10 @@ def run_petta_memory_goalchainer_live_bridge(
             pln_repo=pln_repo,
             timeout_sec=patham9_timeout_sec,
         )
+        if not isinstance(patham9_runtime_result, dict):
+            raise ValidationError(
+                "patham9 runtime gate returned a non-object result; refusing GoalChainer appraisal"
+            )
         patham9_runtime_gate = {
             "enabled": True,
             "schema": patham9_runtime_result.get("schema"),
@@ -81,24 +86,51 @@ def run_petta_memory_goalchainer_live_bridge(
             else None,
             "boundary": (
                 "bounded local patham9/PLN runtime over the admitted handoff; no PeTTaChainer compileadd; "
+                "fail-closed before GoalChainer appraisal if the runtime gate does not pass; "
                 "no memory append; no inferred-belief promotion; no OmegaClaw skill or task/directive claim"
             ),
         }
+        if patham9_runtime_gate["status"] != "passed":
+            raise ValidationError(
+                "patham9 runtime gate did not pass; refusing GoalChainer appraisal "
+                f"(status={patham9_runtime_gate['status']!r}, returncode={patham9_runtime_gate['returncode']!r})"
+            )
     else:
         patham9_runtime_gate = {
             "enabled": False,
             "status": "skipped",
             "boundary": "patham9/PLN runtime gate skipped by caller; ranked/admitted pi-PLN handoff still built",
         }
-    goalchainer_result = run_goalchainer_precompiled_handoff_smoke(
+    goalchainer_result = goalchainer_runner(
         goalchainer_cache,
         goalchainer_repo=goalchainer_repo,
         request=request,
         include_heuristic_memory_probe=include_heuristic_memory_probe,
+        admitted_patham9_handoff=admitted["admitted_handoff"],
     )
+    if not isinstance(goalchainer_result, dict):
+        raise ValidationError("GoalChainer gate returned a non-object result; refusing live bridge output")
+    decision_payload = goalchainer_result.get("decision_payload")
+    if not isinstance(decision_payload, dict):
+        raise ValidationError("GoalChainer gate returned a non-object decision_payload; refusing live bridge output")
+    checks = goalchainer_result.get("checks")
+    if not isinstance(checks, dict):
+        raise ValidationError("GoalChainer gate returned non-object checks; refusing live bridge output")
+    goalchainer_schema = goalchainer_result.get("schema")
+    if not isinstance(goalchainer_schema, str) or not goalchainer_schema:
+        raise ValidationError("GoalChainer gate returned non-string schema; refusing live bridge output")
+    goalchainer_mode = goalchainer_result.get("mode")
+    if not isinstance(goalchainer_mode, str) or not goalchainer_mode:
+        raise ValidationError("GoalChainer gate returned non-string mode; refusing live bridge output")
+    goalchainer_boundary = goalchainer_result.get("boundary")
+    if not isinstance(goalchainer_boundary, str) or not goalchainer_boundary:
+        raise ValidationError("GoalChainer gate returned non-string boundary; refusing live bridge output")
 
-    decision_payload = goalchainer_result["decision_payload"]
-    decisions = decision_payload.get("decisions", []) if isinstance(decision_payload, dict) else []
+    decisions = decision_payload.get("decisions", [])
+    if not isinstance(decisions, list):
+        raise ValidationError("GoalChainer gate returned non-list decisions; refusing live bridge output")
+    if any(not isinstance(item, dict) for item in decisions):
+        raise ValidationError("GoalChainer gate returned non-object decision entries; refusing live bridge output")
     recommended = next((item for item in decisions if item.get("status") == "recommended"), None)
     return {
         "schema": "petta-memory-goalchainer-live-bridge-v1",
@@ -123,13 +155,15 @@ def run_petta_memory_goalchainer_live_bridge(
         },
         "patham9_runtime_gate": patham9_runtime_gate,
         "goalchainer_gate": {
-            "schema": goalchainer_result["schema"],
-            "mode": goalchainer_result["mode"],
+            "schema": goalchainer_schema,
+            "mode": goalchainer_mode,
             "recommended_action": recommended.get("action_id") if isinstance(recommended, dict) else None,
             "recommended_status": recommended.get("status") if isinstance(recommended, dict) else None,
+            "decisions": decisions,
+            "notes": decision_payload.get("notes", []),
             "heuristic_memory_probe": goalchainer_result.get("heuristic_memory_probe"),
-            "checks": goalchainer_result["checks"],
-            "boundary": goalchainer_result["boundary"],
+            "checks": checks,
+            "boundary": goalchainer_boundary,
         },
         "checks": {
             "journal_read": True,

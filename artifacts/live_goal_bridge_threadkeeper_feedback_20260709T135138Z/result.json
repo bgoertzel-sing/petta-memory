@@ -1,0 +1,256 @@
+{
+  "boundary": "read-only live bridge over an existing MediumMemoryStore journal; local GoalChainer decision/appraisal only; no OmegaClaw skill, no accepted directive/task claim, no memory write, no inferred-belief promotion",
+  "cache_id": "threadkeeper-feedback-real",
+  "checks": {
+    "admitted_handoff_built": true,
+    "goalchainer_recommended_action_present": true,
+    "journal_read": true,
+    "no_memory_write": true,
+    "no_omegaclaw_skill_loaded": true,
+    "no_task_or_directive_claim": true,
+    "patham9_runtime_passed_or_skipped": true,
+    "promoted_memory_evidence_present": true,
+    "ranked_plan_built": true
+  },
+  "cluster_count": 1,
+  "goalchainer_gate": {
+    "boundary": "non-live precompiled cache smoke only; PeTTaChainer compileadd/query not invoked; no OmegaClaw skill loaded, no task/directive claim, no memory write, no inferred-belief status",
+    "checks": {
+      "compileadd_not_invoked": true,
+      "heuristic_with_memory_path_checked": false,
+      "no_live_directive_or_task_claim": true,
+      "no_memory_write": true,
+      "provenance_selected_handoff_items": true,
+      "ranked_actions": true,
+      "recommended_action_present": true
+    },
+    "decisions": [
+      {
+        "action_id": "reconcile_threadkeeper_pr",
+        "collective_score": 1.0,
+        "evidence": {
+          "confidence": 0.8,
+          "projection": "(: b-tk-pr-reconcile (Requires ThreadKeeperPRReconciliation) (STV 0.85 0.80))",
+          "proofs": [
+            "precompiled PeTTa-memory handoff STV item; PeTTaChainer compileadd not invoked",
+            "belief_id=b-tk-pr-reconcile cluster_id=mc-threadkeeper-canary promotion_event=pe-tk-pr-pending"
+          ],
+          "source": "petta-memory-precompiled-handoff-cache",
+          "strength": 0.85
+        },
+        "goal_score": 1.0,
+        "individual_score": 1.0,
+        "label": "Reconcile ThreadKeeper PR",
+        "metadata": {
+          "deontic_expectation": "0.780000"
+        },
+        "missing_required_goals": [],
+        "norm_reasons": [
+          "expectation=0.780"
+        ],
+        "norm_status": "obligated",
+        "satisfied_goals": [
+          "preserve_sequence_integrity",
+          "advance_bounded_canary",
+          "preserve_agent_safety"
+        ],
+        "score": 0.8984,
+        "status": "recommended",
+        "warnings": []
+      },
+      {
+        "action_id": "install_threadkeeper_canary_on_protomegabot",
+        "collective_score": 0.486486,
+        "evidence": {
+          "confidence": 0.8,
+          "projection": "(: b-tk-canary-approved (Acceptable install_threadkeeper_canary_on_protomegabot) (STV 0.88 0.75))",
+          "proofs": [
+            "precompiled PeTTa-memory handoff STV item; PeTTaChainer compileadd not invoked",
+            "belief_id=b-tk-canary-approved cluster_id=mc-threadkeeper-canary promotion_event=pe-tk-ben-approval",
+            "contextual EvidencePacket EC support/opposition influenced precompiled appraisal; PeTTaChainer compileadd not invoked",
+            "patham9/PLN admitted this branch before GoalChainer appraisal; treated as acceptability evidence"
+          ],
+          "source": "petta-memory-precompiled-handoff-cache",
+          "strength": 0.877419
+        },
+        "goal_score": 0.654545,
+        "individual_score": 1.0,
+        "label": "Install ThreadKeeper canary on ProtomegaBot",
+        "metadata": {
+          "deontic_expectation": "0.801935"
+        },
+        "missing_required_goals": [
+          "preserve_sequence_integrity"
+        ],
+        "norm_reasons": [
+          "expectation=0.802"
+        ],
+        "norm_status": "unregulated",
+        "satisfied_goals": [
+          "advance_bounded_canary",
+          "preserve_agent_safety"
+        ],
+        "score": 0.600023,
+        "status": "candidate",
+        "warnings": [
+          "missing required goals: preserve_sequence_integrity"
+        ]
+      },
+      {
+        "action_id": "defer_until_more_synthetic_tests",
+        "collective_score": 0.0,
+        "evidence": {
+          "confidence": 0.6,
+          "projection": "scenario default for defer_until_more_synthetic_tests",
+          "proofs": [
+            "GoalChainer scenario default; no matching PeTTa-memory handoff item"
+          ],
+          "source": "petta-memory-precompiled-handoff-cache",
+          "strength": 0.42
+        },
+        "goal_score": 0.327273,
+        "individual_score": 1.0,
+        "label": "Defer for more synthetic tests",
+        "metadata": {
+          "deontic_expectation": "0.452000"
+        },
+        "missing_required_goals": [
+          "preserve_sequence_integrity",
+          "advance_bounded_canary"
+        ],
+        "norm_reasons": [
+          "expectation=0.452"
+        ],
+        "norm_status": "unregulated",
+        "satisfied_goals": [
+          "preserve_agent_safety"
+        ],
+        "score": 0.233215,
+        "status": "weak",
+        "warnings": [
+          "missing required goals: preserve_sequence_integrity, advance_bounded_canary"
+        ]
+      },
+      {
+        "action_id": "ask_ben_again",
+        "collective_score": 0.0,
+        "evidence": {
+          "confidence": 0.75,
+          "projection": "(: b-tk-ask-ben-redundant (Implication ben_approval_given (NotApplicable ask_ben_again)) (STV 0.80 0.75))",
+          "proofs": [
+            "precompiled PeTTa-memory handoff STV item; PeTTaChainer compileadd not invoked",
+            "belief_id=b-tk-ask-ben-redundant cluster_id=mc-threadkeeper-canary promotion_event=pe-tk-ask-ben"
+          ],
+          "source": "petta-memory-precompiled-handoff-cache",
+          "strength": 0.2
+        },
+        "goal_score": 0.0,
+        "individual_score": 0.0,
+        "label": "Ask Ben again",
+        "metadata": {
+          "deontic_expectation": "0.275000"
+        },
+        "missing_required_goals": [
+          "preserve_sequence_integrity",
+          "advance_bounded_canary",
+          "preserve_agent_safety"
+        ],
+        "norm_reasons": [
+          "expectation=0.275"
+        ],
+        "norm_status": "forbidden",
+        "satisfied_goals": [],
+        "score": -1.0,
+        "status": "blocked",
+        "warnings": [
+          "missing required goals: preserve_sequence_integrity, advance_bounded_canary, preserve_agent_safety",
+          "native deontic status: forbidden"
+        ]
+      },
+      {
+        "action_id": "remove_threadkeeper",
+        "collective_score": 0.0,
+        "evidence": {
+          "confidence": 0.7,
+          "projection": "(: b-tk-remove-premature (Implication (Not canary_failed) (NotApplicable remove_threadkeeper)) (STV 0.78 0.70))",
+          "proofs": [
+            "precompiled PeTTa-memory handoff STV item; PeTTaChainer compileadd not invoked",
+            "belief_id=b-tk-remove-premature cluster_id=mc-threadkeeper-canary promotion_event=pe-tk-remove"
+          ],
+          "source": "petta-memory-precompiled-handoff-cache",
+          "strength": 0.22
+        },
+        "goal_score": 0.327273,
+        "individual_score": 1.0,
+        "label": "Remove ThreadKeeper",
+        "metadata": {
+          "deontic_expectation": "0.304000"
+        },
+        "missing_required_goals": [
+          "preserve_sequence_integrity",
+          "advance_bounded_canary"
+        ],
+        "norm_reasons": [
+          "expectation=0.304"
+        ],
+        "norm_status": "forbidden",
+        "satisfied_goals": [
+          "preserve_agent_safety"
+        ],
+        "score": -1.0,
+        "status": "blocked",
+        "warnings": [
+          "missing required goals: preserve_sequence_integrity, advance_bounded_canary",
+          "native deontic status: forbidden"
+        ]
+      }
+    ],
+    "heuristic_memory_probe": null,
+    "mode": "non-live-precompiled-cache-decision-payload-only",
+    "notes": [
+      "Patham9/PLN admitted the canary acceptability branch, but the pending PR reconciliation remains the immediate ordering constraint.",
+      "Guardrails required before the canary: rollback path, supervised log, stop conditions for runaway loops, persona/session corruption, private bridge activation, and queue-claim errors.",
+      "Asking Ben again is held because approval evidence is already present; removing ThreadKeeper is held unless canary failure evidence appears."
+    ],
+    "recommended_action": "reconcile_threadkeeper_pr",
+    "recommended_status": "recommended",
+    "schema": "petta-memory-goalchainer-precompiled-smoke-v1"
+  },
+  "input_counts": {
+    "admitted_items": 1,
+    "goalchainer_items": 14,
+    "patham9_items": 7,
+    "pettachainer_items": 14,
+    "ranked_candidates": 7
+  },
+  "journal_path": "artifacts/live_goal_bridge_threadkeeper_feedback_20260709T135138Z/journal.metta",
+  "mode": "read-only-live-journal-to-local-goalchainer",
+  "patham9_runtime_gate": {
+    "boundary": "bounded local patham9/PLN runtime over the admitted handoff; no PeTTaChainer compileadd; fail-closed before GoalChainer appraisal if the runtime gate does not pass; no memory append; no inferred-belief promotion; no OmegaClaw skill or task/directive claim",
+    "enabled": true,
+    "program_schema": "petta-memory-patham9-pln-multi-sentence-derivation-smoke-program-v1",
+    "returncode": 0,
+    "schema": "petta-memory-patham9-pln-multi-sentence-derivation-smoke-result-v1",
+    "semantic_markers": {
+      "diagnostic_lines": [
+        "((Is: $Is) (Should: $Should) (Passed: (== $Is $Should))))",
+        "\u001b[32m'Test'(A, B, [['Is:', A], ['Should:', B], ['Passed:', C]]) :-",
+        "((Is: ((stv 0.8824 0.675) (0 1))) (Should: ((stv 0.8824 0.675) (0 1))) (Passed: true))"
+      ],
+      "error_markers": 0,
+      "passed_false_count": 0,
+      "passed_true_count": 1,
+      "semantic_passed": true
+    },
+    "status": "passed"
+  },
+  "pi_pln_gate": {
+    "admitted_item_count": 1,
+    "admitted_schema": "petta-memory-pi-pln-admitted-handoff-v1",
+    "boundary": "non-live wrapper-only ranked inference-control plan; no SWI/PeTTa/MeTTa runtime invoked; no PLN.Query/PLN.Derive call; no memory append or inferred-belief promotion; no patham9/PLN source change; no OmegaClaw/GoalChainer live path",
+    "held_count": 6,
+    "recommended_count": 1,
+    "schema": "petta-memory-pi-pln-ranked-inference-control-plan-v1"
+  },
+  "schema": "petta-memory-goalchainer-live-bridge-v1"
+}
