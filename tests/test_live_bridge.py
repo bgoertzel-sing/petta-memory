@@ -265,6 +265,120 @@ class LiveBridgeTests(unittest.TestCase):
 
         self.assertEqual(goalchainer_calls, [])
 
+    def test_live_bridge_rejects_malformed_patham9_runtime_top_level_audit_fields_before_goalchainer(self):
+        fixture = Path(__file__).resolve().parents[1] / "fixtures" / "goalchainer_handoff_smoke.metta"
+        repo = Path(__file__).resolve().parents[4] / "omegaclaw" / "repos" / "OmegaClaw-GoalChainer"
+        cases = [
+            ("schema", "", 0, "non-string schema"),
+            ("returncode-string", "petta-memory-patham9-pln-multi-sentence-derivation-smoke-result-v1", "0", "nonzero or non-integer returncode"),
+            ("returncode-bool", "petta-memory-patham9-pln-multi-sentence-derivation-smoke-result-v1", True, "nonzero or non-integer returncode"),
+            ("returncode-nonzero", "petta-memory-patham9-pln-multi-sentence-derivation-smoke-result-v1", 1, "nonzero or non-integer returncode"),
+        ]
+        for name, schema, returncode, expected_error in cases:
+            with self.subTest(name=name):
+                goalchainer_calls = []
+
+                def fake_patham9_runner(handoff, *, pln_repo, timeout_sec):
+                    return {
+                        "schema": schema,
+                        "status": "passed",
+                        "returncode": returncode,
+                        "semantic_markers": {"passed_true_count": 1, "passed_false_count": 0, "semantic_passed": True},
+                        "program": {"schema": "petta-memory-patham9-pln-multi-sentence-derivation-smoke-program-v1"},
+                    }
+
+                def fake_goalchainer_runner(*args, **kwargs):
+                    goalchainer_calls.append((args, kwargs))
+                    raise AssertionError("GoalChainer must not run after malformed patham9 runtime top-level audit fields")
+
+                with tempfile.TemporaryDirectory() as td:
+                    journal = Path(td) / "journal.metta"
+                    store = MediumMemoryStore(journal)
+                    store.append_cluster(fixture.read_text(encoding="utf-8"))
+
+                    with self.assertRaisesRegex(ValidationError, expected_error):
+                        run_petta_memory_goalchainer_live_bridge(
+                            journal,
+                            goalchainer_repo=repo,
+                            cache_id=f"bridge-patham9-top-{name}-test",
+                            query_target="(Acceptable publish_redacted_summary)",
+                            require_query_relevance=True,
+                            include_patham9_runtime=True,
+                            pln_repo="/tmp/patham9-pln",
+                            patham9_timeout_sec=7.0,
+                            patham9_runner=fake_patham9_runner,
+                            goalchainer_runner=fake_goalchainer_runner,
+                        )
+
+                self.assertEqual(goalchainer_calls, [])
+
+    def test_live_bridge_rejects_malformed_patham9_runtime_audit_fields_before_goalchainer(self):
+        fixture = Path(__file__).resolve().parents[1] / "fixtures" / "goalchainer_handoff_smoke.metta"
+        repo = Path(__file__).resolve().parents[4] / "omegaclaw" / "repos" / "OmegaClaw-GoalChainer"
+        cases = [
+            (
+                "semantic_markers",
+                ["not", "an", "object"],
+                {"schema": "petta-memory-patham9-pln-multi-sentence-derivation-smoke-program-v1"},
+                "non-object semantic_markers",
+            ),
+            (
+                "semantic_markers",
+                {"passed_true_count": 0, "passed_false_count": 0, "semantic_passed": False},
+                {"schema": "petta-memory-patham9-pln-multi-sentence-derivation-smoke-program-v1"},
+                "semantic markers did not pass",
+            ),
+            (
+                "program",
+                {"passed_true_count": 1, "passed_false_count": 0, "semantic_passed": True},
+                ["not", "an", "object"],
+                "non-object program artifact",
+            ),
+            (
+                "program_schema",
+                {"passed_true_count": 1, "passed_false_count": 0, "semantic_passed": True},
+                {"schema": ""},
+                "non-string program schema",
+            ),
+        ]
+        for name, semantic_markers, program, expected_error in cases:
+            with self.subTest(name=name):
+                goalchainer_calls = []
+
+                def fake_patham9_runner(handoff, *, pln_repo, timeout_sec):
+                    return {
+                        "schema": "petta-memory-patham9-pln-multi-sentence-derivation-smoke-result-v1",
+                        "status": "passed",
+                        "returncode": 0,
+                        "semantic_markers": semantic_markers,
+                        "program": program,
+                    }
+
+                def fake_goalchainer_runner(*args, **kwargs):
+                    goalchainer_calls.append((args, kwargs))
+                    raise AssertionError("GoalChainer must not run after malformed patham9 runtime audit fields")
+
+                with tempfile.TemporaryDirectory() as td:
+                    journal = Path(td) / "journal.metta"
+                    store = MediumMemoryStore(journal)
+                    store.append_cluster(fixture.read_text(encoding="utf-8"))
+
+                    with self.assertRaisesRegex(ValidationError, expected_error):
+                        run_petta_memory_goalchainer_live_bridge(
+                            journal,
+                            goalchainer_repo=repo,
+                            cache_id=f"bridge-patham9-{name}-test",
+                            query_target="(Acceptable publish_redacted_summary)",
+                            require_query_relevance=True,
+                            include_patham9_runtime=True,
+                            pln_repo="/tmp/patham9-pln",
+                            patham9_timeout_sec=7.0,
+                            patham9_runner=fake_patham9_runner,
+                            goalchainer_runner=fake_goalchainer_runner,
+                        )
+
+                self.assertEqual(goalchainer_calls, [])
+
     def test_live_bridge_rejects_non_object_goalchainer_result(self):
         fixture = Path(__file__).resolve().parents[1] / "fixtures" / "goalchainer_handoff_smoke.metta"
         repo = Path(__file__).resolve().parents[4] / "omegaclaw" / "repos" / "OmegaClaw-GoalChainer"

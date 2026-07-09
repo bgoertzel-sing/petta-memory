@@ -75,26 +75,54 @@ def run_petta_memory_goalchainer_live_bridge(
             raise ValidationError(
                 "patham9 runtime gate returned a non-object result; refusing GoalChainer appraisal"
             )
+        runtime_schema = patham9_runtime_result.get("schema")
+        if not isinstance(runtime_schema, str) or not runtime_schema:
+            raise ValidationError(
+                "patham9 runtime gate returned non-string schema; refusing GoalChainer appraisal"
+            )
+        runtime_returncode = patham9_runtime_result.get("returncode")
+        semantic_markers = patham9_runtime_result.get("semantic_markers")
+        if not isinstance(semantic_markers, dict):
+            raise ValidationError(
+                "patham9 runtime gate returned non-object semantic_markers; refusing GoalChainer appraisal"
+            )
+        if patham9_runtime_result.get("status") != "passed":
+            raise ValidationError(
+                "patham9 runtime gate did not pass; refusing GoalChainer appraisal "
+                f"(status={patham9_runtime_result.get('status')!r}, returncode={runtime_returncode!r})"
+            )
+        if isinstance(runtime_returncode, bool) or runtime_returncode != 0:
+            raise ValidationError(
+                "patham9 runtime gate returned nonzero or non-integer returncode; refusing GoalChainer appraisal "
+                f"(status={patham9_runtime_result.get('status')!r}, returncode={runtime_returncode!r})"
+            )
+        if semantic_markers.get("semantic_passed") is not True:
+            raise ValidationError(
+                "patham9 runtime gate semantic markers did not pass; refusing GoalChainer appraisal"
+            )
+        program = patham9_runtime_result.get("program")
+        if not isinstance(program, dict):
+            raise ValidationError(
+                "patham9 runtime gate returned a non-object program artifact; refusing GoalChainer appraisal"
+            )
+        program_schema = program.get("schema")
+        if not isinstance(program_schema, str) or not program_schema:
+            raise ValidationError(
+                "patham9 runtime gate returned non-string program schema; refusing GoalChainer appraisal"
+            )
         patham9_runtime_gate = {
             "enabled": True,
-            "schema": patham9_runtime_result.get("schema"),
+            "schema": runtime_schema,
             "status": patham9_runtime_result.get("status"),
-            "returncode": patham9_runtime_result.get("returncode"),
-            "semantic_markers": patham9_runtime_result.get("semantic_markers"),
-            "program_schema": patham9_runtime_result.get("program", {}).get("schema")
-            if isinstance(patham9_runtime_result.get("program"), dict)
-            else None,
+            "returncode": runtime_returncode,
+            "semantic_markers": semantic_markers,
+            "program_schema": program_schema,
             "boundary": (
                 "bounded local patham9/PLN runtime over the admitted handoff; no PeTTaChainer compileadd; "
                 "fail-closed before GoalChainer appraisal if the runtime gate does not pass; "
                 "no memory append; no inferred-belief promotion; no OmegaClaw skill or task/directive claim"
             ),
         }
-        if patham9_runtime_gate["status"] != "passed":
-            raise ValidationError(
-                "patham9 runtime gate did not pass; refusing GoalChainer appraisal "
-                f"(status={patham9_runtime_gate['status']!r}, returncode={patham9_runtime_gate['returncode']!r})"
-            )
     else:
         patham9_runtime_gate = {
             "enabled": False,
