@@ -108,7 +108,11 @@ class LiveBridgeTests(unittest.TestCase):
                         }
                     ]
                 },
-                "checks": {"no_memory_write": True, "no_task_or_directive_claim": True},
+                "checks": {
+                    "no_memory_write": True,
+                    "no_task_or_directive_claim": True,
+                    "no_live_directive_or_task_claim": True,
+                },
                 "boundary": "fake read-only GoalChainer boundary",
             }
 
@@ -410,7 +414,7 @@ class LiveBridgeTests(unittest.TestCase):
                 "schema": "petta-memory-goalchainer-precompiled-smoke-result-v1",
                 "mode": "non-live-goalchainer-precompiled-handoff-smoke",
                 "decision_payload": ["not", "an", "object"],
-                "checks": {"no_memory_write": True},
+                "checks": {"no_memory_write": True, "no_live_directive_or_task_claim": True},
                 "boundary": "fake boundary",
             }
 
@@ -457,6 +461,42 @@ class LiveBridgeTests(unittest.TestCase):
                     goalchainer_runner=fake_goalchainer_runner,
                 )
 
+    def test_live_bridge_rejects_goalchainer_boundary_check_drift(self):
+        fixture = Path(__file__).resolve().parents[1] / "fixtures" / "goalchainer_handoff_smoke.metta"
+        repo = Path(__file__).resolve().parents[4] / "omegaclaw" / "repos" / "OmegaClaw-GoalChainer"
+
+        cases = [
+            ({"no_live_directive_or_task_claim": True}, "no_memory_write"),
+            ({"no_memory_write": False, "no_live_directive_or_task_claim": True}, "no_memory_write"),
+            ({"no_memory_write": True}, "no_live_directive_or_task_claim"),
+            ({"no_memory_write": True, "no_live_directive_or_task_claim": False}, "no_live_directive_or_task_claim"),
+        ]
+        for checks, expected_error in cases:
+            with self.subTest(checks=checks):
+                def fake_goalchainer_runner(*args, **kwargs):
+                    return {
+                        "schema": "petta-memory-goalchainer-precompiled-smoke-result-v1",
+                        "mode": "non-live-goalchainer-precompiled-handoff-smoke",
+                        "decision_payload": {"decisions": []},
+                        "checks": checks,
+                        "boundary": "fake boundary",
+                    }
+
+                with tempfile.TemporaryDirectory() as td:
+                    journal = Path(td) / "journal.metta"
+                    store = MediumMemoryStore(journal)
+                    store.append_cluster(fixture.read_text(encoding="utf-8"))
+
+                    with self.assertRaisesRegex(ValidationError, expected_error):
+                        run_petta_memory_goalchainer_live_bridge(
+                            journal,
+                            goalchainer_repo=repo,
+                            cache_id="bridge-goalchainer-boundary-checks-test",
+                            query_target="(Acceptable publish_redacted_summary)",
+                            require_query_relevance=True,
+                            goalchainer_runner=fake_goalchainer_runner,
+                        )
+
     def test_live_bridge_rejects_missing_goalchainer_scalar_metadata(self):
         fixture = Path(__file__).resolve().parents[1] / "fixtures" / "goalchainer_handoff_smoke.metta"
         repo = Path(__file__).resolve().parents[4] / "omegaclaw" / "repos" / "OmegaClaw-GoalChainer"
@@ -473,7 +513,7 @@ class LiveBridgeTests(unittest.TestCase):
                         "schema": "petta-memory-goalchainer-precompiled-smoke-result-v1",
                         "mode": "non-live-goalchainer-precompiled-handoff-smoke",
                         "decision_payload": {"decisions": []},
-                        "checks": {"no_memory_write": True},
+                        "checks": {"no_memory_write": True, "no_live_directive_or_task_claim": True},
                         "boundary": "fake boundary",
                     }
                     result[field] = value
@@ -503,7 +543,7 @@ class LiveBridgeTests(unittest.TestCase):
                 "schema": "petta-memory-goalchainer-precompiled-smoke-result-v1",
                 "mode": "non-live-goalchainer-precompiled-handoff-smoke",
                 "decision_payload": {"decisions": "not-a-list"},
-                "checks": {"no_memory_write": True},
+                "checks": {"no_memory_write": True, "no_live_directive_or_task_claim": True},
                 "boundary": "fake boundary",
             }
 
@@ -531,7 +571,7 @@ class LiveBridgeTests(unittest.TestCase):
                 "schema": "petta-memory-goalchainer-precompiled-smoke-result-v1",
                 "mode": "non-live-goalchainer-precompiled-handoff-smoke",
                 "decision_payload": {"decisions": [{"status": "held"}, ["not", "an", "object"]]},
-                "checks": {"no_memory_write": True},
+                "checks": {"no_memory_write": True, "no_live_directive_or_task_claim": True},
                 "boundary": "fake boundary",
             }
 
@@ -559,7 +599,7 @@ class LiveBridgeTests(unittest.TestCase):
                 "schema": "petta-memory-goalchainer-precompiled-smoke-result-v1",
                 "mode": "non-live-goalchainer-precompiled-handoff-smoke",
                 "decision_payload": {"decisions": [], "notes": "not-a-list"},
-                "checks": {"no_memory_write": True},
+                "checks": {"no_memory_write": True, "no_live_directive_or_task_claim": True},
                 "boundary": "fake boundary",
             }
 
@@ -587,7 +627,7 @@ class LiveBridgeTests(unittest.TestCase):
                 "schema": "petta-memory-goalchainer-precompiled-smoke-result-v1",
                 "mode": "non-live-goalchainer-precompiled-handoff-smoke",
                 "decision_payload": {"decisions": [{"status": "recommended", "action_id": ""}]},
-                "checks": {"no_memory_write": True},
+                "checks": {"no_memory_write": True, "no_live_directive_or_task_claim": True},
                 "boundary": "fake boundary",
             }
 

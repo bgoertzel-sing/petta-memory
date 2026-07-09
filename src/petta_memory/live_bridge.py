@@ -144,6 +144,12 @@ def run_petta_memory_goalchainer_live_bridge(
     checks = goalchainer_result.get("checks")
     if not isinstance(checks, dict):
         raise ValidationError("GoalChainer gate returned non-object checks; refusing live bridge output")
+    if checks.get("no_memory_write") is not True:
+        raise ValidationError("GoalChainer gate did not assert no_memory_write; refusing live bridge output")
+    if checks.get("no_live_directive_or_task_claim") is not True:
+        raise ValidationError(
+            "GoalChainer gate did not assert no_live_directive_or_task_claim; refusing live bridge output"
+        )
     goalchainer_schema = goalchainer_result.get("schema")
     if not isinstance(goalchainer_schema, str) or not goalchainer_schema:
         raise ValidationError("GoalChainer gate returned non-string schema; refusing live bridge output")
