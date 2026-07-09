@@ -507,117 +507,139 @@ def _project_control_scenario(action_evidence: dict[str, dict[str, Any]]) -> Any
     reconciliation step should outrank the canary install as the immediate next
     action, while the patham9-admitted canary remains the next admissible branch.
     """
-    if not (
-        "install_threadkeeper_canary_on_protomegabot" in action_evidence
-        or "reconcile_threadkeeper_pr" in action_evidence
-    ):
+    has_canary_evidence = "install_threadkeeper_canary_on_protomegabot" in action_evidence
+    has_pr_reconciliation_evidence = "reconcile_threadkeeper_pr" in action_evidence
+    if not (has_canary_evidence or has_pr_reconciliation_evidence):
         return None
     from goal_chainer.models import CandidateAction, Goal, GoalScenario, Norm
 
-    goals = (
-        Goal(
-            id="preserve_sequence_integrity",
-            owner="project-control",
-            statement="Respect ordering constraints before live deployment.",
-            weight=0.95,
-            kind="collective",
-            required=True,
-        ),
-        Goal(
-            id="advance_bounded_canary",
-            owner="protobots",
-            statement="Advance the approved bounded ThreadKeeper canary path.",
-            weight=0.90,
-            kind="collective",
-            required=True,
-        ),
-        Goal(
-            id="preserve_agent_safety",
-            owner="protomegabot",
-            statement="Keep rollback, supervision, and stop conditions explicit.",
-            weight=0.90,
-            kind="individual",
-            required=True,
-        ),
+    goals: list[Any] = []
+    if has_pr_reconciliation_evidence:
+        goals.append(
+            Goal(
+                id="preserve_sequence_integrity",
+                owner="project-control",
+                statement="Respect ordering constraints before live deployment.",
+                weight=0.95,
+                kind="collective",
+                required=True,
+            )
+        )
+    goals.extend(
+        [
+            Goal(
+                id="advance_bounded_canary",
+                owner="protobots",
+                statement="Advance the approved bounded ThreadKeeper canary path.",
+                weight=0.90,
+                kind="collective",
+                required=True,
+            ),
+            Goal(
+                id="preserve_agent_safety",
+                owner="protomegabot",
+                statement="Keep rollback, supervision, and stop conditions explicit.",
+                weight=0.90,
+                kind="individual",
+                required=True,
+            ),
+        ]
     )
-    actions = (
-        CandidateAction(
-            id="reconcile_threadkeeper_pr",
-            label="Reconcile ThreadKeeper PR",
-            description="Reconcile the pending ThreadKeeper PR before live canary installation.",
-            satisfies=("preserve_sequence_integrity", "advance_bounded_canary", "preserve_agent_safety"),
-            evidence_query="(: $prf (Requires ThreadKeeperPRReconciliation) $tv)",
-            evidence_atoms=(),
-            default_strength=0.85,
-            default_confidence=0.80,
-        ),
-        CandidateAction(
-            id="install_threadkeeper_canary_on_protomegabot",
-            label="Install ThreadKeeper canary on ProtomegaBot",
-            description="Run a supervised ThreadKeeper canary with rollback and stop conditions.",
-            satisfies=("advance_bounded_canary", "preserve_agent_safety"),
-            evidence_query="(: $prf (Acceptable install_threadkeeper_canary_on_protomegabot) $tv)",
-            evidence_atoms=(),
-            default_strength=0.70,
-            default_confidence=0.75,
-        ),
-        CandidateAction(
-            id="defer_until_more_synthetic_tests",
-            label="Defer for more synthetic tests",
-            description="Delay live canary work and run more synthetic-only checks.",
-            satisfies=("preserve_agent_safety",),
-            evidence_query="(: $prf (Acceptable defer_until_more_synthetic_tests) $tv)",
-            evidence_atoms=(),
-            default_strength=0.42,
-            default_confidence=0.60,
-        ),
-        CandidateAction(
-            id="ask_ben_again",
-            label="Ask Ben again",
-            description="Ask for approval again despite existing approval evidence.",
-            satisfies=(),
-            evidence_query="(: $prf (NotApplicable ask_ben_again) $tv)",
-            evidence_atoms=(),
-            default_strength=0.30,
-            default_confidence=0.70,
-        ),
-        CandidateAction(
-            id="remove_threadkeeper",
-            label="Remove ThreadKeeper",
-            description="Remove ThreadKeeper before a canary failure has occurred.",
-            satisfies=("preserve_agent_safety",),
-            evidence_query="(: $prf (NotApplicable remove_threadkeeper) $tv)",
-            evidence_atoms=(),
-            default_strength=0.28,
-            default_confidence=0.70,
-        ),
+
+    actions: list[Any] = []
+    if has_pr_reconciliation_evidence:
+        actions.append(
+            CandidateAction(
+                id="reconcile_threadkeeper_pr",
+                label="Reconcile ThreadKeeper PR",
+                description="Reconcile the pending ThreadKeeper PR before live canary installation.",
+                satisfies=("preserve_sequence_integrity", "advance_bounded_canary", "preserve_agent_safety"),
+                evidence_query="(: $prf (Requires ThreadKeeperPRReconciliation) $tv)",
+                evidence_atoms=(),
+                default_strength=0.85,
+                default_confidence=0.80,
+            )
+        )
+    actions.extend(
+        [
+            CandidateAction(
+                id="install_threadkeeper_canary_on_protomegabot",
+                label="Install ThreadKeeper canary on ProtomegaBot",
+                description="Run a supervised ThreadKeeper canary with rollback and stop conditions.",
+                satisfies=("advance_bounded_canary", "preserve_agent_safety"),
+                evidence_query="(: $prf (Acceptable install_threadkeeper_canary_on_protomegabot) $tv)",
+                evidence_atoms=(),
+                default_strength=0.70,
+                default_confidence=0.75,
+            ),
+            CandidateAction(
+                id="defer_until_more_synthetic_tests",
+                label="Defer for more synthetic tests",
+                description="Delay live canary work and run more synthetic-only checks.",
+                satisfies=("preserve_agent_safety",),
+                evidence_query="(: $prf (Acceptable defer_until_more_synthetic_tests) $tv)",
+                evidence_atoms=(),
+                default_strength=0.42,
+                default_confidence=0.60,
+            ),
+            CandidateAction(
+                id="ask_ben_again",
+                label="Ask Ben again",
+                description="Ask for approval again despite existing approval evidence.",
+                satisfies=(),
+                evidence_query="(: $prf (NotApplicable ask_ben_again) $tv)",
+                evidence_atoms=(),
+                default_strength=0.30,
+                default_confidence=0.70,
+            ),
+            CandidateAction(
+                id="remove_threadkeeper",
+                label="Remove ThreadKeeper",
+                description="Remove ThreadKeeper before a canary failure has occurred.",
+                satisfies=("preserve_agent_safety",),
+                evidence_query="(: $prf (NotApplicable remove_threadkeeper) $tv)",
+                evidence_atoms=(),
+                default_strength=0.28,
+                default_confidence=0.70,
+            ),
+        ]
     )
-    norms = (
-        Norm(
-            id="pr-before-canary",
-            mode="oblige",
-            target_action="reconcile_threadkeeper_pr",
-            priority=20,
-            reason="PR reconciliation is pending and should precede the live canary.",
-        ),
+
+    norms: list[Any] = []
+    if has_pr_reconciliation_evidence:
+        norms.append(
+            Norm(
+                id="pr-before-canary",
+                mode="oblige",
+                target_action="reconcile_threadkeeper_pr",
+                priority=20,
+                reason="PR reconciliation is pending and should precede the live canary.",
+            )
+        )
+    norms.append(
         Norm(
             id="approved-bounded-canary",
             mode="permit",
             target_action="install_threadkeeper_canary_on_protomegabot",
             priority=12,
             reason="Ben approved the canary and patham9/PLN admitted it under bounded-risk evidence.",
-        ),
+        )
     )
+
     notes = (
-        "Patham9/PLN admitted the canary acceptability branch, but the pending PR reconciliation remains the immediate ordering constraint.",
+        (
+            "Patham9/PLN admitted the canary acceptability branch, but the pending PR reconciliation remains the immediate ordering constraint."
+            if has_pr_reconciliation_evidence
+            else "Patham9/PLN admitted the canary acceptability branch; no PR-reconciliation requirement was present in this handoff."
+        ),
         "Guardrails required before the canary: rollback path, supervised log, stop conditions for runaway loops, persona/session corruption, private bridge activation, and queue-claim errors.",
         "Asking Ben again is held because approval evidence is already present; removing ThreadKeeper is held unless canary failure evidence appears.",
     )
     return GoalScenario(
         title="ThreadKeeper project-control canary decision",
-        goals=goals,
-        norms=norms,
-        actions=actions,
+        goals=tuple(goals),
+        norms=tuple(norms),
+        actions=tuple(actions),
         notes=notes,
     )
 

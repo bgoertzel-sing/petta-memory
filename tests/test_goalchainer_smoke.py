@@ -117,6 +117,52 @@ class GoalChainerSmokeTests(unittest.TestCase):
         self.assertTrue(probe["leak_check_safe"])
         self.assertTrue(smoke["checks"]["heuristic_with_memory_path_checked"])
 
+    def test_threadkeeper_canary_without_pr_requirement_is_not_forced_behind_default_pr_action(self):
+        repo = Path(__file__).resolve().parents[4] / "omegaclaw" / "repos" / "OmegaClaw-GoalChainer"
+        cache = {
+            "schema": "petta-memory-goalchainer-handoff-v1",
+            "cache_id": "threadkeeper-canary-only",
+            "items": [
+                {
+                    "goalchainer_slot": "acceptability-belief-evidence",
+                    "belief_id": "b-tk-canary-approved",
+                    "cluster_id": "mc-threadkeeper-canary",
+                    "promotion_event": "pe-tk-ben-approval",
+                    "promotion_domain": "project-control",
+                    "source_kind": "pettachainer-stv-statement",
+                    "atom": "(: b-tk-canary-approved (Acceptable install_threadkeeper_canary_on_protomegabot) (STV 0.88 0.75))",
+                    "boundary": "read-only evidence for appraisal; not a directive, task claim, or inferred belief",
+                }
+            ],
+        }
+        admitted = {
+            "schema": "petta-memory-patham9-pln-handoff-v1",
+            "items": [
+                {
+                    "term": "(Acceptable install_threadkeeper_canary_on_protomegabot)",
+                    "belief_id": "b-tk-canary-approved",
+                }
+            ],
+        }
+
+        smoke = run_goalchainer_precompiled_handoff_smoke(
+            cache,
+            goalchainer_repo=repo,
+            admitted_patham9_handoff=admitted,
+        )
+
+        payload = smoke["decision_payload"]
+        decisions = {item["action_id"]: item for item in payload["decisions"]}
+        self.assertNotIn("reconcile_threadkeeper_pr", decisions)
+        self.assertEqual(payload["decisions"][0]["action_id"], "install_threadkeeper_canary_on_protomegabot")
+        self.assertEqual(decisions["install_threadkeeper_canary_on_protomegabot"]["status"], "recommended")
+        self.assertTrue(
+            any(
+                "patham9/PLN admitted" in proof
+                for proof in decisions["install_threadkeeper_canary_on_protomegabot"]["evidence"]["proofs"]
+            )
+        )
+
     def test_non_live_goalchainer_smoke_wraps_decision_payload_with_provenance(self):
         calls = []
 
