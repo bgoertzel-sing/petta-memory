@@ -159,7 +159,21 @@ def run_petta_memory_goalchainer_live_bridge(
         raise ValidationError("GoalChainer gate returned non-list decisions; refusing live bridge output")
     if any(not isinstance(item, dict) for item in decisions):
         raise ValidationError("GoalChainer gate returned non-object decision entries; refusing live bridge output")
+    notes = decision_payload.get("notes", [])
+    if not isinstance(notes, list):
+        raise ValidationError("GoalChainer gate returned non-list notes; refusing live bridge output")
     recommended = next((item for item in decisions if item.get("status") == "recommended"), None)
+    if recommended is not None:
+        recommended_action = recommended.get("action_id")
+        if not isinstance(recommended_action, str) or not recommended_action:
+            raise ValidationError(
+                "GoalChainer gate returned recommended decision without non-empty string action_id; "
+                "refusing live bridge output"
+            )
+        recommended_status = recommended.get("status")
+    else:
+        recommended_action = None
+        recommended_status = None
     return {
         "schema": "petta-memory-goalchainer-live-bridge-v1",
         "mode": "read-only-live-journal-to-local-goalchainer",
@@ -185,10 +199,10 @@ def run_petta_memory_goalchainer_live_bridge(
         "goalchainer_gate": {
             "schema": goalchainer_schema,
             "mode": goalchainer_mode,
-            "recommended_action": recommended.get("action_id") if isinstance(recommended, dict) else None,
-            "recommended_status": recommended.get("status") if isinstance(recommended, dict) else None,
+            "recommended_action": recommended_action,
+            "recommended_status": recommended_status,
             "decisions": decisions,
-            "notes": decision_payload.get("notes", []),
+            "notes": notes,
             "heuristic_memory_probe": goalchainer_result.get("heuristic_memory_probe"),
             "checks": checks,
             "boundary": goalchainer_boundary,
