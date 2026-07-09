@@ -305,7 +305,7 @@ def _run_patham9_program(
     timeout_sec: float,
     filename: str,
 ) -> tuple[int, str, str]:
-    repo = Path(pln_repo)
+    repo = Path(pln_repo).resolve()
     if env_script is None:
         env_script = repo.parents[1] / "local" / "pettachainer-env.sh"
     env_path = Path(env_script)

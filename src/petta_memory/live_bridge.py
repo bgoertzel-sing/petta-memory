@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .goalchainer_smoke import DEFAULT_GOALCHAINER_REPO, DEFAULT_REQUEST, run_goalchainer_precompiled_handoff_smoke
-from .patham9_pln import patham9_pln_handoff_sentences, ranked_inference_control_plan, ranked_plan_admitted_handoff
+from .patham9_pln import (
+    patham9_pln_handoff_sentences,
+    ranked_inference_control_plan,
+    ranked_plan_admitted_handoff,
+    run_patham9_pln_multi_sentence_derivation_smoke,
+)
 from .store import MediumMemoryStore, ValidationError
+
+
+DEFAULT_PLN_REPO = Path(__file__).resolve().parents[3] / "patham9-pln"
 
 
 def run_petta_memory_goalchainer_live_bridge(
@@ -20,6 +28,10 @@ def run_petta_memory_goalchainer_live_bridge(
     min_estimated_probability: float = 0.0,
     require_query_relevance: bool = False,
     include_heuristic_memory_probe: bool = True,
+    include_patham9_runtime: bool = False,
+    pln_repo: str | Path = DEFAULT_PLN_REPO,
+    patham9_timeout_sec: float = 30.0,
+    patham9_runner: Callable[..., dict[str, Any]] = run_patham9_pln_multi_sentence_derivation_smoke,
 ) -> dict[str, Any]:
     """Run the first read-only live bridge from a journal into GoalChainer.
 
@@ -48,6 +60,36 @@ def run_petta_memory_goalchainer_live_bridge(
         require_query_relevance=require_query_relevance,
     )
     admitted = ranked_plan_admitted_handoff(patham9_handoff, ranked_plan)
+    patham9_runtime_gate: dict[str, Any]
+    if include_patham9_runtime:
+        admitted_handoff = admitted["admitted_handoff"]
+        if admitted_handoff["item_count"] <= 0:
+            raise ValidationError("patham9 runtime gate needs at least one admitted handoff item")
+        patham9_runtime_result = patham9_runner(
+            admitted_handoff,
+            pln_repo=pln_repo,
+            timeout_sec=patham9_timeout_sec,
+        )
+        patham9_runtime_gate = {
+            "enabled": True,
+            "schema": patham9_runtime_result.get("schema"),
+            "status": patham9_runtime_result.get("status"),
+            "returncode": patham9_runtime_result.get("returncode"),
+            "semantic_markers": patham9_runtime_result.get("semantic_markers"),
+            "program_schema": patham9_runtime_result.get("program", {}).get("schema")
+            if isinstance(patham9_runtime_result.get("program"), dict)
+            else None,
+            "boundary": (
+                "bounded local patham9/PLN runtime over the admitted handoff; no PeTTaChainer compileadd; "
+                "no memory append; no inferred-belief promotion; no OmegaClaw skill or task/directive claim"
+            ),
+        }
+    else:
+        patham9_runtime_gate = {
+            "enabled": False,
+            "status": "skipped",
+            "boundary": "patham9/PLN runtime gate skipped by caller; ranked/admitted pi-PLN handoff still built",
+        }
     goalchainer_result = run_goalchainer_precompiled_handoff_smoke(
         goalchainer_cache,
         goalchainer_repo=goalchainer_repo,
@@ -79,6 +121,7 @@ def run_petta_memory_goalchainer_live_bridge(
             "admitted_item_count": admitted["admitted_handoff"]["item_count"],
             "boundary": admitted["boundary"],
         },
+        "patham9_runtime_gate": patham9_runtime_gate,
         "goalchainer_gate": {
             "schema": goalchainer_result["schema"],
             "mode": goalchainer_result["mode"],
@@ -93,6 +136,9 @@ def run_petta_memory_goalchainer_live_bridge(
             "promoted_memory_evidence_present": goalchainer_cache["item_count"] > 0,
             "ranked_plan_built": ranked_plan["candidate_count"] > 0,
             "admitted_handoff_built": admitted["admitted_handoff"]["item_count"] == ranked_plan["recommended_count"],
+            "patham9_runtime_passed_or_skipped": (
+                (not include_patham9_runtime) or patham9_runtime_gate.get("status") == "passed"
+            ),
             "goalchainer_recommended_action_present": isinstance(recommended, dict),
             "no_omegaclaw_skill_loaded": True,
             "no_task_or_directive_claim": True,

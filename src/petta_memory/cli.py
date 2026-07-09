@@ -331,6 +331,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     live_bridge.add_argument("--cache-id", default="petta-memory-goalchainer-live-bridge")
     live_bridge.add_argument("--goalchainer-repo", help="Path to local OmegaClaw-GoalChainer checkout")
+    live_bridge.add_argument("--pln-repo", default="../patham9-pln", help="Path to local patham9/PLN checkout")
     live_bridge.add_argument("--request", help="Incident/request text for GoalChainer appraisal")
     live_bridge.add_argument("--query-target", default="", help="Optional pi-PLN ranked-plan query target")
     live_bridge.add_argument("--max-branches", type=int, default=20)
@@ -342,6 +343,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip GoalChainer solve_incident(memory_items=...) and use only the precompiled decision gate",
     )
+    live_bridge.add_argument(
+        "--run-patham9-runtime",
+        action="store_true",
+        help="Also run a bounded patham9/PLN derivation smoke over the admitted pi-PLN handoff",
+    )
+    live_bridge.add_argument("--patham9-timeout-sec", type=float, default=30.0)
 
     audit = sub.add_parser("audit-view", help="Print bounded complete MemoryCluster records for audit")
     audit.add_argument("--limit-chars", type=int, default=20000)
@@ -663,6 +670,9 @@ def main(argv: list[str] | None = None) -> int:
                 "min_estimated_probability": args.min_estimated_probability,
                 "require_query_relevance": args.require_query_relevance,
                 "include_heuristic_memory_probe": not args.skip_heuristic_memory_probe,
+                "include_patham9_runtime": args.run_patham9_runtime,
+                "pln_repo": args.pln_repo,
+                "patham9_timeout_sec": args.patham9_timeout_sec,
             }
             if args.goalchainer_repo:
                 kwargs["goalchainer_repo"] = args.goalchainer_repo
