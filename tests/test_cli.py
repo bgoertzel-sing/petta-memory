@@ -116,6 +116,48 @@ class CliTests(unittest.TestCase):
             self.assertIn("(Sentence (Requires MediumPeTTaMemory CLI) (stv 0.80 0.60)", pln_cache["items"][0]["atom"])
             self.assertEqual(pln_cache["items"][0]["pi_pln_extension"]["contextual_evidence_packets"][0]["support"], "3.0")
 
+            ranked_plan = self.run_cli([
+                "--store",
+                store,
+                "pi-pln-ranked-plan",
+                "--query-target",
+                "MediumPeTTaMemory",
+                "--require-query-relevance",
+                "--controller-min-strength",
+                "0.5",
+                "--controller-min-confidence",
+                "0.5",
+                "--seed",
+                "7",
+            ])
+            self.assertEqual(ranked_plan.returncode, 0, ranked_plan.stderr)
+            plan = json.loads(ranked_plan.stdout)
+            self.assertEqual(plan["schema"], "petta-memory-pi-pln-ranked-inference-control-plan-v1")
+            self.assertEqual(plan["recommended_count"], 1)
+            self.assertEqual(plan["recommended_branches"][0]["belief_id"], "b1")
+            self.assertIn("no PLN.Query/PLN.Derive call", plan["boundary"])
+
+            admitted = self.run_cli([
+                "--store",
+                store,
+                "pi-pln-admitted-handoff",
+                "--query-target",
+                "MediumPeTTaMemory",
+                "--require-query-relevance",
+                "--controller-min-strength",
+                "0.5",
+                "--controller-min-confidence",
+                "0.5",
+                "--seed",
+                "7",
+            ])
+            self.assertEqual(admitted.returncode, 0, admitted.stderr)
+            admitted_payload = json.loads(admitted.stdout)
+            self.assertEqual(admitted_payload["schema"], "petta-memory-pi-pln-admitted-handoff-v1")
+            self.assertEqual(admitted_payload["admitted_count"], 1)
+            self.assertEqual(admitted_payload["admitted_handoff"]["items"][0]["belief_id"], "b1")
+            self.assertIn("no PLN.Query/PLN.Derive call", admitted_payload["boundary"])
+
     def test_audit_view_preserves_complete_records_and_rejects_negative_limit(self):
         with tempfile.TemporaryDirectory() as td:
             store = str(Path(td) / "medium_memory.metta")

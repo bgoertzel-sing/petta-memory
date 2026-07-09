@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -29,6 +30,8 @@ from petta_memory.patham9_pln import (
     patham9_pln_query_smoke_program,
     pln_estimator_wrapper,
     probabilistic_inference_filter,
+    ranked_inference_control_plan,
+    ranked_plan_admitted_handoff,
     run_meta_learning_benchmark,
     summarize_smoke_results,
     summarize_smoke_results_file,
@@ -2855,6 +2858,552 @@ class StoreRoundTripPlnEstimatorTests(unittest.TestCase):
         self.assertAlmostEqual(ed["beta"], 3.0)
 
 
+class RankedInferenceControlPlanTests(unittest.TestCase):
+    """Tests for the estimator + continuation-controller branch plan gate."""
+
+    def _make_handoff(self) -> dict[str, Any]:
+        return {
+            "schema": "petta-memory-patham9-pln-handoff-v1",
+            "item_count": 2,
+            "items": [
+                {
+                    "belief_id": "b-plan-good",
+                    "term": "(Acceptable publish_redacted_summary)",
+                    "stv": {"strength": 0.92, "confidence": 0.82},
+                    "promotion_domain": "reasoning",
+                    "promotion_rule": "explicit-plan-test",
+                    "pi_pln_extension": {
+                        "contextual_evidence_packets": [
+                            {"ec": {"support": 9, "opposition": 1}, "domain": "reasoning"}
+                        ]
+                    },
+                },
+                {
+                    "belief_id": "b-plan-weak",
+                    "term": "(Acceptable speculative_action)",
+                    "stv": {"strength": 0.45, "confidence": 0.35},
+                    "promotion_domain": "reasoning",
+                    "promotion_rule": "explicit-plan-test",
+                    "pi_pln_extension": {
+                        "contextual_evidence_packets": [
+                            {"ec": {"support": 2, "opposition": 8}, "domain": "reasoning"}
+                        ]
+                    },
+                },
+            ],
+        }
+
+    def test_schema_and_boundary(self):
+        result = ranked_inference_control_plan(self._make_handoff(), seed=7)
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-ranked-inference-control-plan-v1")
+        self.assertEqual(result["mode"], "design-specification-no-runtime")
+        self.assertIn("no PLN.Query/PLN.Derive call", result["boundary"])
+
+    def test_recommends_estimated_branch_that_passes_controller(self):
+        result = ranked_inference_control_plan(
+            self._make_handoff(),
+            seed=7,
+            controller_min_strength=0.7,
+            controller_min_confidence=0.7,
+            controller_ec_ratio_threshold=0.6,
+            min_estimated_probability=0.3,
+        )
+        recommended_ids = {branch["belief_id"] for branch in result["recommended_branches"]}
+        self.assertIn("b-plan-good", recommended_ids)
+        self.assertEqual(result["recommended_count"], 1)
+
+    def test_holds_low_quality_branch_with_controller_reason(self):
+        result = ranked_inference_control_plan(
+            self._make_handoff(),
+            seed=7,
+            controller_min_strength=0.7,
+            controller_min_confidence=0.7,
+            controller_ec_ratio_threshold=0.6,
+        )
+        held = {branch["belief_id"]: branch for branch in result["held_branches"]}
+        self.assertIn("b-plan-weak", held)
+        self.assertIn("controller_decision_reject", held["b-plan-weak"]["hold_reasons"])
+        self.assertEqual(held["b-plan-weak"]["controller_decision"], "reject")
+
+    def test_query_relevance_gate_can_hold_irrelevant_candidates(self):
+        result = ranked_inference_control_plan(
+            self._make_handoff(),
+            query_target="publish_redacted_summary",
+            require_query_relevance=True,
+            seed=7,
+        )
+        held = {branch["belief_id"]: branch for branch in result["held_branches"]}
+        self.assertIn("b-plan-weak", held)
+        self.assertIn("query_target_not_relevant", held["b-plan-weak"]["hold_reasons"])
+
+    def test_rejects_invalid_probability_threshold(self):
+        with self.assertRaises(ValueError):
+            ranked_inference_control_plan(self._make_handoff(), min_estimated_probability=1.2)
+
+    def test_ranked_plan_rejects_non_list_handoff_items(self):
+        handoff = self._make_handoff()
+        handoff["items"] = {"not": "a list"}
+
+        with self.assertRaisesRegex(ValueError, "handoff items must be a list"):
+            ranked_inference_control_plan(handoff, seed=7)
+
+    def test_ranked_plan_rejects_item_count_drift(self):
+        handoff = self._make_handoff()
+        handoff["item_count"] = 99
+
+        with self.assertRaisesRegex(ValueError, "item_count .* does not match"):
+            ranked_inference_control_plan(handoff, seed=7)
+
+    def test_ranked_plan_rejects_bool_item_count_metadata(self):
+        handoff = self._make_handoff()
+        handoff["item_count"] = True
+
+        with self.assertRaisesRegex(ValueError, "item_count must be an integer"):
+            ranked_inference_control_plan(handoff, seed=7)
+
+    def test_ranked_plan_rejects_non_object_handoff_item_before_wrapper_calls(self):
+        handoff = self._make_handoff()
+        handoff["items"][0] = ["not", "an", "item"]
+
+        with self.assertRaisesRegex(ValueError, "handoff item .* must be an object"):
+            ranked_inference_control_plan(handoff, seed=7)
+
+    def test_admitted_handoff_contains_only_recommended_branches(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(
+            handoff,
+            seed=7,
+            controller_min_strength=0.7,
+            controller_min_confidence=0.7,
+            controller_ec_ratio_threshold=0.6,
+        )
+
+        admitted = ranked_plan_admitted_handoff(handoff, plan)
+
+        self.assertEqual(admitted["schema"], "petta-memory-pi-pln-admitted-handoff-v1")
+        self.assertEqual(admitted["admitted_count"], 1)
+        self.assertEqual(admitted["admitted_handoff"]["schema"], "petta-memory-patham9-pln-handoff-v1")
+        self.assertEqual(admitted["admitted_handoff"]["item_count"], 1)
+        self.assertEqual(admitted["admitted_handoff"]["items"][0]["belief_id"], "b-plan-good")
+        self.assertEqual(admitted["admission_records"][0]["term"], "(Acceptable publish_redacted_summary)")
+        self.assertEqual(admitted["admission_records"][0]["controller_decision"], "continue")
+        self.assertIn("no PLN.Query/PLN.Derive call", admitted["boundary"])
+
+    def test_admitted_handoff_can_feed_existing_derivation_program_builder(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(
+            handoff,
+            seed=7,
+            query_target="publish_redacted_summary",
+            require_query_relevance=True,
+        )
+        admitted = ranked_plan_admitted_handoff(handoff, plan)
+
+        program = patham9_pln_multi_sentence_derivation_smoke_program(admitted["admitted_handoff"])
+
+        self.assertEqual(program["handoff_sentence_count"], 1)
+        self.assertEqual(program["stamp_sidecar"]["(0)"]["term"], "(Acceptable publish_redacted_summary)")
+        self.assertNotIn("speculative_action", program["program"])
+
+    def test_admitted_handoff_rejects_stale_plan_item_mismatch(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(handoff, seed=7)
+        stale = json.loads(json.dumps(handoff))
+        stale["items"][plan["recommended_branches"][0]["item_index"]]["belief_id"] = "other-belief"
+
+        with self.assertRaisesRegex(ValueError, "belief_id .* does not match"):
+            ranked_plan_admitted_handoff(stale, plan)
+
+    def test_admitted_handoff_rejects_stale_plan_term_mismatch(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(handoff, seed=7)
+        stale = json.loads(json.dumps(handoff))
+        stale["items"][plan["recommended_branches"][0]["item_index"]]["term"] = "(Acceptable different_action)"
+
+        with self.assertRaisesRegex(ValueError, "term .* does not match"):
+            ranked_plan_admitted_handoff(stale, plan)
+
+    def test_admitted_handoff_rejects_duplicate_recommended_branch_item(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(handoff, seed=7)
+        duplicate = json.loads(json.dumps(plan))
+        duplicate["recommended_branches"].append(json.loads(json.dumps(duplicate["recommended_branches"][0])))
+        duplicate["recommended_count"] = len(duplicate["recommended_branches"])
+
+        with self.assertRaisesRegex(ValueError, "duplicate rank"):
+            ranked_plan_admitted_handoff(handoff, duplicate)
+
+        duplicate = json.loads(json.dumps(plan))
+        repeated_item = json.loads(json.dumps(duplicate["recommended_branches"][0]))
+        repeated_item["rank"] = repeated_item["rank"] + 100
+        duplicate["recommended_branches"].append(repeated_item)
+        duplicate["recommended_count"] = len(duplicate["recommended_branches"])
+
+        with self.assertRaisesRegex(ValueError, "duplicate handoff item"):
+            ranked_plan_admitted_handoff(handoff, duplicate)
+
+    def test_admitted_handoff_rejects_non_recommended_branch_in_recommended_list(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(handoff, seed=7)
+        malformed = json.loads(json.dumps(plan))
+        malformed["recommended_branches"][0]["status"] = "held"
+
+        with self.assertRaisesRegex(ValueError, "non-recommended branch status"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_recommended_count_mismatch(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(handoff, seed=7)
+        malformed = json.loads(json.dumps(plan))
+        malformed["recommended_count"] = malformed["recommended_count"] + 1
+
+        with self.assertRaisesRegex(ValueError, "recommended_count .* does not match"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_branch_plan_mirror_mismatch(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(handoff, seed=7)
+        malformed = json.loads(json.dumps(plan))
+        recommended = malformed["recommended_branches"][0]
+        for branch in malformed["branch_plan"]:
+            if branch["rank"] == recommended["rank"] and branch["item_index"] == recommended["item_index"]:
+                branch["status"] = "held"
+                break
+
+        with self.assertRaisesRegex(ValueError, "branch_plan recommended status count"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_candidate_count_mismatch(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(handoff, seed=7)
+        malformed = json.loads(json.dumps(plan))
+        malformed["candidate_count"] = malformed["candidate_count"] + 1
+
+        with self.assertRaisesRegex(ValueError, "candidate_count .* does not match branch_plan length"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_bool_count_metadata(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(handoff, seed=7)
+        malformed = json.loads(json.dumps(plan))
+        malformed["recommended_count"] = True
+
+        with self.assertRaisesRegex(ValueError, "recommended_count must be an integer"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_bool_branch_rank(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(handoff, seed=7)
+        malformed = json.loads(json.dumps(plan))
+        malformed["recommended_branches"][0]["rank"] = True
+
+        with self.assertRaisesRegex(ValueError, "recommended branch has invalid rank True"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_input_count_mismatch(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(handoff, seed=7)
+        malformed = json.loads(json.dumps(plan))
+        malformed["input_count"] = malformed["input_count"] + 1
+
+        with self.assertRaisesRegex(ValueError, "input_count .* does not match handoff items length"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_stale_held_branch_source_mismatch(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(
+            handoff,
+            seed=7,
+            controller_min_strength=0.7,
+            controller_min_confidence=0.7,
+            controller_ec_ratio_threshold=0.6,
+        )
+        stale = json.loads(json.dumps(handoff))
+        held_item_index = plan["held_branches"][0]["item_index"]
+        stale["items"][held_item_index]["term"] = "(Acceptable changed_held_source)"
+
+        with self.assertRaisesRegex(ValueError, "branch_plan branch term .* does not match handoff item"):
+            ranked_plan_admitted_handoff(stale, plan)
+
+    def test_admitted_handoff_rejects_branch_plan_missing_source_item(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(handoff, seed=7)
+        malformed = json.loads(json.dumps(plan))
+        malformed["branch_plan"][0]["item_index"] = len(handoff["items"]) + 10
+
+        with self.assertRaisesRegex(ValueError, "branch_plan branch references missing handoff item"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_duplicate_branch_plan_key(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(handoff, seed=7)
+        malformed = json.loads(json.dumps(plan))
+        malformed["branch_plan"].append(json.loads(json.dumps(malformed["branch_plan"][0])))
+        malformed["candidate_count"] = len(malformed["branch_plan"])
+
+        with self.assertRaisesRegex(ValueError, "duplicate rank"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_duplicate_branch_plan_rank_with_different_item(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(
+            handoff,
+            seed=7,
+            controller_min_strength=0.7,
+            controller_min_confidence=0.7,
+            controller_ec_ratio_threshold=0.6,
+        )
+        malformed = json.loads(json.dumps(plan))
+        recommended_rank = malformed["recommended_branches"][0]["rank"]
+        held = malformed["held_branches"][0]
+        held["rank"] = recommended_rank
+        for branch in malformed["branch_plan"]:
+            if branch["status"] == "held":
+                branch["rank"] = recommended_rank
+                break
+
+        with self.assertRaisesRegex(ValueError, "branch_plan contains duplicate rank"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_duplicate_branch_plan_item_with_different_rank(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(
+            handoff,
+            seed=7,
+            controller_min_strength=0.7,
+            controller_min_confidence=0.7,
+            controller_ec_ratio_threshold=0.6,
+        )
+        malformed = json.loads(json.dumps(plan))
+        held = malformed["held_branches"][0]
+        recommended_item = malformed["recommended_branches"][0]["item_index"]
+        held["item_index"] = recommended_item
+        held["belief_id"] = handoff["items"][recommended_item]["belief_id"]
+        held["term"] = handoff["items"][recommended_item]["term"]
+        for branch in malformed["branch_plan"]:
+            if branch["status"] == "held":
+                branch["item_index"] = recommended_item
+                branch["belief_id"] = handoff["items"][recommended_item]["belief_id"]
+                branch["term"] = handoff["items"][recommended_item]["term"]
+                break
+
+        with self.assertRaisesRegex(ValueError, "branch_plan contains duplicate handoff item"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_non_contiguous_branch_plan_ranks(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(
+            handoff,
+            seed=7,
+            controller_min_strength=0.7,
+            controller_min_confidence=0.7,
+            controller_ec_ratio_threshold=0.6,
+        )
+        malformed = json.loads(json.dumps(plan))
+        for partition in ("recommended_branches", "held_branches", "branch_plan"):
+            malformed[partition][0]["rank"] = 10
+
+        with self.assertRaisesRegex(ValueError, "branch_plan ranks .* do not match contiguous ranks"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_held_branch_duplicate_through_branch_plan_item(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(
+            handoff,
+            seed=7,
+            controller_min_strength=0.7,
+            controller_min_confidence=0.7,
+            controller_ec_ratio_threshold=0.6,
+        )
+        malformed = json.loads(json.dumps(plan))
+        malformed["held_branches"].append(json.loads(json.dumps(malformed["held_branches"][0])))
+        malformed["held_count"] = len(malformed["held_branches"])
+        extra_plan_record = json.loads(json.dumps(malformed["branch_plan"][0]))
+        extra_plan_record["status"] = "held"
+        extra_plan_record["rank"] = 999
+        malformed["branch_plan"].append(extra_plan_record)
+        malformed["candidate_count"] = len(malformed["branch_plan"])
+
+        with self.assertRaisesRegex(ValueError, "branch_plan contains duplicate handoff item"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_branch_plan_status_partition_mismatch(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(
+            handoff,
+            seed=7,
+            controller_min_strength=0.7,
+            controller_min_confidence=0.7,
+            controller_ec_ratio_threshold=0.6,
+        )
+        malformed = json.loads(json.dumps(plan))
+        for branch in malformed["branch_plan"]:
+            if branch["status"] == "held":
+                branch["status"] = "deferred"
+                break
+
+        with self.assertRaisesRegex(ValueError, "branch_plan branch has invalid status"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_extra_branch_plan_status_outside_partition(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(handoff, seed=7)
+        malformed = json.loads(json.dumps(plan))
+        extra = json.loads(json.dumps(malformed["branch_plan"][0]))
+        extra["rank"] = 999
+        extra["item_index"] = 999
+        extra["status"] = "deferred"
+        malformed["branch_plan"].append(extra)
+        malformed["candidate_count"] = len(malformed["branch_plan"])
+
+        with self.assertRaisesRegex(ValueError, "branch_plan branch has invalid status"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_malformed_branch_plan_key_fields(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(handoff, seed=7)
+
+        malformed = json.loads(json.dumps(plan))
+        malformed["branch_plan"][0]["rank"] = "rank-one"
+        with self.assertRaisesRegex(ValueError, "branch_plan branch has invalid rank"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+        malformed = json.loads(json.dumps(plan))
+        malformed["branch_plan"][0]["item_index"] = "item-zero"
+        with self.assertRaisesRegex(ValueError, "branch_plan branch has invalid item_index"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_non_list_partitions_before_iteration(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(handoff, seed=7)
+
+        malformed = json.loads(json.dumps(plan))
+        malformed["recommended_branches"] = {"rank": 1}
+        with self.assertRaisesRegex(ValueError, "recommended_branches must be a list"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+        malformed = json.loads(json.dumps(plan))
+        malformed["held_branches"] = {"rank": 2}
+        with self.assertRaisesRegex(ValueError, "held_branches must be a list"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+        malformed = json.loads(json.dumps(plan))
+        malformed["branch_plan"] = {"rank": 1}
+        with self.assertRaisesRegex(ValueError, "branch_plan must be a list"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_non_list_handoff_items_before_len_mirror(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(handoff, seed=7)
+        malformed_handoff = json.loads(json.dumps(handoff))
+        malformed_handoff["items"] = {"0": malformed_handoff["items"][0]}
+
+        with self.assertRaisesRegex(ValueError, "handoff items must be a list"):
+            ranked_plan_admitted_handoff(malformed_handoff, plan)
+
+    def test_admitted_handoff_rejects_handoff_item_count_drift_before_plan_mirror(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(handoff, seed=7)
+        malformed_handoff = json.loads(json.dumps(handoff))
+        malformed_handoff["item_count"] = 999
+
+        with self.assertRaisesRegex(ValueError, "item_count .* does not match"):
+            ranked_plan_admitted_handoff(malformed_handoff, plan)
+
+    def test_admitted_handoff_rejects_non_object_handoff_item_before_source_mirror(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(handoff, seed=7)
+        malformed_handoff = json.loads(json.dumps(handoff))
+        malformed_handoff["items"][plan["branch_plan"][0]["item_index"]] = ["not", "an", "item"]
+
+        with self.assertRaisesRegex(ValueError, "handoff item .* must be an object"):
+            ranked_plan_admitted_handoff(malformed_handoff, plan)
+
+    def test_admitted_handoff_rejects_non_object_partition_entries_before_field_access(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(
+            handoff,
+            seed=7,
+            controller_min_strength=0.7,
+            controller_min_confidence=0.7,
+            controller_ec_ratio_threshold=0.6,
+        )
+
+        malformed = json.loads(json.dumps(plan))
+        malformed["recommended_branches"][0] = ["rank", 1]
+        with self.assertRaisesRegex(ValueError, "recommended_branches entry must be an object"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+        malformed = json.loads(json.dumps(plan))
+        malformed["held_branches"][0] = ["rank", 2]
+        with self.assertRaisesRegex(ValueError, "held_branches entry must be an object"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+        malformed = json.loads(json.dumps(plan))
+        malformed["branch_plan"][0] = ["rank", 1]
+        with self.assertRaisesRegex(ValueError, "branch_plan entry must be an object"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_non_held_branch_in_held_list(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(
+            handoff,
+            seed=7,
+            controller_min_strength=0.7,
+            controller_min_confidence=0.7,
+            controller_ec_ratio_threshold=0.6,
+        )
+        malformed = json.loads(json.dumps(plan))
+        malformed["held_branches"][0]["status"] = "recommended"
+
+        with self.assertRaisesRegex(ValueError, "held_branches contains non-held branch status"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_held_branch_plan_mirror_mismatch(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(
+            handoff,
+            seed=7,
+            controller_min_strength=0.7,
+            controller_min_confidence=0.7,
+            controller_ec_ratio_threshold=0.6,
+        )
+        malformed = json.loads(json.dumps(plan))
+        held = malformed["held_branches"][0]
+        for branch in malformed["branch_plan"]:
+            if branch["rank"] == held["rank"] and branch["item_index"] == held["item_index"]:
+                branch["term"] = "(Acceptable mismatched_held_branch)"
+                break
+
+        with self.assertRaisesRegex(ValueError, "branch_plan branch term .* does not match handoff item"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_recommended_audit_field_mirror_mismatch(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(handoff, seed=7)
+        malformed = json.loads(json.dumps(plan))
+        recommended = malformed["recommended_branches"][0]
+        recommended["estimated_probability"] = 0.001
+
+        with self.assertRaisesRegex(ValueError, "recommended branch estimated_probability .* does not match branch_plan"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_held_audit_field_mirror_mismatch(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(
+            handoff,
+            seed=7,
+            controller_min_strength=0.7,
+            controller_min_confidence=0.7,
+            controller_ec_ratio_threshold=0.6,
+        )
+        malformed = json.loads(json.dumps(plan))
+        malformed["held_branches"][0]["hold_reasons"] = ["edited-after-review"]
+
+        with self.assertRaisesRegex(ValueError, "held branch hold_reasons .* does not match branch_plan"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+
 class ControllerAsChainerTests(unittest.TestCase):
     """Unit tests for the controller_as_chainer inference-control mechanism."""
 
@@ -3576,6 +4125,32 @@ class StoreRoundTripUnifiedInferenceControlTests(unittest.TestCase):
         self.assertGreater(result["controller_confirmation_count"], 0)
         # The low-confidence belief (0.45/0.30) should be rejected by controller
         self.assertGreater(result["controller_rejection_count"], 0)
+
+    def test_unified_ranked_plan_gates_before_live_derive(self):
+        """Integration gate: estimator ranking + continuation controller before PLN.Derive."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store_with_four_beliefs(td)
+            handoff = self._make_handoff(store)
+
+        result = ranked_inference_control_plan(
+            handoff,
+            query_target="MemoryTarget0",
+            require_query_relevance=True,
+            controller_min_strength=0.50,
+            controller_min_confidence=0.40,
+            controller_ec_ratio_threshold=0.30,
+            seed=42,
+        )
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-ranked-inference-control-plan-v1")
+        self.assertIn("no PLN.Query/PLN.Derive call", result["boundary"])
+        recommended_ids = {branch["belief_id"] for branch in result["recommended_branches"]}
+        self.assertEqual(recommended_ids, {"b-uni-a"})
+        held_reasons = {
+            branch["belief_id"]: " ".join(branch["hold_reasons"])
+            for branch in result["held_branches"]
+        }
+        self.assertIn("query_target_not_relevant", held_reasons["b-uni-d"])
+        self.assertIn("controller_decision_reject", held_reasons["b-uni-b"])
 
     def test_unified_all_patterns_preserve_provenance(self):
         """All 8 patterns preserve belief_id and cluster_id provenance from the store."""

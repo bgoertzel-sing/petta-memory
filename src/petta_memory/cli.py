@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 
 from .goalchainer_smoke import run_goalchainer_handoff_smoke, run_goalchainer_precompiled_handoff_smoke
+from .live_bridge import run_petta_memory_goalchainer_live_bridge
 from .patham9_pln import (
     chained_inference_pipeline,
     continuation_predicate_wrapper,
@@ -16,6 +17,8 @@ from .patham9_pln import (
     patham9_pln_handoff_sentences,
     pln_estimator_wrapper,
     probabilistic_inference_filter,
+    ranked_inference_control_plan,
+    ranked_plan_admitted_handoff,
     run_meta_learning_benchmark,
     run_patham9_pln_derivation_smoke,
     run_patham9_pln_derivation_ec_projection_smoke,
@@ -236,6 +239,50 @@ def build_parser() -> argparse.ArgumentParser:
     pln_estimator.add_argument("--max-branches", type=int, default=20, help="Maximum EDCall records to return")
     pln_estimator.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility")
 
+    ranked_plan = sub.add_parser(
+        "pi-pln-ranked-plan",
+        help="Build a non-live ranked inference-control plan before any PLN.Derive call",
+    )
+    ranked_plan.add_argument("--cache-id", default="petta-memory-pi-pln-ranked-plan")
+    ranked_plan.add_argument("--query-target", default="", help="Query target term for relevance gating")
+    ranked_plan.add_argument("--estimator-min-strength", type=float, default=0.0, help="Minimum STV strength for estimator eligibility")
+    ranked_plan.add_argument("--estimator-min-confidence", type=float, default=0.0, help="Minimum STV confidence for estimator eligibility")
+    ranked_plan.add_argument("--estimator-domain", help="Required promotion domain for estimator eligibility")
+    ranked_plan.add_argument("--estimator-ec-ratio-threshold", type=float, default=0.0, help="Minimum EC support ratio for estimator eligibility")
+    ranked_plan.add_argument("--estimator-promotion-rule", help="Required promotion rule for estimator eligibility")
+    ranked_plan.add_argument("--exploration-weight", type=float, default=1.0, help="Temperature for Thompson sampling (higher = more exploration)")
+    ranked_plan.add_argument("--max-branches", type=int, default=20, help="Maximum EDCall records to rank")
+    ranked_plan.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility")
+    ranked_plan.add_argument("--controller-min-strength", type=float, default=0.0, help="Minimum STV strength for controller continuation")
+    ranked_plan.add_argument("--controller-min-confidence", type=float, default=0.0, help="Minimum STV confidence for controller continuation")
+    ranked_plan.add_argument("--controller-domain", help="Required promotion domain for controller continuation")
+    ranked_plan.add_argument("--controller-ec-ratio-threshold", type=float, default=0.0, help="Minimum EC support ratio for controller continuation")
+    ranked_plan.add_argument("--controller-promotion-rule", help="Required promotion rule for controller continuation")
+    ranked_plan.add_argument("--min-estimated-probability", type=float, default=0.0, help="Hold branches below this estimator probability")
+    ranked_plan.add_argument("--require-query-relevance", action="store_true", help="Hold branches not relevant to --query-target")
+
+    admitted_handoff = sub.add_parser(
+        "pi-pln-admitted-handoff",
+        help="Build the ranked-plan-admitted handoff subset for a future reviewed PLN.Derive gate",
+    )
+    admitted_handoff.add_argument("--cache-id", default="petta-memory-pi-pln-admitted-handoff")
+    admitted_handoff.add_argument("--query-target", default="", help="Query target term for relevance gating")
+    admitted_handoff.add_argument("--estimator-min-strength", type=float, default=0.0, help="Minimum STV strength for estimator eligibility")
+    admitted_handoff.add_argument("--estimator-min-confidence", type=float, default=0.0, help="Minimum STV confidence for estimator eligibility")
+    admitted_handoff.add_argument("--estimator-domain", help="Required promotion domain for estimator eligibility")
+    admitted_handoff.add_argument("--estimator-ec-ratio-threshold", type=float, default=0.0, help="Minimum EC support ratio for estimator eligibility")
+    admitted_handoff.add_argument("--estimator-promotion-rule", help="Required promotion rule for estimator eligibility")
+    admitted_handoff.add_argument("--exploration-weight", type=float, default=1.0, help="Temperature for Thompson sampling (higher = more exploration)")
+    admitted_handoff.add_argument("--max-branches", type=int, default=20, help="Maximum EDCall records to rank")
+    admitted_handoff.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility")
+    admitted_handoff.add_argument("--controller-min-strength", type=float, default=0.0, help="Minimum STV strength for controller continuation")
+    admitted_handoff.add_argument("--controller-min-confidence", type=float, default=0.0, help="Minimum STV confidence for controller continuation")
+    admitted_handoff.add_argument("--controller-domain", help="Required promotion domain for controller continuation")
+    admitted_handoff.add_argument("--controller-ec-ratio-threshold", type=float, default=0.0, help="Minimum EC support ratio for controller continuation")
+    admitted_handoff.add_argument("--controller-promotion-rule", help="Required promotion rule for controller continuation")
+    admitted_handoff.add_argument("--min-estimated-probability", type=float, default=0.0, help="Hold branches below this estimator probability")
+    admitted_handoff.add_argument("--require-query-relevance", action="store_true", help="Hold branches not relevant to --query-target")
+
     controller_chainer = sub.add_parser(
         "pi-pln-controller-as-chainer",
         help="Run a two-level backward chainer where a controller supervises the primary's termination decisions",
@@ -271,6 +318,29 @@ def build_parser() -> argparse.ArgumentParser:
         "--external-cli",
         action="store_true",
         help="Use GoalChainer demo --json subprocess instead of the precompiled-cache bypass",
+    )
+    goal_smoke.add_argument(
+        "--heuristic-memory-probe",
+        action="store_true",
+        help="Also run GoalChainer solve_incident(memory_items=...) to exercise the heuristic-with-memory path non-live",
+    )
+
+    live_bridge = sub.add_parser(
+        "live-goal-bridge",
+        help="Run the read-only live bridge from the selected memory journal into local GoalChainer",
+    )
+    live_bridge.add_argument("--cache-id", default="petta-memory-goalchainer-live-bridge")
+    live_bridge.add_argument("--goalchainer-repo", help="Path to local OmegaClaw-GoalChainer checkout")
+    live_bridge.add_argument("--request", help="Incident/request text for GoalChainer appraisal")
+    live_bridge.add_argument("--query-target", default="", help="Optional pi-PLN ranked-plan query target")
+    live_bridge.add_argument("--max-branches", type=int, default=20)
+    live_bridge.add_argument("--seed", type=int, default=17)
+    live_bridge.add_argument("--min-estimated-probability", type=float, default=0.0)
+    live_bridge.add_argument("--require-query-relevance", action="store_true")
+    live_bridge.add_argument(
+        "--skip-heuristic-memory-probe",
+        action="store_true",
+        help="Skip GoalChainer solve_incident(memory_items=...) and use only the precompiled decision gate",
     )
 
     audit = sub.add_parser("audit-view", help="Print bounded complete MemoryCluster records for audit")
@@ -497,6 +567,55 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(result, indent=2, sort_keys=True))
             return 0
+        if args.cmd == "pi-pln-ranked-plan":
+            cache = store.pettachainer_handoff_cache(cache_id=args.cache_id)
+            handoff = patham9_pln_handoff_sentences(cache)
+            result = ranked_inference_control_plan(
+                handoff,
+                query_target=args.query_target,
+                estimator_min_strength=args.estimator_min_strength,
+                estimator_min_confidence=args.estimator_min_confidence,
+                estimator_domain=args.estimator_domain,
+                estimator_ec_ratio_threshold=args.estimator_ec_ratio_threshold,
+                estimator_promotion_rule=args.estimator_promotion_rule,
+                exploration_weight=args.exploration_weight,
+                max_branches=args.max_branches,
+                seed=args.seed,
+                controller_min_strength=args.controller_min_strength,
+                controller_min_confidence=args.controller_min_confidence,
+                controller_domain=args.controller_domain,
+                controller_ec_ratio_threshold=args.controller_ec_ratio_threshold,
+                controller_promotion_rule=args.controller_promotion_rule,
+                min_estimated_probability=args.min_estimated_probability,
+                require_query_relevance=args.require_query_relevance,
+            )
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0
+        if args.cmd == "pi-pln-admitted-handoff":
+            cache = store.pettachainer_handoff_cache(cache_id=args.cache_id)
+            handoff = patham9_pln_handoff_sentences(cache)
+            plan = ranked_inference_control_plan(
+                handoff,
+                query_target=args.query_target,
+                estimator_min_strength=args.estimator_min_strength,
+                estimator_min_confidence=args.estimator_min_confidence,
+                estimator_domain=args.estimator_domain,
+                estimator_ec_ratio_threshold=args.estimator_ec_ratio_threshold,
+                estimator_promotion_rule=args.estimator_promotion_rule,
+                exploration_weight=args.exploration_weight,
+                max_branches=args.max_branches,
+                seed=args.seed,
+                controller_min_strength=args.controller_min_strength,
+                controller_min_confidence=args.controller_min_confidence,
+                controller_domain=args.controller_domain,
+                controller_ec_ratio_threshold=args.controller_ec_ratio_threshold,
+                controller_promotion_rule=args.controller_promotion_rule,
+                min_estimated_probability=args.min_estimated_probability,
+                require_query_relevance=args.require_query_relevance,
+            )
+            result = ranked_plan_admitted_handoff(handoff, plan)
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0
         if args.cmd == "pi-pln-controller-as-chainer":
             cache = store.pettachainer_handoff_cache(cache_id=args.cache_id)
             handoff = patham9_pln_handoff_sentences(cache)
@@ -531,8 +650,25 @@ def main(argv: list[str] | None = None) -> int:
                 kwargs["timeout_sec"] = args.timeout_sec
                 result = run_goalchainer_handoff_smoke(cache, **kwargs)
             else:
+                kwargs["include_heuristic_memory_probe"] = args.heuristic_memory_probe
                 result = run_goalchainer_precompiled_handoff_smoke(cache, **kwargs)
             print(json.dumps(result, indent=2, sort_keys=True))
+            return 0
+        if args.cmd == "live-goal-bridge":
+            kwargs = {
+                "cache_id": args.cache_id,
+                "query_target": args.query_target,
+                "max_branches": args.max_branches,
+                "seed": args.seed,
+                "min_estimated_probability": args.min_estimated_probability,
+                "require_query_relevance": args.require_query_relevance,
+                "include_heuristic_memory_probe": not args.skip_heuristic_memory_probe,
+            }
+            if args.goalchainer_repo:
+                kwargs["goalchainer_repo"] = args.goalchainer_repo
+            if args.request:
+                kwargs["request"] = args.request
+            print(json.dumps(run_petta_memory_goalchainer_live_bridge(args.store, **kwargs), indent=2, sort_keys=True))
             return 0
         if args.cmd == "audit-view":
             print(store.audit_view(limit_chars=args.limit_chars), end="")

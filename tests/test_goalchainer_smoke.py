@@ -99,6 +99,24 @@ class GoalChainerSmokeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "no Acceptable STV"):
             run_goalchainer_precompiled_handoff_smoke(cache, goalchainer_repo=repo)
 
+    def test_precompiled_handoff_can_probe_goalchainer_heuristic_memory_path(self):
+        repo = Path(__file__).resolve().parents[4] / "omegaclaw" / "repos" / "OmegaClaw-GoalChainer"
+        smoke = run_goalchainer_precompiled_handoff_smoke(
+            _cache(),
+            goalchainer_repo=repo,
+            include_heuristic_memory_probe=True,
+        )
+
+        probe = smoke["heuristic_memory_probe"]
+        self.assertEqual(probe["schema"], "petta-memory-goalchainer-heuristic-memory-probe-v1")
+        self.assertEqual(probe["decided"], "publish_redacted_summary")
+        self.assertEqual(probe["status"], "recommended")
+        self.assertEqual(probe["recommended_action"], "publish_redacted_summary")
+        self.assertGreaterEqual(probe["parsed_memory_items"], 2)
+        self.assertTrue(probe["memory_proof_present"])
+        self.assertTrue(probe["leak_check_safe"])
+        self.assertTrue(smoke["checks"]["heuristic_with_memory_path_checked"])
+
     def test_non_live_goalchainer_smoke_wraps_decision_payload_with_provenance(self):
         calls = []
 

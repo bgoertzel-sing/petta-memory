@@ -3748,6 +3748,395 @@ def pln_estimator_wrapper(
     }
 
 
+_RANKED_INFERENCE_CONTROL_PLAN_BOUNDARY = (
+    "non-live wrapper-only ranked inference-control plan; no SWI/PeTTa/MeTTa runtime invoked; "
+    "no PLN.Query/PLN.Derive call; no memory append or inferred-belief promotion; "
+    "no patham9/PLN source change; no OmegaClaw/GoalChainer live path"
+)
+
+
+def _require_ranked_plan_int(value: Any, field_name: str) -> int:
+    """Return an audit-count/key integer, rejecting bools and loose JSON drift."""
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError(f"{field_name} must be an integer, got {value!r}")
+    return value
+
+
+def ranked_inference_control_plan(
+    handoff: dict[str, Any],
+    *,
+    query_target: str = "",
+    estimator_min_strength: float = 0.0,
+    estimator_min_confidence: float = 0.0,
+    estimator_domain: str | None = None,
+    estimator_ec_ratio_threshold: float = 0.0,
+    estimator_promotion_rule: str | None = None,
+    exploration_weight: float = 1.0,
+    max_branches: int = 20,
+    seed: int | None = None,
+    controller_min_strength: float = 0.0,
+    controller_min_confidence: float = 0.0,
+    controller_domain: str | None = None,
+    controller_ec_ratio_threshold: float = 0.0,
+    controller_promotion_rule: str | None = None,
+    min_estimated_probability: float = 0.0,
+    require_query_relevance: bool = False,
+) -> dict[str, Any]:
+    """Build a non-live ranked branch plan before any patham9/PLN derive call.
+
+    This is a small integration gate over the inference-control wrappers: the
+    PLN estimator ranks EDCall candidates, then the continuation predicate acts
+    as a controller-level safety/quality check over those candidates.  The
+    result is an auditable plan of which branches would be allowed into a later
+    ``PLN.Derive`` call and why other branches were held back.
+    """
+    if handoff.get("schema") != "petta-memory-patham9-pln-handoff-v1":
+        raise ValueError("expected petta-memory-patham9-pln-handoff-v1 handoff")
+    items = handoff.get("items", [])
+    if not isinstance(items, list):
+        raise ValueError("handoff items must be a list")
+    if "item_count" in handoff:
+        item_count = _require_ranked_plan_int(handoff.get("item_count"), "item_count")
+        if item_count != len(items):
+            raise ValueError(
+                f"item_count {item_count!r} does not match handoff items length {len(items)}"
+            )
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise ValueError(f"handoff item {index!r} must be an object")
+    if not (0 <= min_estimated_probability <= 1):
+        raise ValueError(f"min_estimated_probability {min_estimated_probability} out of [0, 1]")
+
+    estimator = pln_estimator_wrapper(
+        handoff,
+        query_target=query_target,
+        min_strength=estimator_min_strength,
+        min_confidence=estimator_min_confidence,
+        domain=estimator_domain,
+        ec_ratio_threshold=estimator_ec_ratio_threshold,
+        promotion_rule=estimator_promotion_rule,
+        exploration_weight=exploration_weight,
+        max_branches=max_branches,
+        seed=seed,
+    )
+    controller = continuation_predicate_wrapper(
+        handoff,
+        min_strength=controller_min_strength,
+        min_confidence=controller_min_confidence,
+        domain=controller_domain,
+        ec_ratio_threshold=controller_ec_ratio_threshold,
+        promotion_rule=controller_promotion_rule,
+    )
+    controller_by_index = {item["item_index"]: item for item in controller["items"]}
+
+    branch_plan: list[dict[str, Any]] = []
+    for ed_call in estimator["ed_calls"]:
+        item_index = ed_call["item_index"]
+        controller_item = controller_by_index.get(item_index)
+        hold_reasons: list[str] = []
+        if ed_call["estimated_probability"] < min_estimated_probability:
+            hold_reasons.append(
+                f"estimated_probability {ed_call['estimated_probability']} < {min_estimated_probability}"
+            )
+        if require_query_relevance and not ed_call["query_relevant"]:
+            hold_reasons.append("query_target_not_relevant")
+        if controller_item is None:
+            hold_reasons.append("missing_controller_decision")
+            controller_decision = "missing"
+            controller_checks: list[dict[str, Any]] = []
+        else:
+            controller_decision = controller_item["decision"]
+            controller_checks = controller_item["checks"]
+            if controller_decision != "continue":
+                hold_reasons.append(f"controller_decision_{controller_decision}")
+
+        branch_plan.append({
+            "rank": ed_call["rank"],
+            "item_index": item_index,
+            "belief_id": ed_call["belief_id"],
+            "term": ed_call["term"],
+            "estimated_probability": ed_call["estimated_probability"],
+            "mean_viability": ed_call["mean_viability"],
+            "query_relevant": ed_call["query_relevant"],
+            "controller_decision": controller_decision,
+            "controller_checks": controller_checks,
+            "status": "recommended" if not hold_reasons else "held",
+            "hold_reasons": hold_reasons,
+            "deferred_branch": ed_call["deferred_branch"],
+        })
+
+    recommended = [branch for branch in branch_plan if branch["status"] == "recommended"]
+    held = [branch for branch in branch_plan if branch["status"] == "held"]
+    return {
+        "schema": "petta-memory-pi-pln-ranked-inference-control-plan-v1",
+        "mode": "design-specification-no-runtime",
+        "input_count": len(items),
+        "candidate_count": len(branch_plan),
+        "recommended_count": len(recommended),
+        "held_count": len(held),
+        "estimator_policy": estimator["estimator_policy"],
+        "controller_policy": controller["continuation_policy"],
+        "plan_policy": {
+            "min_estimated_probability": min_estimated_probability,
+            "require_query_relevance": require_query_relevance,
+            "source_patterns": [
+                "PLN-based inference controller / EDCall ranking",
+                "continuation predicate controller gate",
+            ],
+        },
+        "recommended_branches": recommended,
+        "held_branches": held,
+        "branch_plan": branch_plan,
+        "boundary": _RANKED_INFERENCE_CONTROL_PLAN_BOUNDARY,
+    }
+
+
+def ranked_plan_admitted_handoff(
+    handoff: dict[str, Any],
+    ranked_plan: dict[str, Any],
+) -> dict[str, Any]:
+    """Create the exact non-live handoff subset admitted by a ranked plan.
+
+    The returned ``admitted_handoff`` keeps the original patham9/PLN handoff
+    schema so existing program builders can consume it, but contains only items
+    that the ranked plan marked as ``recommended``.  This is still a planning
+    artifact: it does not invoke ``PLN.Query``/``PLN.Derive`` and does not
+    promote results back into memory.
+    """
+    if handoff.get("schema") != "petta-memory-patham9-pln-handoff-v1":
+        raise ValueError("expected petta-memory-patham9-pln-handoff-v1 handoff")
+    if ranked_plan.get("schema") != "petta-memory-pi-pln-ranked-inference-control-plan-v1":
+        raise ValueError("expected petta-memory-pi-pln-ranked-inference-control-plan-v1 plan")
+
+    items = handoff.get("items", [])
+    if not isinstance(items, list):
+        raise ValueError("handoff items must be a list")
+    if "item_count" in handoff:
+        item_count = _require_ranked_plan_int(handoff.get("item_count"), "item_count")
+        if item_count != len(items):
+            raise ValueError(
+                f"item_count {item_count!r} does not match handoff items length {len(items)}"
+            )
+    input_count = _require_ranked_plan_int(ranked_plan.get("input_count"), "input_count")
+    if input_count != len(items):
+        raise ValueError(
+            f"input_count {input_count!r} does not match handoff items length {len(items)}"
+        )
+    recommended_branches = ranked_plan.get("recommended_branches", [])
+    held_branches = ranked_plan.get("held_branches", [])
+    branch_plan = ranked_plan.get("branch_plan", [])
+    if not isinstance(recommended_branches, list):
+        raise ValueError("recommended_branches must be a list")
+    if not isinstance(held_branches, list):
+        raise ValueError("held_branches must be a list")
+    if not isinstance(branch_plan, list):
+        raise ValueError("branch_plan must be a list")
+    recommended_count = _require_ranked_plan_int(ranked_plan.get("recommended_count"), "recommended_count")
+    held_count = _require_ranked_plan_int(ranked_plan.get("held_count"), "held_count")
+    if recommended_count != len(recommended_branches):
+        raise ValueError(
+            f"recommended_count {recommended_count!r} does not match recommended_branches length {len(recommended_branches)}"
+        )
+    if held_count != len(held_branches):
+        raise ValueError(
+            f"held_count {held_count!r} does not match held_branches length {len(held_branches)}"
+        )
+    mirrored_branch_fields = (
+        "belief_id",
+        "term",
+        "status",
+        "estimated_probability",
+        "mean_viability",
+        "query_relevant",
+        "controller_decision",
+        "controller_checks",
+        "hold_reasons",
+        "deferred_branch",
+    )
+    preflight_seen_item_indexes: set[int] = set()
+    preflight_seen_ranks: set[int] = set()
+    for branch in recommended_branches:
+        if not isinstance(branch, dict):
+            raise ValueError(f"recommended_branches entry must be an object, got {type(branch).__name__}")
+        if branch.get("status") != "recommended":
+            raise ValueError(f"recommended_branches contains non-recommended branch status {branch.get('status')!r}")
+        rank = branch.get("rank")
+        item_index = branch.get("item_index")
+        if not isinstance(rank, int) or isinstance(rank, bool):
+            raise ValueError(f"recommended branch has invalid rank {rank!r}")
+        if rank in preflight_seen_ranks:
+            raise ValueError(f"recommended branches contain duplicate rank {rank!r}")
+        if isinstance(item_index, int) and not isinstance(item_index, bool) and item_index in preflight_seen_item_indexes:
+            raise ValueError(f"recommended branches contain duplicate handoff item {item_index!r}")
+        preflight_seen_ranks.add(rank)
+        if isinstance(item_index, int) and not isinstance(item_index, bool):
+            preflight_seen_item_indexes.add(item_index)
+    candidate_count = _require_ranked_plan_int(ranked_plan.get("candidate_count"), "candidate_count")
+    if candidate_count != len(branch_plan):
+        raise ValueError(
+            f"candidate_count {candidate_count!r} does not match branch_plan length {len(branch_plan)}"
+        )
+    branch_plan_by_key: dict[tuple[int, int], dict[str, Any]] = {}
+    branch_plan_status_counts = {"recommended": 0, "held": 0}
+    branch_plan_ranks: set[int] = set()
+    branch_plan_item_indexes: set[int] = set()
+    for planned_branch in branch_plan:
+        if not isinstance(planned_branch, dict):
+            raise ValueError(f"branch_plan entry must be an object, got {type(planned_branch).__name__}")
+        rank = planned_branch.get("rank")
+        item_index = planned_branch.get("item_index")
+        status = planned_branch.get("status")
+        if not isinstance(rank, int) or isinstance(rank, bool):
+            raise ValueError(f"branch_plan branch has invalid rank {rank!r}")
+        if rank in branch_plan_ranks:
+            raise ValueError(f"branch_plan contains duplicate rank {rank!r}")
+        branch_plan_ranks.add(rank)
+        if not isinstance(item_index, int) or isinstance(item_index, bool):
+            raise ValueError(f"branch_plan branch has invalid item_index {item_index!r}")
+        if item_index in branch_plan_item_indexes:
+            raise ValueError(f"branch_plan contains duplicate handoff item {item_index!r}")
+        branch_plan_item_indexes.add(item_index)
+        if status not in branch_plan_status_counts:
+            raise ValueError(f"branch_plan branch has invalid status {status!r}")
+        if item_index < 0 or item_index >= len(items):
+            raise ValueError(f"branch_plan branch references missing handoff item {item_index!r}")
+        source_item = items[item_index]
+        if not isinstance(source_item, dict):
+            raise ValueError(f"handoff item {item_index!r} must be an object")
+        if source_item.get("belief_id") != planned_branch.get("belief_id"):
+            raise ValueError(
+                f"branch_plan branch belief_id {planned_branch.get('belief_id')!r} does not match handoff item {source_item.get('belief_id')!r}"
+            )
+        if source_item.get("term") != planned_branch.get("term"):
+            raise ValueError(
+                f"branch_plan branch term {planned_branch.get('term')!r} does not match handoff item {source_item.get('term')!r}"
+            )
+        branch_plan_status_counts[status] += 1
+        key = (rank, item_index)
+        if key in branch_plan_by_key:
+            raise ValueError(f"branch_plan contains duplicate rank/item pair {key!r}")
+        branch_plan_by_key[key] = planned_branch
+    expected_branch_plan_ranks = set(range(1, len(branch_plan) + 1))
+    if branch_plan_ranks != expected_branch_plan_ranks:
+        raise ValueError(
+            f"branch_plan ranks {sorted(branch_plan_ranks)!r} do not match contiguous ranks "
+            f"{sorted(expected_branch_plan_ranks)!r}"
+        )
+    if branch_plan_status_counts["recommended"] != len(recommended_branches):
+        raise ValueError(
+            "branch_plan recommended status count "
+            f"{branch_plan_status_counts['recommended']} does not match recommended_branches length {len(recommended_branches)}"
+        )
+    if branch_plan_status_counts["held"] != len(held_branches):
+        raise ValueError(
+            "branch_plan held status count "
+            f"{branch_plan_status_counts['held']} does not match held_branches length {len(held_branches)}"
+        )
+    held_seen_item_indexes: set[int] = set()
+    held_seen_ranks: set[int] = set()
+    for branch in held_branches:
+        if not isinstance(branch, dict):
+            raise ValueError(f"held_branches entry must be an object, got {type(branch).__name__}")
+        if branch.get("status") != "held":
+            raise ValueError(f"held_branches contains non-held branch status {branch.get('status')!r}")
+        rank = branch.get("rank")
+        item_index = branch.get("item_index")
+        if not isinstance(rank, int) or isinstance(rank, bool):
+            raise ValueError(f"held branch has invalid rank {rank!r}")
+        if rank in held_seen_ranks:
+            raise ValueError(f"held branches contain duplicate rank {rank!r}")
+        if not isinstance(item_index, int) or isinstance(item_index, bool):
+            raise ValueError(f"held branch has invalid item_index {item_index!r}")
+        if item_index in held_seen_item_indexes:
+            raise ValueError(f"held branches contain duplicate handoff item {item_index!r}")
+        held_seen_ranks.add(rank)
+        held_seen_item_indexes.add(item_index)
+        branch_plan_record = branch_plan_by_key.get((rank, item_index))
+        if branch_plan_record is None:
+            raise ValueError(
+                f"held branch rank {rank!r} item {item_index!r} is missing from branch_plan"
+            )
+        for field in mirrored_branch_fields:
+            if branch_plan_record.get(field) != branch.get(field):
+                raise ValueError(
+                    f"held branch {field} {branch.get(field)!r} does not match branch_plan {branch_plan_record.get(field)!r}"
+                )
+
+    admitted_items: list[dict[str, Any]] = []
+    admission_records: list[dict[str, Any]] = []
+    seen_item_indexes: set[int] = set()
+    seen_ranks: set[int] = set()
+    for branch in sorted(recommended_branches, key=lambda item: item["rank"]):
+        if branch.get("status") != "recommended":
+            raise ValueError(f"recommended_branches contains non-recommended branch status {branch.get('status')!r}")
+        item_index = branch["item_index"]
+        if not isinstance(item_index, int) or isinstance(item_index, bool) or item_index < 0 or item_index >= len(items):
+            raise ValueError(f"recommended branch references missing handoff item {item_index!r}")
+        rank = branch.get("rank")
+        if not isinstance(rank, int) or isinstance(rank, bool):
+            raise ValueError(f"recommended branch has invalid rank {rank!r}")
+        if rank in seen_ranks:
+            raise ValueError(f"recommended branches contain duplicate rank {rank!r}")
+        if item_index in seen_item_indexes:
+            raise ValueError(f"recommended branches contain duplicate handoff item {item_index!r}")
+        seen_ranks.add(rank)
+        seen_item_indexes.add(item_index)
+        source_item = items[item_index]
+        if not isinstance(source_item, dict):
+            raise ValueError(f"handoff item {item_index!r} must be an object")
+        if source_item.get("belief_id") != branch.get("belief_id"):
+            raise ValueError(
+                f"recommended branch belief_id {branch.get('belief_id')!r} does not match handoff item {source_item.get('belief_id')!r}"
+            )
+        if source_item.get("term") != branch.get("term"):
+            raise ValueError(
+                f"recommended branch term {branch.get('term')!r} does not match handoff item {source_item.get('term')!r}"
+            )
+        branch_plan_record = branch_plan_by_key.get((rank, item_index))
+        if branch_plan_record is None:
+            raise ValueError(
+                f"recommended branch rank {rank!r} item {item_index!r} is missing from branch_plan"
+            )
+        for field in mirrored_branch_fields:
+            if branch_plan_record.get(field) != branch.get(field):
+                raise ValueError(
+                    f"recommended branch {field} {branch.get(field)!r} does not match branch_plan {branch_plan_record.get(field)!r}"
+                )
+        admitted_items.append(json.loads(json.dumps(source_item)))
+        admission_records.append({
+            "rank": branch["rank"],
+            "item_index": item_index,
+            "belief_id": branch.get("belief_id"),
+            "term": branch.get("term"),
+            "estimated_probability": branch.get("estimated_probability"),
+            "controller_decision": branch.get("controller_decision"),
+            "query_relevant": branch.get("query_relevant"),
+        })
+
+    admitted_handoff = {
+        key: json.loads(json.dumps(value))
+        for key, value in handoff.items()
+        if key != "items"
+    }
+    # Keep the embedded handoff internally consistent for downstream builders
+    # that trust the standard patham9/PLN handoff metadata before inspecting
+    # the item list.
+    admitted_handoff["item_count"] = len(admitted_items)
+    admitted_handoff["items"] = admitted_items
+    return {
+        "schema": "petta-memory-pi-pln-admitted-handoff-v1",
+        "mode": "design-specification-no-runtime",
+        "source_plan_schema": ranked_plan["schema"],
+        "source_handoff_schema": handoff["schema"],
+        "input_count": len(items),
+        "admitted_count": len(admitted_items),
+        "held_count": ranked_plan.get("held_count", 0),
+        "admission_records": admission_records,
+        "admitted_handoff": admitted_handoff,
+        "boundary": _RANKED_INFERENCE_CONTROL_PLAN_BOUNDARY,
+    }
+
+
 _CONTROLLER_AS_CHAINER_BOUNDARY = (
     "non-live wrapper-only controller-as-chainer; no SWI/PeTTa/MeTTa runtime invoked; "
     "no memory append or inferred-belief promotion; no patham9/PLN source change; "

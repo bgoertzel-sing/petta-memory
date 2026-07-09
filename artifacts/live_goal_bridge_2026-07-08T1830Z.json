@@ -1,0 +1,62 @@
+{
+  "boundary": "read-only live bridge over an existing MediumMemoryStore journal; local GoalChainer decision/appraisal only; no OmegaClaw skill, no accepted directive/task claim, no memory write, no inferred-belief promotion",
+  "cache_id": "live-goal-bridge-2026-07-08T1830Z",
+  "checks": {
+    "admitted_handoff_built": true,
+    "goalchainer_recommended_action_present": true,
+    "journal_read": true,
+    "no_memory_write": true,
+    "no_omegaclaw_skill_loaded": true,
+    "no_task_or_directive_claim": true,
+    "promoted_memory_evidence_present": true,
+    "ranked_plan_built": true
+  },
+  "cluster_count": 1,
+  "goalchainer_gate": {
+    "boundary": "non-live precompiled cache smoke only; PeTTaChainer compileadd/query not invoked; no OmegaClaw skill loaded, no task/directive claim, no memory write, no inferred-belief status",
+    "checks": {
+      "compileadd_not_invoked": true,
+      "heuristic_with_memory_path_checked": true,
+      "no_live_directive_or_task_claim": true,
+      "no_memory_write": true,
+      "provenance_selected_handoff_items": true,
+      "ranked_actions": true,
+      "recommended_action_present": true
+    },
+    "heuristic_memory_probe": {
+      "boundary": "non-live heuristic-with-memory probe; no OmegaClaw skill loaded, no accepted task/directive claim, no memory write, no live Telegram/runtime bridge",
+      "decided": "publish_redacted_summary",
+      "leak_check_safe": true,
+      "memory_proof_present": true,
+      "mode": "non-live-goalchainer-solve-incident-memory-items",
+      "parsed_memory_items": 2,
+      "recommended_action": "publish_redacted_summary",
+      "recommended_evidence_projection": "(Acceptable publish_redacted_summary) (STV 0.9978 0.9997)",
+      "recommended_evidence_source": "omega-core-petta-lib-deontic-pettachainer",
+      "schema": "petta-memory-goalchainer-heuristic-memory-probe-v1",
+      "status": "recommended"
+    },
+    "mode": "non-live-precompiled-cache-decision-payload-only",
+    "recommended_action": "publish_redacted_summary",
+    "recommended_status": "recommended",
+    "schema": "petta-memory-goalchainer-precompiled-smoke-v1"
+  },
+  "input_counts": {
+    "admitted_items": 1,
+    "goalchainer_items": 2,
+    "patham9_items": 1,
+    "pettachainer_items": 2,
+    "ranked_candidates": 1
+  },
+  "journal_path": "/home/openclaw/research-agent/projects/petta-memory/repos/petta-memory/artifacts/live_goal_bridge_journal_2026-07-08T1830Z.metta",
+  "mode": "read-only-live-journal-to-local-goalchainer",
+  "pi_pln_gate": {
+    "admitted_item_count": 1,
+    "admitted_schema": "petta-memory-pi-pln-admitted-handoff-v1",
+    "boundary": "non-live wrapper-only ranked inference-control plan; no SWI/PeTTa/MeTTa runtime invoked; no PLN.Query/PLN.Derive call; no memory append or inferred-belief promotion; no patham9/PLN source change; no OmegaClaw/GoalChainer live path",
+    "held_count": 0,
+    "recommended_count": 1,
+    "schema": "petta-memory-pi-pln-ranked-inference-control-plan-v1"
+  },
+  "schema": "petta-memory-goalchainer-live-bridge-v1"
+}

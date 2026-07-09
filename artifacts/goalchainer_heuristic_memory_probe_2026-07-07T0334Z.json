@@ -1,0 +1,183 @@
+{
+  "boundary": "non-live precompiled cache smoke only; PeTTaChainer compileadd/query not invoked; no OmegaClaw skill loaded, no task/directive claim, no memory write, no inferred-belief status",
+  "checks": {
+    "compileadd_not_invoked": true,
+    "heuristic_with_memory_path_checked": true,
+    "no_live_directive_or_task_claim": true,
+    "no_memory_write": true,
+    "provenance_selected_handoff_items": true,
+    "ranked_actions": true,
+    "recommended_action_present": true
+  },
+  "decision_payload": {
+    "decisions": [
+      {
+        "action_id": "publish_redacted_summary",
+        "collective_score": 1.0,
+        "evidence": {
+          "confidence": 0.833333,
+          "projection": "(: b-redacted-summary (Acceptable publish_redacted_summary) (STV 0.91 0.74))",
+          "proofs": [
+            "precompiled PeTTa-memory handoff STV item; PeTTaChainer compileadd not invoked",
+            "belief_id=b-redacted-summary cluster_id=mc-goalchainer-smoke promotion_event=pe-redacted-summary",
+            "contextual EvidencePacket EC support/opposition influenced precompiled appraisal; PeTTaChainer compileadd not invoked"
+          ],
+          "source": "petta-memory-precompiled-handoff-cache",
+          "strength": 0.904703
+        },
+        "goal_score": 1.0,
+        "individual_score": 1.0,
+        "label": "Publish redacted summary",
+        "metadata": {
+          "deontic_expectation": "0.837252"
+        },
+        "missing_required_goals": [],
+        "norm_reasons": [
+          "expectation=0.837"
+        ],
+        "norm_status": "obligated",
+        "satisfied_goals": [
+          "preserve_privacy",
+          "restore_service",
+          "coordinate_team"
+        ],
+        "score": 0.926489,
+        "status": "recommended",
+        "warnings": []
+      },
+      {
+        "action_id": "hold_external_update",
+        "collective_score": 0.0,
+        "evidence": {
+          "confidence": 0.99,
+          "projection": "scenario default for hold_external_update",
+          "proofs": [
+            "GoalChainer scenario default; no matching PeTTa-memory handoff item"
+          ],
+          "source": "petta-memory-precompiled-handoff-cache",
+          "strength": 0.58
+        },
+        "goal_score": 0.365385,
+        "individual_score": 1.0,
+        "label": "Hold external update",
+        "metadata": {
+          "deontic_expectation": "0.579200"
+        },
+        "missing_required_goals": [
+          "restore_service",
+          "coordinate_team"
+        ],
+        "norm_reasons": [
+          "expectation=0.579"
+        ],
+        "norm_status": "permitted",
+        "satisfied_goals": [
+          "preserve_privacy"
+        ],
+        "score": 0.371658,
+        "status": "weak",
+        "warnings": [
+          "missing required goals: restore_service, coordinate_team"
+        ]
+      },
+      {
+        "action_id": "publish_raw_log",
+        "collective_score": 1.0,
+        "evidence": {
+          "confidence": 0.99,
+          "projection": "scenario default for publish_raw_log",
+          "proofs": [
+            "GoalChainer scenario default; no matching PeTTa-memory handoff item"
+          ],
+          "source": "petta-memory-precompiled-handoff-cache",
+          "strength": 0.18
+        },
+        "goal_score": 0.634615,
+        "individual_score": 0.0,
+        "label": "Publish raw incident log",
+        "metadata": {
+          "deontic_expectation": "0.183200"
+        },
+        "missing_required_goals": [
+          "preserve_privacy"
+        ],
+        "norm_reasons": [
+          "expectation=0.183"
+        ],
+        "norm_status": "forbidden",
+        "satisfied_goals": [
+          "restore_service",
+          "coordinate_team"
+        ],
+        "score": -1.0,
+        "status": "blocked",
+        "warnings": [
+          "missing required goals: preserve_privacy",
+          "native deontic status: forbidden"
+        ]
+      }
+    ],
+    "explanation": [
+      "Recommended: Publish redacted summary (score 0.926).",
+      "  lib_deontic derived this action obligated (the norm positively requires it). PeTTaChainer belief b=0.7539, d=0.0794, u=0.1667.",
+      "  It satisfies: preserve_privacy, restore_service, coordinate_team.",
+      "Not chosen: Hold external update (score 0.372).",
+      "  lib_deontic derived this action permitted (allowed, not required). PeTTaChainer belief b=0.5742, d=0.4158, u=0.01.",
+      "  Missing required goals: restore_service, coordinate_team.",
+      "Blocked: Publish raw incident log (score -1.000).",
+      "  lib_deontic derived this action forbidden, so the score is forced negative. PeTTaChainer belief b=0.1782, d=0.8118, u=0.01.",
+      "  Missing required goals: preserve_privacy."
+    ],
+    "motivation": null,
+    "notes": [
+      "The raw log advances coordination but is blocked by the derived privacy prohibition.",
+      "The redacted summary satisfies all required goals and is the recommended action.",
+      "The hold protects privacy but misses the required collective goals."
+    ],
+    "runtime": {
+      "reasoner": "petta-memory-precompiled-handoff-cache"
+    },
+    "scenario": "Incident response with individual privacy and collective repair goals"
+  },
+  "goalchainer_repo": "/home/openclaw/research-agent/projects/omegaclaw/repos/OmegaClaw-GoalChainer",
+  "heuristic_memory_probe": {
+    "boundary": "non-live heuristic-with-memory probe; no OmegaClaw skill loaded, no accepted task/directive claim, no memory write, no live Telegram/runtime bridge",
+    "decided": "publish_redacted_summary",
+    "leak_check_safe": true,
+    "memory_proof_present": true,
+    "mode": "non-live-goalchainer-solve-incident-memory-items",
+    "parsed_memory_items": 2,
+    "recommended_action": "publish_redacted_summary",
+    "recommended_evidence_projection": "(Acceptable publish_redacted_summary) (STV 0.9978 0.9997)",
+    "recommended_evidence_source": "omega-core-petta-lib-deontic-pettachainer",
+    "schema": "petta-memory-goalchainer-heuristic-memory-probe-v1",
+    "status": "recommended"
+  },
+  "input_cache_id": "petta-memory-goalchainer-handoff-smoke",
+  "input_schema": "petta-memory-goalchainer-handoff-v1",
+  "mode": "non-live-precompiled-cache-decision-payload-only",
+  "request": "Checkout is down. Engineering wants to paste raw logs into the incident room. Support says the logs may include customer emails, order IDs, and request payloads. Use the attached promoted PeTTa memory evidence only as read-only appraisal context.",
+  "schema": "petta-memory-goalchainer-precompiled-smoke-v1",
+  "selected_handoff_items": [
+    {
+      "atom": "(: b-redacted-summary (Acceptable publish_redacted_summary) (STV 0.91 0.74))",
+      "belief_id": "b-redacted-summary",
+      "boundary": "read-only evidence for appraisal; not a directive, task claim, or inferred belief",
+      "cluster_id": "mc-goalchainer-smoke",
+      "goalchainer_slot": "acceptability-belief-evidence",
+      "promotion_domain": "incident-response",
+      "promotion_event": "pe-redacted-summary",
+      "source_kind": "pettachainer-stv-statement"
+    },
+    {
+      "atom": "(EvidencePacket (Acceptable publish_redacted_summary) (EC 9.0 1.0) ((domain incident-response) (promotion-rule explicit-goalchainer-smoke)) pe-redacted-summary)",
+      "belief_id": "b-redacted-summary",
+      "boundary": "read-only evidence for appraisal; not a directive, task claim, or inferred belief",
+      "cluster_id": "mc-goalchainer-smoke",
+      "goalchainer_slot": "contextual-appraisal-evidence",
+      "promotion_domain": "incident-response",
+      "promotion_event": "pe-redacted-summary",
+      "source_kind": "pettachainer-evidence-packet"
+    }
+  ]
+}

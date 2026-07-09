@@ -146,6 +146,7 @@ def run_goalchainer_precompiled_handoff_smoke(
     *,
     goalchainer_repo: str | Path = DEFAULT_GOALCHAINER_REPO,
     request: str = DEFAULT_REQUEST,
+    include_heuristic_memory_probe: bool = False,
 ) -> dict[str, object]:
     """Run GoalChainer's decision engine from a precompiled handoff cache.
 
@@ -225,7 +226,7 @@ def run_goalchainer_precompiled_handoff_smoke(
                 pass
 
     _validate_goalchainer_payload(payload)
-    return {
+    result = {
         "schema": "petta-memory-goalchainer-precompiled-smoke-v1",
         "mode": "non-live-precompiled-cache-decision-payload-only",
         "goalchainer_repo": str(repo),
@@ -248,6 +249,95 @@ def run_goalchainer_precompiled_handoff_smoke(
             "no_live_directive_or_task_claim": True,
             "no_memory_write": True,
         },
+    }
+    if include_heuristic_memory_probe:
+        result["heuristic_memory_probe"] = _run_heuristic_memory_probe(
+            items,
+            goalchainer_repo=repo,
+            request=request,
+        )
+        result["checks"]["heuristic_with_memory_path_checked"] = True
+    else:
+        result["checks"]["heuristic_with_memory_path_checked"] = False
+    return result
+
+
+def _run_heuristic_memory_probe(
+    items: list[object],
+    *,
+    goalchainer_repo: Path,
+    request: str,
+) -> dict[str, object]:
+    """Exercise GoalChainer's actual heuristic-with-memory path non-live.
+
+    This complements the precompiled decision-payload bypass above by importing
+    GoalChainer's pipeline and passing the same handoff items into
+    ``solve_incident(memory_items=...)``.  It is still a local smoke: no
+    OmegaClaw skill is loaded, no directive/task claim is accepted, no memory is
+    written, and the only execution is GoalChainer's local redaction demo.
+    """
+    memory_items = [item for item in items if isinstance(item, dict)]
+    if not memory_items:
+        raise ValidationError("heuristic memory probe requires dict handoff items")
+    src = goalchainer_repo / "src"
+    if not (src / "goal_chainer" / "pipeline.py").exists():
+        raise ValidationError(f"GoalChainer pipeline not found: {goalchainer_repo}")
+
+    old_env = {key: os.environ.get(key) for key in ("GOALCHAINER_PETTA_DIR", "GOALCHAINER_PETTACHAINER_DIR", "GOALCHAINER_PETTA_SWIPL")}
+    if "GOALCHAINER_PETTA_DIR" not in os.environ and (DEFAULT_PETTA_DIR / "src" / "main.pl").exists():
+        os.environ["GOALCHAINER_PETTA_DIR"] = str(DEFAULT_PETTA_DIR)
+    if (
+        "GOALCHAINER_PETTACHAINER_DIR" not in os.environ
+        and (DEFAULT_PETTACHAINER_DIR / "pettachainer" / "metta" / "petta_chainer.metta").exists()
+    ):
+        os.environ["GOALCHAINER_PETTACHAINER_DIR"] = str(DEFAULT_PETTACHAINER_DIR)
+    if "GOALCHAINER_PETTA_SWIPL" not in os.environ and DEFAULT_SWIPL.exists():
+        os.environ["GOALCHAINER_PETTA_SWIPL"] = str(DEFAULT_SWIPL)
+
+    inserted = False
+    if str(src) not in sys.path:
+        sys.path.insert(0, str(src))
+        inserted = True
+    try:
+        from goal_chainer.heuristic_beliefs import parse_memory_evidence
+        from goal_chainer.pipeline import solve_incident
+
+        parsed = parse_memory_evidence(memory_items)
+        if not parsed:
+            raise ValidationError("GoalChainer heuristic memory probe parsed no memory evidence")
+        payload = solve_incident(request, memory_items=memory_items)
+    finally:
+        if inserted:
+            try:
+                sys.path.remove(str(src))
+            except ValueError:
+                pass
+        for key, value in old_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    decisions = payload.get("decisions", [])
+    recommended = next((item for item in decisions if item.get("status") == "recommended"), decisions[0] if decisions else {})
+    proofs = recommended.get("evidence", {}).get("proofs", []) if isinstance(recommended, dict) else []
+    executed = payload.get("executed", {})
+    leak_check = executed.get("leak_check", {}) if isinstance(executed, dict) else {}
+    return {
+        "schema": "petta-memory-goalchainer-heuristic-memory-probe-v1",
+        "mode": "non-live-goalchainer-solve-incident-memory-items",
+        "parsed_memory_items": len(parsed),
+        "decided": payload.get("decided"),
+        "status": payload.get("status"),
+        "recommended_action": recommended.get("action_id"),
+        "recommended_evidence_source": recommended.get("evidence", {}).get("source") if isinstance(recommended, dict) else None,
+        "recommended_evidence_projection": recommended.get("evidence", {}).get("projection") if isinstance(recommended, dict) else None,
+        "memory_proof_present": any("memory_" in str(proof) or "+memory" in str(proof) for proof in proofs),
+        "leak_check_safe": leak_check.get("safe"),
+        "boundary": (
+            "non-live heuristic-with-memory probe; no OmegaClaw skill loaded, no accepted task/directive claim, "
+            "no memory write, no live Telegram/runtime bridge"
+        ),
     }
 
 
