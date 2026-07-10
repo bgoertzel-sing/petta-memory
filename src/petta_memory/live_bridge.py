@@ -189,6 +189,8 @@ def run_petta_memory_goalchainer_live_bridge(
     notes = decision_payload.get("notes", [])
     if not isinstance(notes, list):
         raise ValidationError("GoalChainer gate returned non-list notes; refusing live bridge output")
+    if any(not isinstance(note, str) or not note for note in notes):
+        raise ValidationError("GoalChainer gate returned malformed note entry; refusing live bridge output")
     allowed_decision_statuses = {"recommended", "candidate", "held", "weak", "blocked"}
     decision_action_ids: set[str] = set()
     for decision in decisions:
