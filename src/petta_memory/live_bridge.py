@@ -240,6 +240,22 @@ def run_petta_memory_goalchainer_live_bridge(
                                 "GoalChainer gate returned contextual_evidence entry with malformed EC count; "
                                 "refusing live bridge output"
                             )
+                    for field in ("derived_strength", "derived_confidence"):
+                        value = item.get(field)
+                        if value is not None and (
+                            isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0 or value > 1
+                        ):
+                            raise ValidationError(
+                                "GoalChainer gate returned contextual_evidence entry with malformed derived truth value; "
+                                "refusing live bridge output"
+                            )
+                    for field in ("belief_id", "cluster_id", "promotion_event"):
+                        value = item.get(field)
+                        if not isinstance(value, str) or not value:
+                            raise ValidationError(
+                                "GoalChainer gate returned contextual_evidence entry with malformed provenance; "
+                                "refusing live bridge output"
+                            )
         if "action_id" not in decision:
             continue
         action_id = decision.get("action_id")

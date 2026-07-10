@@ -855,6 +855,65 @@ class LiveBridgeTests(unittest.TestCase):
                 ],
                 "malformed EC count",
             ),
+            (
+                "contextual-evidence-derived-strength-out-of-range",
+                [
+                    {
+                        "status": "recommended",
+                        "action_id": "publish_redacted_summary",
+                        "evidence": {
+                            "contextual_evidence": [
+                                {
+                                    "support": 9.0,
+                                    "opposition": 1.0,
+                                    "derived_strength": 1.5,
+                                    "belief_id": "b1",
+                                    "cluster_id": "mc1",
+                                    "promotion_event": "pe1",
+                                }
+                            ]
+                        },
+                    }
+                ],
+                "malformed derived truth value",
+            ),
+            (
+                "contextual-evidence-derived-confidence-bool",
+                [
+                    {
+                        "status": "recommended",
+                        "action_id": "publish_redacted_summary",
+                        "evidence": {
+                            "contextual_evidence": [
+                                {
+                                    "support": 9.0,
+                                    "opposition": 1.0,
+                                    "derived_confidence": True,
+                                    "belief_id": "b1",
+                                    "cluster_id": "mc1",
+                                    "promotion_event": "pe1",
+                                }
+                            ]
+                        },
+                    }
+                ],
+                "malformed derived truth value",
+            ),
+            (
+                "contextual-evidence-provenance-missing",
+                [
+                    {
+                        "status": "recommended",
+                        "action_id": "publish_redacted_summary",
+                        "evidence": {
+                            "contextual_evidence": [
+                                {"support": 9.0, "opposition": 1.0, "belief_id": "b1", "cluster_id": "mc1"}
+                            ]
+                        },
+                    }
+                ],
+                "malformed provenance",
+            ),
         ]
         for name, decisions, expected_error in cases:
             with self.subTest(name=name):
