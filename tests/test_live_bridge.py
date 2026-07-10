@@ -618,33 +618,55 @@ class LiveBridgeTests(unittest.TestCase):
                     goalchainer_runner=fake_goalchainer_runner,
                 )
 
-    def test_live_bridge_rejects_recommended_goalchainer_decision_without_action_id(self):
+    def test_live_bridge_rejects_malformed_goalchainer_decision_action_ids(self):
         fixture = Path(__file__).resolve().parents[1] / "fixtures" / "goalchainer_handoff_smoke.metta"
         repo = Path(__file__).resolve().parents[4] / "omegaclaw" / "repos" / "OmegaClaw-GoalChainer"
 
-        def fake_goalchainer_runner(*args, **kwargs):
-            return {
-                "schema": "petta-memory-goalchainer-precompiled-smoke-result-v1",
-                "mode": "non-live-goalchainer-precompiled-handoff-smoke",
-                "decision_payload": {"decisions": [{"status": "recommended", "action_id": ""}]},
-                "checks": {"no_memory_write": True, "no_live_directive_or_task_claim": True},
-                "boundary": "fake boundary",
-            }
+        cases = [
+            (
+                "recommended-empty",
+                [{"status": "recommended", "action_id": ""}],
+                "malformed action_id",
+            ),
+            (
+                "nonrecommended-nonstring",
+                [{"status": "candidate", "action_id": ["not", "a", "string"]}],
+                "malformed action_id",
+            ),
+            (
+                "duplicate-action-id",
+                [
+                    {"status": "recommended", "action_id": "publish_redacted_summary"},
+                    {"status": "candidate", "action_id": "publish_redacted_summary"},
+                ],
+                "duplicate decision action_id",
+            ),
+        ]
+        for name, decisions, expected_error in cases:
+            with self.subTest(name=name):
+                def fake_goalchainer_runner(*args, **kwargs):
+                    return {
+                        "schema": "petta-memory-goalchainer-precompiled-smoke-result-v1",
+                        "mode": "non-live-goalchainer-precompiled-handoff-smoke",
+                        "decision_payload": {"decisions": decisions},
+                        "checks": {"no_memory_write": True, "no_live_directive_or_task_claim": True},
+                        "boundary": "fake boundary",
+                    }
 
-        with tempfile.TemporaryDirectory() as td:
-            journal = Path(td) / "journal.metta"
-            store = MediumMemoryStore(journal)
-            store.append_cluster(fixture.read_text(encoding="utf-8"))
+                with tempfile.TemporaryDirectory() as td:
+                    journal = Path(td) / "journal.metta"
+                    store = MediumMemoryStore(journal)
+                    store.append_cluster(fixture.read_text(encoding="utf-8"))
 
-            with self.assertRaisesRegex(ValidationError, "non-empty string action_id"):
-                run_petta_memory_goalchainer_live_bridge(
-                    journal,
-                    goalchainer_repo=repo,
-                    cache_id="bridge-goalchainer-recommended-action-test",
-                    query_target="(Acceptable publish_redacted_summary)",
-                    require_query_relevance=True,
-                    goalchainer_runner=fake_goalchainer_runner,
-                )
+                    with self.assertRaisesRegex(ValidationError, expected_error):
+                        run_petta_memory_goalchainer_live_bridge(
+                            journal,
+                            goalchainer_repo=repo,
+                            cache_id=f"bridge-goalchainer-action-id-{name}-test",
+                            query_target="(Acceptable publish_redacted_summary)",
+                            require_query_relevance=True,
+                            goalchainer_runner=fake_goalchainer_runner,
+                        )
 
     def test_live_bridge_rejects_multiple_recommended_goalchainer_decisions(self):
         fixture = Path(__file__).resolve().parents[1] / "fixtures" / "goalchainer_handoff_smoke.metta"

@@ -168,6 +168,20 @@ def run_petta_memory_goalchainer_live_bridge(
     notes = decision_payload.get("notes", [])
     if not isinstance(notes, list):
         raise ValidationError("GoalChainer gate returned non-list notes; refusing live bridge output")
+    decision_action_ids: set[str] = set()
+    for decision in decisions:
+        if "action_id" not in decision:
+            continue
+        action_id = decision.get("action_id")
+        if not isinstance(action_id, str) or not action_id:
+            raise ValidationError(
+                "GoalChainer gate returned decision with malformed action_id; refusing live bridge output"
+            )
+        if action_id in decision_action_ids:
+            raise ValidationError(
+                "GoalChainer gate returned duplicate decision action_id; refusing live bridge output"
+            )
+        decision_action_ids.add(action_id)
     recommended_decisions = [item for item in decisions if item.get("status") == "recommended"]
     if len(recommended_decisions) > 1:
         raise ValidationError("GoalChainer gate returned multiple recommended decisions; refusing live bridge output")
