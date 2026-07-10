@@ -794,6 +794,28 @@ class LiveBridgeTests(unittest.TestCase):
                 [{"status": "candidate", "evidence": "memory proof"}],
                 "non-object evidence",
             ),
+            (
+                "contextual-evidence-non-list",
+                [
+                    {
+                        "status": "recommended",
+                        "action_id": "publish_redacted_summary",
+                        "evidence": {"contextual_evidence": "packet-a"},
+                    }
+                ],
+                "non-list contextual_evidence",
+            ),
+            (
+                "contextual-evidence-entry-non-object",
+                [
+                    {
+                        "status": "recommended",
+                        "action_id": "publish_redacted_summary",
+                        "evidence": {"contextual_evidence": [{"support": 9}, "packet-b"]},
+                    }
+                ],
+                "non-object contextual_evidence entry",
+            ),
         ]
         for name, decisions, expected_error in cases:
             with self.subTest(name=name):

@@ -218,6 +218,18 @@ def run_petta_memory_goalchainer_live_bridge(
                         "GoalChainer gate returned decision evidence with malformed proof entry; "
                         "refusing live bridge output"
                     )
+            contextual_evidence = evidence.get("contextual_evidence")
+            if contextual_evidence is not None:
+                if not isinstance(contextual_evidence, list):
+                    raise ValidationError(
+                        "GoalChainer gate returned decision evidence with non-list contextual_evidence; "
+                        "refusing live bridge output"
+                    )
+                if any(not isinstance(item, dict) for item in contextual_evidence):
+                    raise ValidationError(
+                        "GoalChainer gate returned decision evidence with non-object contextual_evidence entry; "
+                        "refusing live bridge output"
+                    )
         if "action_id" not in decision:
             continue
         action_id = decision.get("action_id")
