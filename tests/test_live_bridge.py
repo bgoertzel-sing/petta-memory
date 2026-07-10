@@ -767,6 +767,11 @@ class LiveBridgeTests(unittest.TestCase):
                 ],
                 "non-list proofs",
             ),
+            (
+                "candidate-without-action-id-evidence-non-object",
+                [{"status": "candidate", "evidence": "memory proof"}],
+                "non-object evidence",
+            ),
         ]
         for name, decisions, expected_error in cases:
             with self.subTest(name=name):
