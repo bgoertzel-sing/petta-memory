@@ -817,10 +817,43 @@ class LiveBridgeTests(unittest.TestCase):
                     {
                         "status": "recommended",
                         "action_id": "publish_redacted_summary",
-                        "evidence": {"contextual_evidence": [{"support": 9}, "packet-b"]},
+                        "evidence": {"contextual_evidence": [{"support": 9, "opposition": 1}, "packet-b"]},
                     }
                 ],
                 "non-object contextual_evidence entry",
+            ),
+            (
+                "contextual-evidence-support-missing",
+                [
+                    {
+                        "status": "recommended",
+                        "action_id": "publish_redacted_summary",
+                        "evidence": {"contextual_evidence": [{"opposition": 1.0}]},
+                    }
+                ],
+                "malformed EC count",
+            ),
+            (
+                "contextual-evidence-support-bool",
+                [
+                    {
+                        "status": "recommended",
+                        "action_id": "publish_redacted_summary",
+                        "evidence": {"contextual_evidence": [{"support": True, "opposition": 1.0}]},
+                    }
+                ],
+                "malformed EC count",
+            ),
+            (
+                "contextual-evidence-opposition-negative",
+                [
+                    {
+                        "status": "recommended",
+                        "action_id": "publish_redacted_summary",
+                        "evidence": {"contextual_evidence": [{"support": 9.0, "opposition": -1.0}]},
+                    }
+                ],
+                "malformed EC count",
             ),
         ]
         for name, decisions, expected_error in cases:
