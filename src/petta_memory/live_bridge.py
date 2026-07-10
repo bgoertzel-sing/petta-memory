@@ -213,6 +213,17 @@ def run_petta_memory_goalchainer_live_bridge(
                 "GoalChainer gate returned duplicate decision action_id; refusing live bridge output"
             )
         decision_action_ids.add(action_id)
+        evidence = decision.get("evidence")
+        if evidence is not None:
+            if not isinstance(evidence, dict):
+                raise ValidationError(
+                    "GoalChainer gate returned decision with non-object evidence; refusing live bridge output"
+                )
+            proofs = evidence.get("proofs")
+            if proofs is not None and not isinstance(proofs, list):
+                raise ValidationError(
+                    "GoalChainer gate returned decision evidence with non-list proofs; refusing live bridge output"
+                )
     recommended_decisions = [item for item in decisions if item.get("status") == "recommended"]
     if len(recommended_decisions) > 1:
         raise ValidationError("GoalChainer gate returned multiple recommended decisions; refusing live bridge output")
