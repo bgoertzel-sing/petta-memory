@@ -534,6 +534,50 @@ class LiveBridgeTests(unittest.TestCase):
                             goalchainer_runner=fake_goalchainer_runner,
                         )
 
+    def test_live_bridge_rejects_malformed_goalchainer_heuristic_memory_probe(self):
+        fixture = Path(__file__).resolve().parents[1] / "fixtures" / "goalchainer_handoff_smoke.metta"
+        repo = Path(__file__).resolve().parents[4] / "omegaclaw" / "repos" / "OmegaClaw-GoalChainer"
+
+        base_probe = {
+            "schema": "petta-memory-goalchainer-heuristic-memory-probe-v1",
+            "mode": "non-live-goalchainer-solve-incident-memory-items",
+            "memory_proof_present": True,
+            "leak_check_safe": True,
+            "boundary": "fake non-live heuristic probe boundary",
+        }
+        cases = [
+            ("non-object", "not-an-object", "non-object heuristic_memory_probe"),
+            ("bad-schema", {**base_probe, "schema": ""}, "non-string metadata"),
+            ("missing-memory-proof", {**base_probe, "memory_proof_present": False}, "did not confirm memory proof"),
+            ("unsafe-leak-check", {**base_probe, "leak_check_safe": False}, "did not confirm leak_check_safe"),
+        ]
+        for name, probe, expected_error in cases:
+            with self.subTest(name=name):
+                def fake_goalchainer_runner(*args, **kwargs):
+                    return {
+                        "schema": "petta-memory-goalchainer-precompiled-smoke-result-v1",
+                        "mode": "non-live-goalchainer-precompiled-handoff-smoke",
+                        "decision_payload": {"decisions": []},
+                        "checks": {"no_memory_write": True, "no_live_directive_or_task_claim": True},
+                        "boundary": "fake boundary",
+                        "heuristic_memory_probe": probe,
+                    }
+
+                with tempfile.TemporaryDirectory() as td:
+                    journal = Path(td) / "journal.metta"
+                    store = MediumMemoryStore(journal)
+                    store.append_cluster(fixture.read_text(encoding="utf-8"))
+
+                    with self.assertRaisesRegex(ValidationError, expected_error):
+                        run_petta_memory_goalchainer_live_bridge(
+                            journal,
+                            goalchainer_repo=repo,
+                            cache_id=f"bridge-goalchainer-heuristic-probe-{name}-test",
+                            query_target="(Acceptable publish_redacted_summary)",
+                            require_query_relevance=True,
+                            goalchainer_runner=fake_goalchainer_runner,
+                        )
+
     def test_live_bridge_rejects_non_list_goalchainer_decisions(self):
         fixture = Path(__file__).resolve().parents[1] / "fixtures" / "goalchainer_handoff_smoke.metta"
         repo = Path(__file__).resolve().parents[4] / "omegaclaw" / "repos" / "OmegaClaw-GoalChainer"

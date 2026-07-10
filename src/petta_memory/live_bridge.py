@@ -159,6 +159,27 @@ def run_petta_memory_goalchainer_live_bridge(
     goalchainer_boundary = goalchainer_result.get("boundary")
     if not isinstance(goalchainer_boundary, str) or not goalchainer_boundary:
         raise ValidationError("GoalChainer gate returned non-string boundary; refusing live bridge output")
+    heuristic_memory_probe = goalchainer_result.get("heuristic_memory_probe")
+    if heuristic_memory_probe is not None:
+        if not isinstance(heuristic_memory_probe, dict):
+            raise ValidationError(
+                "GoalChainer gate returned non-object heuristic_memory_probe; refusing live bridge output"
+            )
+        for field in ("schema", "mode", "boundary"):
+            value = heuristic_memory_probe.get(field)
+            if not isinstance(value, str) or not value:
+                raise ValidationError(
+                    "GoalChainer gate returned heuristic_memory_probe with non-string metadata; "
+                    "refusing live bridge output"
+                )
+        if heuristic_memory_probe.get("memory_proof_present") is not True:
+            raise ValidationError(
+                "GoalChainer gate heuristic_memory_probe did not confirm memory proof; refusing live bridge output"
+            )
+        if heuristic_memory_probe.get("leak_check_safe") is not True:
+            raise ValidationError(
+                "GoalChainer gate heuristic_memory_probe did not confirm leak_check_safe; refusing live bridge output"
+            )
 
     decisions = decision_payload.get("decisions", [])
     if not isinstance(decisions, list):
@@ -236,7 +257,7 @@ def run_petta_memory_goalchainer_live_bridge(
             "recommended_status": recommended_status,
             "decisions": decisions,
             "notes": notes,
-            "heuristic_memory_probe": goalchainer_result.get("heuristic_memory_probe"),
+            "heuristic_memory_probe": heuristic_memory_probe,
             "checks": checks,
             "boundary": goalchainer_boundary,
         },
