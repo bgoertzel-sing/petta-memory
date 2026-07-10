@@ -768,6 +768,28 @@ class LiveBridgeTests(unittest.TestCase):
                 "non-list proofs",
             ),
             (
+                "proof-entry-non-string",
+                [
+                    {
+                        "status": "recommended",
+                        "action_id": "publish_redacted_summary",
+                        "evidence": {"proofs": ["proof-a", {"proof": "proof-b"}]},
+                    }
+                ],
+                "malformed proof entry",
+            ),
+            (
+                "proof-entry-empty-string",
+                [
+                    {
+                        "status": "recommended",
+                        "action_id": "publish_redacted_summary",
+                        "evidence": {"proofs": ["proof-a", ""]},
+                    }
+                ],
+                "malformed proof entry",
+            ),
+            (
                 "candidate-without-action-id-evidence-non-object",
                 [{"status": "candidate", "evidence": "memory proof"}],
                 "non-object evidence",
