@@ -341,6 +341,24 @@ class LiveBridgeTests(unittest.TestCase):
                 "semantic markers did not pass",
             ),
             (
+                "semantic_marker_bool_count",
+                {"passed_true_count": True, "passed_false_count": 0, "semantic_passed": True},
+                {"schema": "petta-memory-patham9-pln-multi-sentence-derivation-smoke-program-v1"},
+                "malformed semantic marker counts",
+            ),
+            (
+                "semantic_marker_string_count",
+                {"passed_true_count": 1, "passed_false_count": "0", "semantic_passed": True},
+                {"schema": "petta-memory-patham9-pln-multi-sentence-derivation-smoke-program-v1"},
+                "malformed semantic marker counts",
+            ),
+            (
+                "semantic_marker_error_count",
+                {"passed_true_count": 1, "passed_false_count": 0, "error_markers": 1, "semantic_passed": True},
+                {"schema": "petta-memory-patham9-pln-multi-sentence-derivation-smoke-program-v1"},
+                "semantic markers did not pass",
+            ),
+            (
                 "program",
                 {"passed_true_count": 1, "passed_false_count": 0, "semantic_passed": True},
                 ["not", "an", "object"],

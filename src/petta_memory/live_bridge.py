@@ -119,7 +119,24 @@ def run_petta_memory_goalchainer_live_bridge(
                 "patham9 runtime gate returned nonzero or non-integer returncode; refusing GoalChainer appraisal "
                 f"(status={patham9_runtime_result.get('status')!r}, returncode={runtime_returncode!r})"
             )
-        if semantic_markers.get("semantic_passed") is not True:
+        for field in ("passed_true_count", "passed_false_count"):
+            value = semantic_markers.get(field)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValidationError(
+                    "patham9 runtime gate returned malformed semantic marker counts; "
+                    "refusing GoalChainer appraisal"
+                )
+        error_markers = semantic_markers.get("error_markers", 0)
+        if isinstance(error_markers, bool) or not isinstance(error_markers, int) or error_markers < 0:
+            raise ValidationError(
+                "patham9 runtime gate returned malformed semantic marker counts; refusing GoalChainer appraisal"
+            )
+        if (
+            semantic_markers.get("semantic_passed") is not True
+            or semantic_markers["passed_true_count"] <= 0
+            or semantic_markers["passed_false_count"] != 0
+            or error_markers != 0
+        ):
             raise ValidationError(
                 "patham9 runtime gate semantic markers did not pass; refusing GoalChainer appraisal"
             )
