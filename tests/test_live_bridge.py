@@ -112,6 +112,7 @@ class LiveBridgeTests(unittest.TestCase):
                     "no_memory_write": True,
                     "no_task_or_directive_claim": True,
                     "no_live_directive_or_task_claim": True,
+                    "heuristic_with_memory_path_checked": True,
                 },
                 "boundary": "fake read-only GoalChainer boundary",
                 "heuristic_memory_probe": {
@@ -564,6 +565,42 @@ class LiveBridgeTests(unittest.TestCase):
                     journal,
                     goalchainer_repo=repo,
                     cache_id="bridge-goalchainer-missing-heuristic-probe-test",
+                    query_target="(Acceptable publish_redacted_summary)",
+                    require_query_relevance=True,
+                    include_heuristic_memory_probe=True,
+                    goalchainer_runner=fake_goalchainer_runner,
+                )
+
+    def test_live_bridge_rejects_missing_requested_goalchainer_heuristic_check(self):
+        fixture = Path(__file__).resolve().parents[1] / "fixtures" / "goalchainer_handoff_smoke.metta"
+        repo = Path(__file__).resolve().parents[4] / "omegaclaw" / "repos" / "OmegaClaw-GoalChainer"
+
+        def fake_goalchainer_runner(*args, **kwargs):
+            return {
+                "schema": "petta-memory-goalchainer-precompiled-smoke-result-v1",
+                "mode": "non-live-goalchainer-precompiled-handoff-smoke",
+                "decision_payload": {"decisions": []},
+                "checks": {"no_memory_write": True, "no_live_directive_or_task_claim": True},
+                "boundary": "fake boundary",
+                "heuristic_memory_probe": {
+                    "schema": "petta-memory-goalchainer-heuristic-memory-probe-v1",
+                    "mode": "non-live-goalchainer-solve-incident-memory-items",
+                    "memory_proof_present": True,
+                    "leak_check_safe": True,
+                    "boundary": "fake non-live heuristic probe boundary",
+                },
+            }
+
+        with tempfile.TemporaryDirectory() as td:
+            journal = Path(td) / "journal.metta"
+            store = MediumMemoryStore(journal)
+            store.append_cluster(fixture.read_text(encoding="utf-8"))
+
+            with self.assertRaisesRegex(ValidationError, "heuristic_with_memory_path_checked"):
+                run_petta_memory_goalchainer_live_bridge(
+                    journal,
+                    goalchainer_repo=repo,
+                    cache_id="bridge-goalchainer-missing-heuristic-check-test",
                     query_target="(Acceptable publish_redacted_summary)",
                     require_query_relevance=True,
                     include_heuristic_memory_probe=True,

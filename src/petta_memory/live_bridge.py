@@ -297,6 +297,11 @@ def run_petta_memory_goalchainer_live_bridge(
         raise ValidationError(
             "GoalChainer gate omitted requested heuristic_memory_probe; refusing live bridge output"
         )
+    if include_heuristic_memory_probe and checks.get("heuristic_with_memory_path_checked") is not True:
+        raise ValidationError(
+            "GoalChainer gate did not assert heuristic_with_memory_path_checked for requested probe; "
+            "refusing live bridge output"
+        )
     return {
         "schema": "petta-memory-goalchainer-live-bridge-v1",
         "mode": "read-only-live-journal-to-local-goalchainer",
@@ -339,6 +344,9 @@ def run_petta_memory_goalchainer_live_bridge(
                 (not include_patham9_runtime) or patham9_runtime_gate.get("status") == "passed"
             ),
             "goalchainer_recommended_action_present": isinstance(recommended, dict),
+            "heuristic_memory_probe_checked": (
+                (not include_heuristic_memory_probe) or checks.get("heuristic_with_memory_path_checked") is True
+            ),
             "no_omegaclaw_skill_loaded": True,
             "no_task_or_directive_claim": True,
             "no_memory_write": True,
