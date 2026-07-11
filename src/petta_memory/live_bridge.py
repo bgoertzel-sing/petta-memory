@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any, Callable
 
@@ -235,7 +236,12 @@ def run_petta_memory_goalchainer_live_bridge(
                 for item in contextual_evidence:
                     for field in ("support", "opposition"):
                         value = item.get(field)
-                        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+                        if (
+                            isinstance(value, bool)
+                            or not isinstance(value, (int, float))
+                            or not math.isfinite(value)
+                            or value < 0
+                        ):
                             raise ValidationError(
                                 "GoalChainer gate returned contextual_evidence entry with malformed EC count; "
                                 "refusing live bridge output"
@@ -243,7 +249,11 @@ def run_petta_memory_goalchainer_live_bridge(
                     for field in ("derived_strength", "derived_confidence"):
                         value = item.get(field)
                         if value is not None and (
-                            isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0 or value > 1
+                            isinstance(value, bool)
+                            or not isinstance(value, (int, float))
+                            or not math.isfinite(value)
+                            or value < 0
+                            or value > 1
                         ):
                             raise ValidationError(
                                 "GoalChainer gate returned contextual_evidence entry with malformed derived truth value; "

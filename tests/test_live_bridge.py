@@ -856,6 +856,36 @@ class LiveBridgeTests(unittest.TestCase):
                 "malformed EC count",
             ),
             (
+                "contextual-evidence-support-nan",
+                [
+                    {
+                        "status": "recommended",
+                        "action_id": "publish_redacted_summary",
+                        "evidence": {
+                            "contextual_evidence": [
+                                {"support": float("nan"), "opposition": 1.0}
+                            ]
+                        },
+                    }
+                ],
+                "malformed EC count",
+            ),
+            (
+                "contextual-evidence-opposition-infinite",
+                [
+                    {
+                        "status": "recommended",
+                        "action_id": "publish_redacted_summary",
+                        "evidence": {
+                            "contextual_evidence": [
+                                {"support": 9.0, "opposition": float("inf")}
+                            ]
+                        },
+                    }
+                ],
+                "malformed EC count",
+            ),
+            (
                 "contextual-evidence-derived-strength-out-of-range",
                 [
                     {
@@ -867,6 +897,50 @@ class LiveBridgeTests(unittest.TestCase):
                                     "support": 9.0,
                                     "opposition": 1.0,
                                     "derived_strength": 1.5,
+                                    "belief_id": "b1",
+                                    "cluster_id": "mc1",
+                                    "promotion_event": "pe1",
+                                }
+                            ]
+                        },
+                    }
+                ],
+                "malformed derived truth value",
+            ),
+            (
+                "contextual-evidence-derived-strength-nan",
+                [
+                    {
+                        "status": "recommended",
+                        "action_id": "publish_redacted_summary",
+                        "evidence": {
+                            "contextual_evidence": [
+                                {
+                                    "support": 9.0,
+                                    "opposition": 1.0,
+                                    "derived_strength": float("nan"),
+                                    "belief_id": "b1",
+                                    "cluster_id": "mc1",
+                                    "promotion_event": "pe1",
+                                }
+                            ]
+                        },
+                    }
+                ],
+                "malformed derived truth value",
+            ),
+            (
+                "contextual-evidence-derived-confidence-infinite",
+                [
+                    {
+                        "status": "recommended",
+                        "action_id": "publish_redacted_summary",
+                        "evidence": {
+                            "contextual_evidence": [
+                                {
+                                    "support": 9.0,
+                                    "opposition": 1.0,
+                                    "derived_confidence": float("inf"),
                                     "belief_id": "b1",
                                     "cluster_id": "mc1",
                                     "promotion_event": "pe1",
