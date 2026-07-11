@@ -244,6 +244,10 @@ def run_petta_memory_goalchainer_live_bridge(
                 raise ValidationError(
                     "GoalChainer gate returned decision with non-object evidence; refusing live bridge output"
                 )
+            if any(field in evidence for field in disallowed_live_directive_fields):
+                raise ValidationError(
+                    "GoalChainer gate returned directive/task-claim sidecar; refusing live bridge output"
+                )
             proofs = evidence.get("proofs")
             if proofs is not None:
                 if not isinstance(proofs, list):
@@ -268,6 +272,10 @@ def run_petta_memory_goalchainer_live_bridge(
                         "refusing live bridge output"
                     )
                 for item in contextual_evidence:
+                    if any(field in item for field in disallowed_live_directive_fields):
+                        raise ValidationError(
+                            "GoalChainer gate returned directive/task-claim sidecar; refusing live bridge output"
+                        )
                     for field in ("support", "opposition"):
                         value = item.get(field)
                         if (

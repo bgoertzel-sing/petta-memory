@@ -971,6 +971,17 @@ class LiveBridgeTests(unittest.TestCase):
                 "non-object evidence",
             ),
             (
+                "evidence-directive-sidecar",
+                [
+                    {
+                        "status": "recommended",
+                        "action_id": "publish_redacted_summary",
+                        "evidence": {"proofs": ["proof-a"], "directive_report": {"accepted": True}},
+                    }
+                ],
+                "directive/task-claim sidecar",
+            ),
+            (
                 "contextual-evidence-non-list",
                 [
                     {
@@ -1142,6 +1153,28 @@ class LiveBridgeTests(unittest.TestCase):
                     }
                 ],
                 "malformed derived truth value",
+            ),
+            (
+                "contextual-evidence-directive-sidecar",
+                [
+                    {
+                        "status": "recommended",
+                        "action_id": "publish_redacted_summary",
+                        "evidence": {
+                            "contextual_evidence": [
+                                {
+                                    "support": 9.0,
+                                    "opposition": 1.0,
+                                    "belief_id": "b1",
+                                    "cluster_id": "mc1",
+                                    "promotion_event": "pe1",
+                                    "task_states": {"claimed": True},
+                                }
+                            ]
+                        },
+                    }
+                ],
+                "directive/task-claim sidecar",
             ),
             (
                 "contextual-evidence-provenance-missing",
