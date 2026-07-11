@@ -196,6 +196,10 @@ def run_petta_memory_goalchainer_live_bridge(
             raise ValidationError(
                 "GoalChainer gate heuristic_memory_probe did not confirm leak_check_safe; refusing live bridge output"
             )
+        if any(field in heuristic_memory_probe for field in disallowed_live_directive_fields):
+            raise ValidationError(
+                "GoalChainer gate returned directive/task-claim sidecar; refusing live bridge output"
+            )
 
     decisions = decision_payload.get("decisions", [])
     if not isinstance(decisions, list):
