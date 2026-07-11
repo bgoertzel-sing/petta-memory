@@ -17,6 +17,28 @@ from .store import MediumMemoryStore, ValidationError
 DEFAULT_PLN_REPO = Path(__file__).resolve().parents[3] / "patham9-pln"
 
 
+DISALLOWED_LIVE_DIRECTIVE_FIELDS = {
+    "claim",
+    "task_claim",
+    "directive_claim",
+    "directive_report",
+    "plan",
+    "task_states",
+    "next",
+    "skill",
+}
+
+
+def _contains_disallowed_live_directive_field(value: Any) -> bool:
+    if isinstance(value, dict):
+        if any(field in value for field in DISALLOWED_LIVE_DIRECTIVE_FIELDS):
+            return True
+        return any(_contains_disallowed_live_directive_field(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_disallowed_live_directive_field(item) for item in value)
+    return False
+
+
 def run_petta_memory_goalchainer_live_bridge(
     journal_path: str | Path,
     *,
@@ -160,21 +182,13 @@ def run_petta_memory_goalchainer_live_bridge(
     goalchainer_boundary = goalchainer_result.get("boundary")
     if not isinstance(goalchainer_boundary, str) or not goalchainer_boundary:
         raise ValidationError("GoalChainer gate returned non-string boundary; refusing live bridge output")
-    disallowed_live_directive_fields = {
-        "claim",
-        "task_claim",
-        "directive_claim",
-        "directive_report",
-        "plan",
-        "task_states",
-        "next",
-        "skill",
-    }
-    for field in disallowed_live_directive_fields:
-        if field in goalchainer_result or field in decision_payload or field in checks:
-            raise ValidationError(
-                "GoalChainer gate returned directive/task-claim sidecar; refusing live bridge output"
-            )
+    if any(
+        _contains_disallowed_live_directive_field(container)
+        for container in (goalchainer_result, decision_payload, checks)
+    ):
+        raise ValidationError(
+            "GoalChainer gate returned directive/task-claim sidecar; refusing live bridge output"
+        )
     heuristic_memory_probe = goalchainer_result.get("heuristic_memory_probe")
     if heuristic_memory_probe is not None:
         if not isinstance(heuristic_memory_probe, dict):
@@ -196,7 +210,7 @@ def run_petta_memory_goalchainer_live_bridge(
             raise ValidationError(
                 "GoalChainer gate heuristic_memory_probe did not confirm leak_check_safe; refusing live bridge output"
             )
-        if any(field in heuristic_memory_probe for field in disallowed_live_directive_fields):
+        if _contains_disallowed_live_directive_field(heuristic_memory_probe):
             raise ValidationError(
                 "GoalChainer gate returned directive/task-claim sidecar; refusing live bridge output"
             )
@@ -206,7 +220,7 @@ def run_petta_memory_goalchainer_live_bridge(
         raise ValidationError("GoalChainer gate returned non-list decisions; refusing live bridge output")
     if any(not isinstance(item, dict) for item in decisions):
         raise ValidationError("GoalChainer gate returned non-object decision entries; refusing live bridge output")
-    if any(field in decision for decision in decisions for field in disallowed_live_directive_fields):
+    if any(_contains_disallowed_live_directive_field(decision) for decision in decisions):
         raise ValidationError(
             "GoalChainer gate returned directive/task-claim sidecar; refusing live bridge output"
         )
@@ -244,7 +258,7 @@ def run_petta_memory_goalchainer_live_bridge(
                 raise ValidationError(
                     "GoalChainer gate returned decision with non-object evidence; refusing live bridge output"
                 )
-            if any(field in evidence for field in disallowed_live_directive_fields):
+            if _contains_disallowed_live_directive_field(evidence):
                 raise ValidationError(
                     "GoalChainer gate returned directive/task-claim sidecar; refusing live bridge output"
                 )
@@ -272,7 +286,7 @@ def run_petta_memory_goalchainer_live_bridge(
                         "refusing live bridge output"
                     )
                 for item in contextual_evidence:
-                    if any(field in item for field in disallowed_live_directive_fields):
+                    if _contains_disallowed_live_directive_field(item):
                         raise ValidationError(
                             "GoalChainer gate returned directive/task-claim sidecar; refusing live bridge output"
                         )

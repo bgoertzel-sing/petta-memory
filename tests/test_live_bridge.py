@@ -551,8 +551,11 @@ class LiveBridgeTests(unittest.TestCase):
             ("payload", "skill", "goalchainer-directive"),
             ("payload", "task_states", {"publish_redacted_summary": "ready"}),
             ("checks", "directive_claim", {"task": "publish_redacted_summary"}),
+            ("checks_nested", "audit", {"metadata": {"skill": "goalchainer-directive"}}),
             ("probe", "directive_report", {"next": "claim-task"}),
+            ("probe_nested", "audit", {"metadata": {"directive_claim": {"task": "claim-task"}}}),
             ("decision", "directive_report", {"next": "claim-task"}),
+            ("decision_nested", "audit", {"metadata": {"task_states": {"claimed": True}}}),
         ]
         for location, field, value in cases:
             with self.subTest(location=location, field=field):
@@ -568,9 +571,9 @@ class LiveBridgeTests(unittest.TestCase):
                         result[field] = value
                     elif location == "payload":
                         result["decision_payload"][field] = value
-                    elif location == "checks":
+                    elif location in {"checks", "checks_nested"}:
                         result["checks"][field] = value
-                    elif location == "probe":
+                    elif location in {"probe", "probe_nested"}:
                         result["heuristic_memory_probe"] = {
                             "schema": "petta-memory-goalchainer-heuristic-memory-probe-v1",
                             "mode": "non-live-goalchainer-solve-incident-memory-items",
