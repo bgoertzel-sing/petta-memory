@@ -160,6 +160,21 @@ def run_petta_memory_goalchainer_live_bridge(
     goalchainer_boundary = goalchainer_result.get("boundary")
     if not isinstance(goalchainer_boundary, str) or not goalchainer_boundary:
         raise ValidationError("GoalChainer gate returned non-string boundary; refusing live bridge output")
+    disallowed_live_directive_fields = {
+        "claim",
+        "task_claim",
+        "directive_claim",
+        "directive_report",
+        "plan",
+        "task_states",
+        "next",
+        "skill",
+    }
+    for field in disallowed_live_directive_fields:
+        if field in goalchainer_result or field in decision_payload:
+            raise ValidationError(
+                "GoalChainer gate returned directive/task-claim sidecar; refusing live bridge output"
+            )
     heuristic_memory_probe = goalchainer_result.get("heuristic_memory_probe")
     if heuristic_memory_probe is not None:
         if not isinstance(heuristic_memory_probe, dict):

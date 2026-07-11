@@ -542,6 +542,46 @@ class LiveBridgeTests(unittest.TestCase):
                             goalchainer_runner=fake_goalchainer_runner,
                         )
 
+    def test_live_bridge_rejects_goalchainer_directive_task_claim_sidecars(self):
+        fixture = Path(__file__).resolve().parents[1] / "fixtures" / "goalchainer_handoff_smoke.metta"
+        repo = Path(__file__).resolve().parents[4] / "omegaclaw" / "repos" / "OmegaClaw-GoalChainer"
+
+        cases = [
+            ("result", "claim", {"task": "publish_redacted_summary", "agent": "protomegabot"}),
+            ("payload", "skill", "goalchainer-directive"),
+            ("payload", "task_states", {"publish_redacted_summary": "ready"}),
+        ]
+        for location, field, value in cases:
+            with self.subTest(location=location, field=field):
+                def fake_goalchainer_runner(*args, **kwargs):
+                    result = {
+                        "schema": "petta-memory-goalchainer-precompiled-smoke-result-v1",
+                        "mode": "non-live-goalchainer-precompiled-handoff-smoke",
+                        "decision_payload": {"decisions": []},
+                        "checks": {"no_memory_write": True, "no_live_directive_or_task_claim": True},
+                        "boundary": "fake boundary",
+                    }
+                    if location == "result":
+                        result[field] = value
+                    else:
+                        result["decision_payload"][field] = value
+                    return result
+
+                with tempfile.TemporaryDirectory() as td:
+                    journal = Path(td) / "journal.metta"
+                    store = MediumMemoryStore(journal)
+                    store.append_cluster(fixture.read_text(encoding="utf-8"))
+
+                    with self.assertRaisesRegex(ValidationError, "directive/task-claim sidecar"):
+                        run_petta_memory_goalchainer_live_bridge(
+                            journal,
+                            goalchainer_repo=repo,
+                            cache_id="bridge-goalchainer-directive-sidecar-test",
+                            query_target="(Acceptable publish_redacted_summary)",
+                            require_query_relevance=True,
+                            goalchainer_runner=fake_goalchainer_runner,
+                        )
+
     def test_live_bridge_rejects_missing_requested_goalchainer_heuristic_memory_probe(self):
         fixture = Path(__file__).resolve().parents[1] / "fixtures" / "goalchainer_handoff_smoke.metta"
         repo = Path(__file__).resolve().parents[4] / "omegaclaw" / "repos" / "OmegaClaw-GoalChainer"
