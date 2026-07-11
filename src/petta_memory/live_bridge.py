@@ -293,6 +293,10 @@ def run_petta_memory_goalchainer_live_bridge(
     else:
         recommended_action = None
         recommended_status = None
+    if include_heuristic_memory_probe and heuristic_memory_probe is None:
+        raise ValidationError(
+            "GoalChainer gate omitted requested heuristic_memory_probe; refusing live bridge output"
+        )
     return {
         "schema": "petta-memory-goalchainer-live-bridge-v1",
         "mode": "read-only-live-journal-to-local-goalchainer",
