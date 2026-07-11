@@ -173,6 +173,10 @@ def run_petta_memory_goalchainer_live_bridge(
         raise ValidationError(
             "GoalChainer gate did not assert no_live_directive_or_task_claim; refusing live bridge output"
         )
+    if "no_task_or_directive_claim" in checks and checks.get("no_task_or_directive_claim") is not True:
+        raise ValidationError(
+            "GoalChainer gate returned conflicting no_task_or_directive_claim check; refusing live bridge output"
+        )
     goalchainer_schema = goalchainer_result.get("schema")
     if not isinstance(goalchainer_schema, str) or not goalchainer_schema:
         raise ValidationError("GoalChainer gate returned non-string schema; refusing live bridge output")
@@ -209,6 +213,16 @@ def run_petta_memory_goalchainer_live_bridge(
         if heuristic_memory_probe.get("leak_check_safe") is not True:
             raise ValidationError(
                 "GoalChainer gate heuristic_memory_probe did not confirm leak_check_safe; refusing live bridge output"
+            )
+        parsed_memory_items = heuristic_memory_probe.get("parsed_memory_items")
+        if parsed_memory_items is not None and (
+            isinstance(parsed_memory_items, bool)
+            or not isinstance(parsed_memory_items, int)
+            or parsed_memory_items <= 0
+        ):
+            raise ValidationError(
+                "GoalChainer gate heuristic_memory_probe returned malformed parsed_memory_items; "
+                "refusing live bridge output"
             )
         if _contains_disallowed_live_directive_field(heuristic_memory_probe):
             raise ValidationError(
