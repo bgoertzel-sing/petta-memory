@@ -202,6 +202,10 @@ def run_petta_memory_goalchainer_live_bridge(
         raise ValidationError("GoalChainer gate returned non-list decisions; refusing live bridge output")
     if any(not isinstance(item, dict) for item in decisions):
         raise ValidationError("GoalChainer gate returned non-object decision entries; refusing live bridge output")
+    if any(field in decision for decision in decisions for field in disallowed_live_directive_fields):
+        raise ValidationError(
+            "GoalChainer gate returned directive/task-claim sidecar; refusing live bridge output"
+        )
     notes = decision_payload.get("notes", [])
     if not isinstance(notes, list):
         raise ValidationError("GoalChainer gate returned non-list notes; refusing live bridge output")

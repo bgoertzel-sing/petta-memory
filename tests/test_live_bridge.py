@@ -550,6 +550,7 @@ class LiveBridgeTests(unittest.TestCase):
             ("result", "claim", {"task": "publish_redacted_summary", "agent": "protomegabot"}),
             ("payload", "skill", "goalchainer-directive"),
             ("payload", "task_states", {"publish_redacted_summary": "ready"}),
+            ("decision", "directive_report", {"next": "claim-task"}),
         ]
         for location, field, value in cases:
             with self.subTest(location=location, field=field):
@@ -563,8 +564,12 @@ class LiveBridgeTests(unittest.TestCase):
                     }
                     if location == "result":
                         result[field] = value
-                    else:
+                    elif location == "payload":
                         result["decision_payload"][field] = value
+                    else:
+                        result["decision_payload"]["decisions"] = [
+                            {"action_id": "publish_redacted_summary", "status": "recommended", field: value}
+                        ]
                     return result
 
                 with tempfile.TemporaryDirectory() as td:
