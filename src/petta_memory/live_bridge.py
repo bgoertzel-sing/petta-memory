@@ -171,7 +171,7 @@ def run_petta_memory_goalchainer_live_bridge(
         "skill",
     }
     for field in disallowed_live_directive_fields:
-        if field in goalchainer_result or field in decision_payload:
+        if field in goalchainer_result or field in decision_payload or field in checks:
             raise ValidationError(
                 "GoalChainer gate returned directive/task-claim sidecar; refusing live bridge output"
             )

@@ -550,6 +550,7 @@ class LiveBridgeTests(unittest.TestCase):
             ("result", "claim", {"task": "publish_redacted_summary", "agent": "protomegabot"}),
             ("payload", "skill", "goalchainer-directive"),
             ("payload", "task_states", {"publish_redacted_summary": "ready"}),
+            ("checks", "directive_claim", {"task": "publish_redacted_summary"}),
             ("decision", "directive_report", {"next": "claim-task"}),
         ]
         for location, field, value in cases:
@@ -566,6 +567,8 @@ class LiveBridgeTests(unittest.TestCase):
                         result[field] = value
                     elif location == "payload":
                         result["decision_payload"][field] = value
+                    elif location == "checks":
+                        result["checks"][field] = value
                     else:
                         result["decision_payload"]["decisions"] = [
                             {"action_id": "publish_redacted_summary", "status": "recommended", field: value}
