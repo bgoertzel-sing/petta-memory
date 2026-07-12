@@ -25,7 +25,7 @@ Direct tests cover immutability, malformed/nonfinite inputs, permutation-invaria
 ## Explicitly deferred
 
 - packet-to-basis construction, partial-overlap residualization, and independence discount policy;
-- `PiContext`, chart/snapshot fingerprints, schemas, and immutable storage;
+- snapshot persistence schema and immutable storage (the typed in-memory `EvidenceSnapshot` and content fingerprint are implemented);
 - migration of legacy aggregate EC sidecars to token-level provenance;
 - episode compiler, kernel-control port, replay manifests, and trace decoder;
 - proof classes, revision, curvature/descent, and reviewed promotion.

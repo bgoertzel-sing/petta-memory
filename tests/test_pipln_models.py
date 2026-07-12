@@ -11,6 +11,7 @@ from petta_memory.pipln_models import (
     ChartPolicy,
     PiContext,
     build_pi_chart,
+    build_evidence_snapshot,
     canonical_local_chart_projection,
     deterministic_stamp_map,
     evidence_basis_from_packet,
@@ -68,6 +69,37 @@ class PiPlnModelTests(unittest.TestCase):
     def test_deterministic_stamp_map_rejects_duplicate_basis_ids(self):
         with self.assertRaises(ValueError):
             deterministic_stamp_map("episode-1", [self.basis("same", "t1"), self.basis("same", "t2")])
+
+    def test_evidence_snapshot_is_order_invariant_and_version_closed(self):
+        def packet(packet_id, token_id, **changes):
+            values = dict(id=packet_id, statement="(S x)", context_id="ctx", positive_delta=1,
+                          negative_delta=0, token_ids=(token_id,), source_reliability=1,
+                          temporal_relevance=1, status="ACTIVE", assumption_fingerprint="a1",
+                          ontology_fingerprint="o1", created_by="OBSERVATION")
+            values.update(changes)
+            return EvidencePacket(**values)
+        p1, p2 = packet("p1", "t1"), packet("p2", "t2")
+        kwargs = dict(snapshot_id="snap", context_id="ctx", assumption_fingerprint="a1",
+                      ontology_fingerprint="o1", created_at="2026-07-12T16:00:00Z")
+        forward = build_evidence_snapshot(packets=[p1, p2], **kwargs)
+        reverse = build_evidence_snapshot(packets=[p2, p1], **kwargs)
+        self.assertEqual(forward, reverse)
+        self.assertEqual(forward.packet_ids, ("p1", "p2"))
+        self.assertEqual(len(forward.snapshot_fingerprint), 64)
+        changed_evidence = build_evidence_snapshot(
+            packets=[packet("p1", "t1", positive_delta=2), p2], **kwargs
+        )
+        self.assertNotEqual(forward.snapshot_fingerprint, changed_evidence.snapshot_fingerprint)
+        with self.assertRaisesRegex(ValueError, "not ACTIVE"):
+            build_evidence_snapshot(packets=[packet("p3", "t3", status="RETRACTED")], **kwargs)
+        with self.assertRaisesRegex(ValueError, "ontology mismatch"):
+            build_evidence_snapshot(packets=[packet("p3", "t3", ontology_fingerprint="o2")], **kwargs)
+
+    def test_evidence_snapshot_rejects_duplicate_packet_ids(self):
+        packet = EvidencePacket("p1", "(S x)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")
+        with self.assertRaisesRegex(ValueError, "unique"):
+            build_evidence_snapshot(snapshot_id="snap", packets=[packet, packet], context_id="ctx",
+                                    assumption_fingerprint="a1", ontology_fingerprint="o1", created_at="now")
 
     def test_chart_fingerprint_is_packet_order_invariant_and_policy_sensitive(self):
         context = PiContext("ctx", "lang-v1", "world", "(Guard x)", "guard-v1", "query", "assumptions-v1",

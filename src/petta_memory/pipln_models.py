@@ -127,6 +127,73 @@ class StampMapEntry:
 
 
 @dataclass(frozen=True)
+class EvidenceSnapshot:
+    """Immutable packet selection plus the versions that define its meaning."""
+
+    id: str
+    packet_ids: tuple[str, ...]
+    context_id: str
+    assumption_fingerprint: str
+    ontology_fingerprint: str
+    created_at: str
+    snapshot_fingerprint: str
+    schema_version: int = 1
+
+    def __post_init__(self) -> None:
+        for field in (
+            "id", "context_id", "assumption_fingerprint", "ontology_fingerprint",
+            "created_at", "snapshot_fingerprint",
+        ):
+            _nonempty(getattr(self, field), field)
+        if tuple(sorted(set(self.packet_ids))) != self.packet_ids:
+            raise ValueError("packet_ids must be unique and sorted")
+        if isinstance(self.schema_version, bool) or not isinstance(self.schema_version, int) or self.schema_version < 1:
+            raise ValueError("schema_version must be a positive integer")
+
+
+def build_evidence_snapshot(
+    *, snapshot_id: str, packets: Iterable[EvidencePacket], context_id: str,
+    assumption_fingerprint: str, ontology_fingerprint: str, created_at: str,
+) -> EvidenceSnapshot:
+    """Freeze active, version-compatible packets and derive a stable content fingerprint."""
+    packet_list = tuple(packets)
+    ids = tuple(sorted(packet.id for packet in packet_list))
+    if len(ids) != len(set(ids)):
+        raise ValueError("packet ids must be unique within a snapshot")
+    for packet in packet_list:
+        if packet.status != "ACTIVE":
+            raise ValueError(f"snapshot packet is not ACTIVE: {packet.id}")
+        if packet.context_id != context_id:
+            raise ValueError(f"snapshot packet context mismatch: {packet.id}")
+        if packet.assumption_fingerprint != assumption_fingerprint:
+            raise ValueError(f"snapshot packet assumption mismatch: {packet.id}")
+        if packet.ontology_fingerprint != ontology_fingerprint:
+            raise ValueError(f"snapshot packet ontology mismatch: {packet.id}")
+    fingerprint = _canonical_hash({
+        "packets": [
+            {
+                "id": packet.id,
+                "statement": packet.statement,
+                "positive_delta": packet.positive_delta,
+                "negative_delta": packet.negative_delta,
+                "token_ids": packet.token_ids,
+                "source_reliability": packet.source_reliability,
+                "temporal_relevance": packet.temporal_relevance,
+                "created_by": packet.created_by,
+                "parent_packet_ids": packet.parent_packet_ids,
+                "schema_version": packet.schema_version,
+            }
+            for packet in sorted(packet_list, key=lambda item: item.id)
+        ],
+        "context_id": context_id,
+        "assumption_fingerprint": assumption_fingerprint,
+        "ontology_fingerprint": ontology_fingerprint,
+    })
+    return EvidenceSnapshot(snapshot_id, ids, context_id, assumption_fingerprint,
+                            ontology_fingerprint, created_at, fingerprint)
+
+
+@dataclass(frozen=True)
 class PiContext:
     """Semantic context identity and its versioned applicability policies."""
 
