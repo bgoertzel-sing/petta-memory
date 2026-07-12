@@ -140,6 +140,57 @@ def deterministic_stamp_map(episode_id: str, bases: Iterable[EvidenceBasis]) -> 
 
 
 @dataclass(frozen=True)
+class EvidenceContribution:
+    """One channel-specific contribution from one evidence basis unit."""
+
+    basis_id: str
+    positive_weight: float = 0.0
+    negative_weight: float = 0.0
+
+    def __post_init__(self) -> None:
+        _nonempty(self.basis_id, "basis_id")
+        _finite_nonnegative(self.positive_weight, "positive_weight")
+        _finite_nonnegative(self.negative_weight, "negative_weight")
+        if self.positive_weight == 0 and self.negative_weight == 0:
+            raise ValueError("an evidence contribution must have positive or negative weight")
+
+
+@dataclass(frozen=True)
+class EvidenceCapsule:
+    """Exact evidence algebra keyed by basis, preventing duplicate count addition."""
+
+    contributions: tuple[EvidenceContribution, ...]
+
+    def __post_init__(self) -> None:
+        ids = tuple(item.basis_id for item in self.contributions)
+        if not ids or ids != tuple(sorted(set(ids))):
+            raise ValueError("contributions must be non-empty, unique, and sorted by basis_id")
+
+    @property
+    def positive_count(self) -> float:
+        return sum(item.positive_weight for item in self.contributions)
+
+    @property
+    def negative_count(self) -> float:
+        return sum(item.negative_weight for item in self.contributions)
+
+    @property
+    def basis_ids(self) -> tuple[str, ...]:
+        return tuple(item.basis_id for item in self.contributions)
+
+
+def merge_evidence_capsules(left: EvidenceCapsule, right: EvidenceCapsule) -> EvidenceCapsule:
+    """Union exact capsules by basis; reject inconsistent duplicate contributions."""
+    merged = {item.basis_id: item for item in left.contributions}
+    for item in right.contributions:
+        existing = merged.get(item.basis_id)
+        if existing is not None and existing != item:
+            raise ValueError(f"conflicting contribution for shared basis_id: {item.basis_id}")
+        merged[item.basis_id] = item
+    return EvidenceCapsule(tuple(merged[key] for key in sorted(merged)))
+
+
+@dataclass(frozen=True)
 class ProjectionRecord:
     positive_count: float
     negative_count: float

@@ -17,13 +17,14 @@ Normative design source: `library/atlas-indexed-reversible-pipln/specification.p
 - immutable validated `EvidenceToken`, `EvidencePacket`, and `EvidenceBasis` records;
 - stable packet provenance digests;
 - deterministic, collision-free episode stamp assignment sorted by stable basis ID;
-- canonical `pipl-local-chart-v1` projection with separate evidence mass, conflict balance, signed tendency, STV, and beta parameters.
+- canonical `pipl-local-chart-v1` projection with separate evidence mass, conflict balance, signed tendency, STV, and beta parameters;
+- exact `EvidenceCapsule` union-by-basis algebra that deduplicates identical shared contributions and fails closed on conflicting weights for the same basis ID.
 
-Direct tests cover immutability, malformed/nonfinite inputs, permutation-invariant stamps, duplicate basis rejection, the canonical equations, balanced conflict at different masses, and ignorance versus conflict.
+Direct tests cover immutability, malformed/nonfinite inputs, permutation-invariant stamps, duplicate basis rejection, exact overlap deduplication/conflict rejection, the canonical equations, balanced conflict at different masses, and ignorance versus conflict.
 
 ## Explicitly deferred
 
-- exact packet merge/residualization and independence policy;
+- packet-to-basis construction, partial-overlap residualization, and independence discount policy;
 - `PiContext`, chart/snapshot fingerprints, schemas, and immutable storage;
 - migration of legacy aggregate EC sidecars to token-level provenance;
 - episode compiler, kernel-control port, replay manifests, and trace decoder;

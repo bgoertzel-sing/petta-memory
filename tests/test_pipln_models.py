@@ -4,10 +4,13 @@ from dataclasses import FrozenInstanceError
 
 from petta_memory.pipln_models import (
     EvidenceBasis,
+    EvidenceCapsule,
+    EvidenceContribution,
     EvidencePacket,
     EvidenceToken,
     canonical_local_chart_projection,
     deterministic_stamp_map,
+    merge_evidence_capsules,
 )
 
 
@@ -41,6 +44,29 @@ class PiPlnModelTests(unittest.TestCase):
     def test_deterministic_stamp_map_rejects_duplicate_basis_ids(self):
         with self.assertRaises(ValueError):
             deterministic_stamp_map("episode-1", [self.basis("same", "t1"), self.basis("same", "t2")])
+
+    def test_exact_capsule_merge_deduplicates_shared_basis(self):
+        shared = EvidenceContribution("basis-b", positive_weight=2)
+        left = EvidenceCapsule((EvidenceContribution("basis-a", positive_weight=1), shared))
+        right = EvidenceCapsule((shared, EvidenceContribution("basis-c", negative_weight=3)))
+        merged = merge_evidence_capsules(left, right)
+        self.assertEqual(merged.basis_ids, ("basis-a", "basis-b", "basis-c"))
+        self.assertEqual((merged.positive_count, merged.negative_count), (3, 3))
+
+    def test_exact_capsule_merge_rejects_conflicting_shared_basis(self):
+        left = EvidenceCapsule((EvidenceContribution("basis-a", positive_weight=1),))
+        right = EvidenceCapsule((EvidenceContribution("basis-a", positive_weight=2),))
+        with self.assertRaisesRegex(ValueError, "conflicting contribution"):
+            merge_evidence_capsules(left, right)
+
+    def test_capsule_rejects_unsorted_duplicate_or_empty_contributions(self):
+        a = EvidenceContribution("basis-a", positive_weight=1)
+        b = EvidenceContribution("basis-b", negative_weight=1)
+        for contributions in ((), (b, a), (a, a)):
+            with self.assertRaises(ValueError):
+                EvidenceCapsule(contributions)
+        with self.assertRaises(ValueError):
+            EvidenceContribution("basis-empty")
 
     def test_projection_matches_canonical_equations(self):
         projection = canonical_local_chart_projection(3, 1, prior_strength=0.5, prior_weight=2)
