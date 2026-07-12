@@ -8,6 +8,9 @@ from petta_memory.pipln_models import (
     EvidenceContribution,
     EvidencePacket,
     EvidenceToken,
+    ChartPolicy,
+    PiContext,
+    build_pi_chart,
     canonical_local_chart_projection,
     deterministic_stamp_map,
     evidence_basis_from_packet,
@@ -65,6 +68,29 @@ class PiPlnModelTests(unittest.TestCase):
     def test_deterministic_stamp_map_rejects_duplicate_basis_ids(self):
         with self.assertRaises(ValueError):
             deterministic_stamp_map("episode-1", [self.basis("same", "t1"), self.basis("same", "t2")])
+
+    def test_chart_fingerprint_is_packet_order_invariant_and_policy_sensitive(self):
+        context = PiContext("ctx", "lang-v1", "world", "(Guard x)", "guard-v1", "query", "assumptions-v1",
+                            "ontology", "ontology-v1", "weak-v1", "relevance-v1")
+        policy = ChartPolicy("factor-v1", "projection-v1", "kernel-projection-v1", "rules-v1", "kernel-v1", "translator-v1")
+        kwargs = dict(chart_id="chart", context=context, prior_strength_p0=0.5, prior_weight_k=2,
+                      prior_provenance="review:1", policy=policy, evidence_snapshot_id="snapshot-1",
+                      adequacy_certificate_id="adequacy-1")
+        forward = build_pi_chart(selected_packet_ids=["p2", "p1"], **kwargs)
+        reverse = build_pi_chart(selected_packet_ids=["p1", "p2"], **kwargs)
+        self.assertEqual(forward, reverse)
+        self.assertEqual(forward.selected_packet_ids, ("p1", "p2"))
+        changed = build_pi_chart(selected_packet_ids=["p1", "p2"], **{**kwargs, "prior_weight_k": 3})
+        self.assertNotEqual(forward.chart_fingerprint, changed.chart_fingerprint)
+
+    def test_context_and_chart_fail_closed_on_noncanonical_identity_inputs(self):
+        common = dict(id="ctx", language_fragment_id="lang", universe_id="world", guard="g", guard_version="gv",
+                      task_class="query", assumption_package_id="a", ontology_id="o", ontology_version="ov",
+                      weakness_policy_id="w", relevance_policy_id="r")
+        with self.assertRaisesRegex(ValueError, "parent_context_ids"):
+            PiContext(parent_context_ids=("z", "a"), **common)
+        with self.assertRaisesRegex(ValueError, "own parent"):
+            PiContext(parent_context_ids=("ctx",), **common)
 
     def test_exact_capsule_merge_deduplicates_shared_basis(self):
         shared = EvidenceContribution("basis-b", positive_weight=2)

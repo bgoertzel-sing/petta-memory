@@ -126,6 +126,108 @@ class StampMapEntry:
     member_token_digest: str
 
 
+@dataclass(frozen=True)
+class PiContext:
+    """Semantic context identity and its versioned applicability policies."""
+
+    id: str
+    language_fragment_id: str
+    universe_id: str
+    guard: str
+    guard_version: str
+    task_class: str
+    assumption_package_id: str
+    ontology_id: str
+    ontology_version: str
+    weakness_policy_id: str
+    relevance_policy_id: str
+    parent_context_ids: tuple[str, ...] = ()
+    created_by_revision_id: str | None = None
+    schema_version: int = 1
+
+    def __post_init__(self) -> None:
+        for field in (
+            "id", "language_fragment_id", "universe_id", "guard", "guard_version",
+            "task_class", "assumption_package_id", "ontology_id", "ontology_version",
+            "weakness_policy_id", "relevance_policy_id",
+        ):
+            _nonempty(getattr(self, field), field)
+        if tuple(sorted(set(self.parent_context_ids))) != self.parent_context_ids:
+            raise ValueError("parent_context_ids must be unique and sorted")
+        if self.id in self.parent_context_ids:
+            raise ValueError("a context cannot be its own parent")
+        if self.created_by_revision_id is not None:
+            _nonempty(self.created_by_revision_id, "created_by_revision_id")
+        if isinstance(self.schema_version, bool) or not isinstance(self.schema_version, int) or self.schema_version < 1:
+            raise ValueError("schema_version must be a positive integer")
+
+
+@dataclass(frozen=True)
+class ChartPolicy:
+    factorization_policy_id: str
+    projection_policy_id: str
+    kernel_projection_policy_id: str
+    rule_profile_id: str
+    kernel_version: str
+    translator_version: str
+
+    def __post_init__(self) -> None:
+        for field in self.__dataclass_fields__:
+            _nonempty(getattr(self, field), field)
+
+
+@dataclass(frozen=True)
+class PiChart:
+    id: str
+    context_id: str
+    prior_strength_p0: float
+    prior_weight_k: float
+    prior_provenance: str
+    policy: ChartPolicy
+    selected_packet_ids: tuple[str, ...]
+    evidence_snapshot_id: str
+    adequacy_certificate_id: str
+    chart_fingerprint: str
+    schema_version: int = 1
+
+    def __post_init__(self) -> None:
+        for field in ("id", "context_id", "prior_provenance", "evidence_snapshot_id", "adequacy_certificate_id", "chart_fingerprint"):
+            _nonempty(getattr(self, field), field)
+        if isinstance(self.prior_strength_p0, bool) or not isinstance(self.prior_strength_p0, (int, float)) or not math.isfinite(self.prior_strength_p0) or not 0 <= self.prior_strength_p0 <= 1:
+            raise ValueError("prior_strength_p0 must be finite and in [0, 1]")
+        if isinstance(self.prior_weight_k, bool) or not isinstance(self.prior_weight_k, (int, float)) or not math.isfinite(self.prior_weight_k) or self.prior_weight_k <= 0:
+            raise ValueError("prior_weight_k must be finite and positive")
+        if tuple(sorted(set(self.selected_packet_ids))) != self.selected_packet_ids:
+            raise ValueError("selected_packet_ids must be unique and sorted")
+        if isinstance(self.schema_version, bool) or not isinstance(self.schema_version, int) or self.schema_version < 1:
+            raise ValueError("schema_version must be a positive integer")
+
+
+def build_pi_chart(
+    *, chart_id: str, context: PiContext, prior_strength_p0: float, prior_weight_k: float,
+    prior_provenance: str, policy: ChartPolicy, selected_packet_ids: Iterable[str],
+    evidence_snapshot_id: str, adequacy_certificate_id: str,
+) -> PiChart:
+    """Freeze a chart and hash every SDS-mandated chart-fingerprint field."""
+    packet_ids = tuple(sorted(selected_packet_ids))
+    fingerprint = _canonical_hash({
+        "context_id": context.id,
+        "context_guard_version": context.guard_version,
+        "ontology_version": context.ontology_version,
+        "assumption_package_id": context.assumption_package_id,
+        "prior_strength_p0": prior_strength_p0,
+        "prior_weight_k": prior_weight_k,
+        "factorization_policy_id": policy.factorization_policy_id,
+        "projection_policy_id": policy.projection_policy_id,
+        "rule_profile_id": policy.rule_profile_id,
+        "evidence_snapshot_id": evidence_snapshot_id,
+        "kernel_version": policy.kernel_version,
+        "translator_version": policy.translator_version,
+    })
+    return PiChart(chart_id, context.id, prior_strength_p0, prior_weight_k, prior_provenance,
+                   policy, packet_ids, evidence_snapshot_id, adequacy_certificate_id, fingerprint)
+
+
 def evidence_basis_from_packet(
     packet: EvidencePacket,
     tokens: Iterable[EvidenceToken],
