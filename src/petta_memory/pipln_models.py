@@ -147,8 +147,12 @@ class EvidenceSnapshot:
             "created_at", "snapshot_fingerprint",
         ):
             _nonempty(getattr(self, field), field)
-        if tuple(sorted(set(self.packet_ids))) != self.packet_ids:
-            raise ValueError("packet_ids must be unique and sorted")
+        if not self.packet_ids or tuple(sorted(set(self.packet_ids))) != self.packet_ids:
+            raise ValueError("packet_ids must be non-empty, unique, and sorted")
+        for packet_id in self.packet_ids:
+            _nonempty(packet_id, "packet_id")
+        if len(self.snapshot_fingerprint) != 64 or any(character not in "0123456789abcdef" for character in self.snapshot_fingerprint):
+            raise ValueError("snapshot_fingerprint must be a lowercase SHA-256 digest")
         if isinstance(self.schema_version, bool) or not isinstance(self.schema_version, int) or self.schema_version < 1:
             raise ValueError("schema_version must be a positive integer")
 

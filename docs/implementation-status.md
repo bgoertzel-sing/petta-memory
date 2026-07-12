@@ -15,7 +15,7 @@ Normative design source: `library/atlas-indexed-reversible-pipln/specification.p
 `petta_memory.pipln_models` provides the first dependency-free Phase-1 primitives:
 
 - immutable validated `EvidenceToken`, `EvidencePacket`, and `EvidenceBasis` records;
-- immutable create-once JSON snapshot documents with a canonical payload checksum and fail-closed loader;
+- immutable create-once JSON snapshot documents with a canonical payload checksum and fail-closed loader; snapshot records require at least one canonical packet ID and a lowercase SHA-256 fingerprint, including after loading a separately checksummed document;
 - stable packet provenance digests;
 - deterministic, collision-free episode stamp assignment sorted by stable basis ID;
 - canonical `pipl-local-chart-v1` projection with separate evidence mass, conflict balance, signed tendency, STV, and beta parameters;

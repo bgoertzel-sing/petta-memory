@@ -10,6 +10,7 @@ from petta_memory.pipln_models import (
     EvidenceCapsule,
     EvidenceContribution,
     EvidencePacket,
+    EvidenceSnapshot,
     EvidenceToken,
     ChartPolicy,
     PiContext,
@@ -107,6 +108,13 @@ class PiPlnModelTests(unittest.TestCase):
             build_evidence_snapshot(snapshot_id="snap", packets=[packet, packet], context_id="ctx",
                                     assumption_fingerprint="a1", ontology_fingerprint="o1", created_at="now")
 
+    def test_evidence_snapshot_rejects_empty_selection_and_invalid_fingerprint(self):
+        with self.assertRaisesRegex(ValueError, "non-empty"):
+            build_evidence_snapshot(snapshot_id="snap", packets=[], context_id="ctx",
+                                    assumption_fingerprint="a1", ontology_fingerprint="o1", created_at="now")
+        with self.assertRaisesRegex(ValueError, "SHA-256"):
+            EvidenceSnapshot("snap", ("p1",), "ctx", "a1", "o1", "now", "not-a-digest")
+
     def test_evidence_snapshot_persistence_is_immutable_and_roundtrips(self):
         packet = EvidencePacket("p1", "(S x)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")
         snapshot = build_evidence_snapshot(snapshot_id="snap", packets=[packet], context_id="ctx",
@@ -133,6 +141,21 @@ class PiPlnModelTests(unittest.TestCase):
             document["schema"] = "unknown"
             path.write_text(json.dumps(document), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "schema"):
+                read_evidence_snapshot(path)
+
+    def test_evidence_snapshot_persistence_rejects_checksummed_invalid_payload(self):
+        packet = EvidencePacket("p1", "(S x)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")
+        snapshot = build_evidence_snapshot(snapshot_id="snap", packets=[packet], context_id="ctx",
+                                           assumption_fingerprint="a1", ontology_fingerprint="o1", created_at="now")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "snapshot.json"
+            document = evidence_snapshot_document(snapshot)
+            document["payload"]["snapshot_fingerprint"] = "forged"
+            document["document_digest"] = __import__("hashlib").sha256(
+                json.dumps(document["payload"], sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+            ).hexdigest()
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "SHA-256"):
                 read_evidence_snapshot(path)
 
     def test_chart_fingerprint_is_packet_order_invariant_and_policy_sensitive(self):
