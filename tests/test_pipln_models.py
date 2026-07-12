@@ -10,6 +10,7 @@ from petta_memory.pipln_models import (
     EvidenceToken,
     canonical_local_chart_projection,
     deterministic_stamp_map,
+    evidence_basis_from_packet,
     merge_evidence_capsules,
 )
 
@@ -33,6 +34,26 @@ class PiPlnModelTests(unittest.TestCase):
             EvidencePacket(positive_delta=1, token_ids=("b", "a"), **common)
         with self.assertRaises(ValueError):
             EvidencePacket(positive_delta=math.inf, token_ids=("a",), **common)
+
+    def test_packet_basis_builder_closes_provenance_and_collects_causal_groups(self):
+        tokens = [
+            EvidenceToken("t2", "sensor", "s2", "c1", "2026-07-11T00:00:00Z", "2026-07-11T00:00:01Z", causal_group_id="cg-b"),
+            EvidenceToken("t1", "sensor", "s1", "c1", "2026-07-11T00:00:00Z", "2026-07-11T00:00:01Z", causal_group_id="cg-a"),
+        ]
+        packet = EvidencePacket("p1", "(S x)", "c1", 2, 0, ("t1", "t2"), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")
+        basis = evidence_basis_from_packet(packet, reversed(tokens), independence_status="COUPLED", justification_cid="cid:review-1")
+        self.assertEqual(basis.member_token_ids, ("t1", "t2"))
+        self.assertEqual(basis.causal_group_ids, ("cg-a", "cg-b"))
+        self.assertEqual(basis.independence_status, "COUPLED")
+        self.assertEqual(basis, evidence_basis_from_packet(packet, tokens, independence_status="COUPLED", justification_cid="cid:review-1"))
+
+    def test_packet_basis_builder_rejects_incomplete_extra_or_duplicate_metadata(self):
+        token1 = EvidenceToken("t1", "sensor", "s1", "c1", "2026-07-11T00:00:00Z", "2026-07-11T00:00:01Z")
+        token2 = EvidenceToken("t2", "sensor", "s2", "c1", "2026-07-11T00:00:00Z", "2026-07-11T00:00:01Z")
+        packet = EvidencePacket("p1", "(S x)", "c1", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")
+        for tokens, message in (([], "missing"), ([token1, token2], "extra"), ([token1, token1], "duplicate")):
+            with self.assertRaisesRegex(ValueError, message):
+                evidence_basis_from_packet(packet, tokens, independence_status="UNKNOWN", justification_cid="cid:review")
 
     def test_deterministic_stamp_map_is_permutation_invariant(self):
         a, b = self.basis("basis-a", "t1"), self.basis("basis-b", "t2")

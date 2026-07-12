@@ -126,6 +126,43 @@ class StampMapEntry:
     member_token_digest: str
 
 
+def evidence_basis_from_packet(
+    packet: EvidencePacket,
+    tokens: Iterable[EvidenceToken],
+    *,
+    independence_status: IndependenceStatus,
+    justification_cid: str,
+) -> EvidenceBasis:
+    """Build one reviewed basis unit covering exactly one packet's token set.
+
+    The caller must make the independence decision explicitly. This constructor
+    only validates provenance closure and gives the basis a deterministic ID;
+    it never infers disjointness from distinct token identifiers.
+    """
+    token_by_id: dict[str, EvidenceToken] = {}
+    for token in tokens:
+        if token.id in token_by_id:
+            raise ValueError(f"duplicate token metadata: {token.id}")
+        token_by_id[token.id] = token
+    supplied_ids = tuple(sorted(token_by_id))
+    if supplied_ids != packet.token_ids:
+        missing = sorted(set(packet.token_ids) - set(supplied_ids))
+        extra = sorted(set(supplied_ids) - set(packet.token_ids))
+        details = []
+        if missing:
+            details.append(f"missing: {', '.join(missing)}")
+        if extra:
+            details.append(f"extra: {', '.join(extra)}")
+        raise ValueError(f"packet token metadata mismatch ({'; '.join(details)})")
+    causal_groups = tuple(sorted({
+        token.causal_group_id
+        for token in token_by_id.values()
+        if token.causal_group_id is not None
+    }))
+    basis_id = f"basis-{_canonical_hash({'packet_id': packet.id, 'token_ids': supplied_ids})}"
+    return EvidenceBasis(basis_id, supplied_ids, causal_groups, independence_status, justification_cid)
+
+
 def deterministic_stamp_map(episode_id: str, bases: Iterable[EvidenceBasis]) -> tuple[StampMapEntry, ...]:
     """Assign collision-free integers after sorting stable basis identifiers."""
     _nonempty(episode_id, "episode_id")
