@@ -370,6 +370,33 @@ class LiveBridgeTests(unittest.TestCase):
                 {"schema": ""},
                 "non-string program schema",
             ),
+            (
+                "program_handoff_sentence_count_bool",
+                {"passed_true_count": 1, "passed_false_count": 0, "semantic_passed": True},
+                {
+                    "schema": "petta-memory-patham9-pln-multi-sentence-derivation-smoke-program-v1",
+                    "handoff_sentence_count": True,
+                },
+                "malformed program sentence counts",
+            ),
+            (
+                "program_handoff_sentence_count_mismatch",
+                {"passed_true_count": 1, "passed_false_count": 0, "semantic_passed": True},
+                {
+                    "schema": "petta-memory-patham9-pln-multi-sentence-derivation-smoke-program-v1",
+                    "handoff_sentence_count": 0,
+                },
+                "handoff_sentence_count does not match admitted handoff",
+            ),
+            (
+                "program_sentence_count_underflow",
+                {"passed_true_count": 1, "passed_false_count": 0, "semantic_passed": True},
+                {
+                    "schema": "petta-memory-patham9-pln-multi-sentence-derivation-smoke-program-v1",
+                    "sentence_count": 0,
+                },
+                "sentence_count is smaller than admitted handoff",
+            ),
         ]
         for name, semantic_markers, program, expected_error in cases:
             with self.subTest(name=name):
