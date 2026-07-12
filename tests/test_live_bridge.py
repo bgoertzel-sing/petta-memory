@@ -297,7 +297,8 @@ class LiveBridgeTests(unittest.TestCase):
         fixture = Path(__file__).resolve().parents[1] / "fixtures" / "goalchainer_handoff_smoke.metta"
         repo = Path(__file__).resolve().parents[4] / "omegaclaw" / "repos" / "OmegaClaw-GoalChainer"
         cases = [
-            ("schema", "", 0, "non-string schema"),
+            ("schema-empty", "", 0, "unexpected result schema"),
+            ("schema-wrong", "petta-memory-patham9-pln-query-smoke-result-v1", 0, "unexpected result schema"),
             ("returncode-string", "petta-memory-patham9-pln-multi-sentence-derivation-smoke-result-v1", "0", "nonzero or non-integer returncode"),
             ("returncode-bool", "petta-memory-patham9-pln-multi-sentence-derivation-smoke-result-v1", True, "nonzero or non-integer returncode"),
             ("returncode-nonzero", "petta-memory-patham9-pln-multi-sentence-derivation-smoke-result-v1", 1, "nonzero or non-integer returncode"),
@@ -385,10 +386,16 @@ class LiveBridgeTests(unittest.TestCase):
                 "non-object program artifact",
             ),
             (
-                "program_schema",
+                "program_schema_empty",
                 {"passed_true_count": 1, "passed_false_count": 0, "semantic_passed": True},
                 {"schema": ""},
-                "non-string program schema",
+                "unexpected program schema",
+            ),
+            (
+                "program_schema_wrong",
+                {"passed_true_count": 1, "passed_false_count": 0, "semantic_passed": True},
+                {"schema": "petta-memory-patham9-pln-query-smoke-program-v1"},
+                "unexpected program schema",
             ),
             (
                 "program_sentence_counts_missing",

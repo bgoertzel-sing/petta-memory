@@ -15,6 +15,8 @@ from .store import MediumMemoryStore, ValidationError
 
 
 DEFAULT_PLN_REPO = Path(__file__).resolve().parents[3] / "patham9-pln"
+PATHAM9_RUNTIME_RESULT_SCHEMA = "petta-memory-patham9-pln-multi-sentence-derivation-smoke-result-v1"
+PATHAM9_RUNTIME_PROGRAM_SCHEMA = "petta-memory-patham9-pln-multi-sentence-derivation-smoke-program-v1"
 
 
 DISALLOWED_LIVE_DIRECTIVE_FIELDS = {
@@ -99,9 +101,9 @@ def run_petta_memory_goalchainer_live_bridge(
                 "patham9 runtime gate returned a non-object result; refusing GoalChainer appraisal"
             )
         runtime_schema = patham9_runtime_result.get("schema")
-        if not isinstance(runtime_schema, str) or not runtime_schema:
+        if runtime_schema != PATHAM9_RUNTIME_RESULT_SCHEMA:
             raise ValidationError(
-                "patham9 runtime gate returned non-string schema; refusing GoalChainer appraisal"
+                "patham9 runtime gate returned unexpected result schema; refusing GoalChainer appraisal"
             )
         runtime_returncode = patham9_runtime_result.get("returncode")
         semantic_markers = patham9_runtime_result.get("semantic_markers")
@@ -146,9 +148,9 @@ def run_petta_memory_goalchainer_live_bridge(
                 "patham9 runtime gate returned a non-object program artifact; refusing GoalChainer appraisal"
             )
         program_schema = program.get("schema")
-        if not isinstance(program_schema, str) or not program_schema:
+        if program_schema != PATHAM9_RUNTIME_PROGRAM_SCHEMA:
             raise ValidationError(
-                "patham9 runtime gate returned non-string program schema; refusing GoalChainer appraisal"
+                "patham9 runtime gate returned unexpected program schema; refusing GoalChainer appraisal"
             )
         admitted_item_count = admitted_handoff["item_count"]
         handoff_sentence_count = program.get("handoff_sentence_count")
