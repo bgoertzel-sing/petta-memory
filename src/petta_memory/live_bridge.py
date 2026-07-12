@@ -151,34 +151,26 @@ def run_petta_memory_goalchainer_live_bridge(
                 "patham9 runtime gate returned non-string program schema; refusing GoalChainer appraisal"
             )
         admitted_item_count = admitted_handoff["item_count"]
-        if "handoff_sentence_count" in program:
-            handoff_sentence_count = program.get("handoff_sentence_count")
-            if (
-                isinstance(handoff_sentence_count, bool)
-                or not isinstance(handoff_sentence_count, int)
-                or handoff_sentence_count < 0
-            ):
-                raise ValidationError(
-                    "patham9 runtime gate returned malformed program sentence counts; "
-                    "refusing GoalChainer appraisal"
-                )
-            if handoff_sentence_count != admitted_item_count:
-                raise ValidationError(
-                    "patham9 runtime gate program handoff_sentence_count does not match admitted handoff; "
-                    "refusing GoalChainer appraisal"
-                )
-        if "sentence_count" in program:
-            sentence_count = program.get("sentence_count")
-            if isinstance(sentence_count, bool) or not isinstance(sentence_count, int) or sentence_count < 0:
-                raise ValidationError(
-                    "patham9 runtime gate returned malformed program sentence counts; "
-                    "refusing GoalChainer appraisal"
-                )
-            if sentence_count < admitted_item_count:
-                raise ValidationError(
-                    "patham9 runtime gate program sentence_count is smaller than admitted handoff; "
-                    "refusing GoalChainer appraisal"
-                )
+        handoff_sentence_count = program.get("handoff_sentence_count")
+        sentence_count = program.get("sentence_count")
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in (handoff_sentence_count, sentence_count)
+        ):
+            raise ValidationError(
+                "patham9 runtime gate returned missing or malformed program sentence counts; "
+                "refusing GoalChainer appraisal"
+            )
+        if handoff_sentence_count != admitted_item_count:
+            raise ValidationError(
+                "patham9 runtime gate program handoff_sentence_count does not match admitted handoff; "
+                "refusing GoalChainer appraisal"
+            )
+        if sentence_count != handoff_sentence_count + 1:
+            raise ValidationError(
+                "patham9 runtime gate program sentence_count does not match handoff plus bridge sentence; "
+                "refusing GoalChainer appraisal"
+            )
         patham9_runtime_gate = {
             "enabled": True,
             "schema": runtime_schema,

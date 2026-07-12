@@ -50,7 +50,11 @@ class LiveBridgeTests(unittest.TestCase):
                 "status": "passed",
                 "returncode": 0,
                 "semantic_markers": {"passed_true_count": 1, "passed_false_count": 0, "semantic_passed": True},
-                "program": {"schema": "petta-memory-patham9-pln-multi-sentence-derivation-smoke-program-v1"},
+                "program": {
+                    "schema": "petta-memory-patham9-pln-multi-sentence-derivation-smoke-program-v1",
+                    "handoff_sentence_count": handoff["item_count"],
+                    "sentence_count": handoff["item_count"] + 1,
+                },
             }
 
         with tempfile.TemporaryDirectory() as td:
@@ -92,7 +96,11 @@ class LiveBridgeTests(unittest.TestCase):
                 "status": "passed",
                 "returncode": 0,
                 "semantic_markers": {"passed_true_count": 1, "passed_false_count": 0, "semantic_passed": True},
-                "program": {"schema": "petta-memory-patham9-pln-multi-sentence-derivation-smoke-program-v1"},
+                "program": {
+                    "schema": "petta-memory-patham9-pln-multi-sentence-derivation-smoke-program-v1",
+                    "handoff_sentence_count": handoff["item_count"],
+                    "sentence_count": handoff["item_count"] + 1,
+                },
             }
 
         def fake_goalchainer_runner(cache, **kwargs):
@@ -171,7 +179,11 @@ class LiveBridgeTests(unittest.TestCase):
                 "status": "passed",
                 "returncode": 0,
                 "semantic_markers": {"passed_true_count": 1, "passed_false_count": 0, "semantic_passed": True},
-                "program": {"schema": "petta-memory-patham9-pln-multi-sentence-derivation-smoke-program-v1"},
+                "program": {
+                    "schema": "petta-memory-patham9-pln-multi-sentence-derivation-smoke-program-v1",
+                    "handoff_sentence_count": handoff["item_count"],
+                    "sentence_count": handoff["item_count"] + 1,
+                },
             }
 
         with tempfile.TemporaryDirectory() as td:
@@ -216,7 +228,11 @@ class LiveBridgeTests(unittest.TestCase):
                 "status": "failed",
                 "returncode": 1,
                 "semantic_markers": {"passed_true_count": 0, "passed_false_count": 1, "semantic_passed": False},
-                "program": {"schema": "petta-memory-patham9-pln-multi-sentence-derivation-smoke-program-v1"},
+                "program": {
+                    "schema": "petta-memory-patham9-pln-multi-sentence-derivation-smoke-program-v1",
+                    "handoff_sentence_count": handoff["item_count"],
+                    "sentence_count": handoff["item_count"] + 1,
+                },
             }
 
         def fake_goalchainer_runner(*args, **kwargs):
@@ -296,7 +312,11 @@ class LiveBridgeTests(unittest.TestCase):
                         "status": "passed",
                         "returncode": returncode,
                         "semantic_markers": {"passed_true_count": 1, "passed_false_count": 0, "semantic_passed": True},
-                        "program": {"schema": "petta-memory-patham9-pln-multi-sentence-derivation-smoke-program-v1"},
+                        "program": {
+                            "schema": "petta-memory-patham9-pln-multi-sentence-derivation-smoke-program-v1",
+                            "handoff_sentence_count": handoff["item_count"],
+                            "sentence_count": handoff["item_count"] + 1,
+                        },
                     }
 
                 def fake_goalchainer_runner(*args, **kwargs):
@@ -371,13 +391,20 @@ class LiveBridgeTests(unittest.TestCase):
                 "non-string program schema",
             ),
             (
+                "program_sentence_counts_missing",
+                {"passed_true_count": 1, "passed_false_count": 0, "semantic_passed": True},
+                {"schema": "petta-memory-patham9-pln-multi-sentence-derivation-smoke-program-v1"},
+                "missing or malformed program sentence counts",
+            ),
+            (
                 "program_handoff_sentence_count_bool",
                 {"passed_true_count": 1, "passed_false_count": 0, "semantic_passed": True},
                 {
                     "schema": "petta-memory-patham9-pln-multi-sentence-derivation-smoke-program-v1",
                     "handoff_sentence_count": True,
+                    "sentence_count": 2,
                 },
-                "malformed program sentence counts",
+                "missing or malformed program sentence counts",
             ),
             (
                 "program_handoff_sentence_count_mismatch",
@@ -385,17 +412,19 @@ class LiveBridgeTests(unittest.TestCase):
                 {
                     "schema": "petta-memory-patham9-pln-multi-sentence-derivation-smoke-program-v1",
                     "handoff_sentence_count": 0,
+                    "sentence_count": 1,
                 },
                 "handoff_sentence_count does not match admitted handoff",
             ),
             (
-                "program_sentence_count_underflow",
+                "program_sentence_count_bridge_mismatch",
                 {"passed_true_count": 1, "passed_false_count": 0, "semantic_passed": True},
                 {
                     "schema": "petta-memory-patham9-pln-multi-sentence-derivation-smoke-program-v1",
-                    "sentence_count": 0,
+                    "handoff_sentence_count": 1,
+                    "sentence_count": 1,
                 },
-                "sentence_count is smaller than admitted handoff",
+                "sentence_count does not match handoff plus bridge sentence",
             ),
         ]
         for name, semantic_markers, program, expected_error in cases:
