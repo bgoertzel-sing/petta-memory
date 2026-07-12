@@ -1,6 +1,9 @@
 import math
+import json
+import tempfile
 import unittest
 from dataclasses import FrozenInstanceError
+from pathlib import Path
 
 from petta_memory.pipln_models import (
     EvidenceBasis,
@@ -15,7 +18,10 @@ from petta_memory.pipln_models import (
     canonical_local_chart_projection,
     deterministic_stamp_map,
     evidence_basis_from_packet,
+    evidence_snapshot_document,
     merge_evidence_capsules,
+    read_evidence_snapshot,
+    write_evidence_snapshot,
 )
 
 
@@ -100,6 +106,34 @@ class PiPlnModelTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unique"):
             build_evidence_snapshot(snapshot_id="snap", packets=[packet, packet], context_id="ctx",
                                     assumption_fingerprint="a1", ontology_fingerprint="o1", created_at="now")
+
+    def test_evidence_snapshot_persistence_is_immutable_and_roundtrips(self):
+        packet = EvidencePacket("p1", "(S x)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")
+        snapshot = build_evidence_snapshot(snapshot_id="snap", packets=[packet], context_id="ctx",
+                                           assumption_fingerprint="a1", ontology_fingerprint="o1", created_at="now")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "nested" / "snapshot.json"
+            write_evidence_snapshot(path, snapshot)
+            self.assertEqual(read_evidence_snapshot(path), snapshot)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            with self.assertRaises(FileExistsError):
+                write_evidence_snapshot(path, snapshot)
+
+    def test_evidence_snapshot_persistence_rejects_tampering_and_schema_drift(self):
+        packet = EvidencePacket("p1", "(S x)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")
+        snapshot = build_evidence_snapshot(snapshot_id="snap", packets=[packet], context_id="ctx",
+                                           assumption_fingerprint="a1", ontology_fingerprint="o1", created_at="now")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "snapshot.json"
+            document = evidence_snapshot_document(snapshot)
+            document["payload"]["context_id"] = "tampered"
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "checksum"):
+                read_evidence_snapshot(path)
+            document["schema"] = "unknown"
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "schema"):
+                read_evidence_snapshot(path)
 
     def test_chart_fingerprint_is_packet_order_invariant_and_policy_sensitive(self):
         context = PiContext("ctx", "lang-v1", "world", "(Guard x)", "guard-v1", "query", "assumptions-v1",

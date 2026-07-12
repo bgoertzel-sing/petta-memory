@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from hashlib import sha256
 import json
 import math
+import os
+from pathlib import Path
 from typing import Iterable, Literal
 
 
@@ -191,6 +193,63 @@ def build_evidence_snapshot(
     })
     return EvidenceSnapshot(snapshot_id, ids, context_id, assumption_fingerprint,
                             ontology_fingerprint, created_at, fingerprint)
+
+
+def evidence_snapshot_document(snapshot: EvidenceSnapshot) -> dict[str, object]:
+    """Return the canonical, checksummed persistence envelope for a snapshot."""
+    payload = {
+        "id": snapshot.id,
+        "packet_ids": list(snapshot.packet_ids),
+        "context_id": snapshot.context_id,
+        "assumption_fingerprint": snapshot.assumption_fingerprint,
+        "ontology_fingerprint": snapshot.ontology_fingerprint,
+        "created_at": snapshot.created_at,
+        "snapshot_fingerprint": snapshot.snapshot_fingerprint,
+        "schema_version": snapshot.schema_version,
+    }
+    return {
+        "schema": "petta-memory-pipln-evidence-snapshot-v1",
+        "payload": payload,
+        "document_digest": _canonical_hash(payload),
+    }
+
+
+def write_evidence_snapshot(path: str | Path, snapshot: EvidenceSnapshot) -> None:
+    """Create an immutable snapshot document; never replace an existing path."""
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    data = json.dumps(evidence_snapshot_document(snapshot), sort_keys=True, indent=2) + "\n"
+    descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        destination.unlink(missing_ok=True)
+        raise
+
+
+def read_evidence_snapshot(path: str | Path) -> EvidenceSnapshot:
+    """Load a snapshot document and fail closed on schema or checksum drift."""
+    document = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(document, dict) or document.get("schema") != "petta-memory-pipln-evidence-snapshot-v1":
+        raise ValueError("invalid evidence snapshot document schema")
+    payload = document.get("payload")
+    if not isinstance(payload, dict) or document.get("document_digest") != _canonical_hash(payload):
+        raise ValueError("evidence snapshot document checksum mismatch")
+    expected = {
+        "id", "packet_ids", "context_id", "assumption_fingerprint", "ontology_fingerprint",
+        "created_at", "snapshot_fingerprint", "schema_version",
+    }
+    if set(payload) != expected or not isinstance(payload["packet_ids"], list):
+        raise ValueError("invalid evidence snapshot payload")
+    return EvidenceSnapshot(
+        id=payload["id"], packet_ids=tuple(payload["packet_ids"]), context_id=payload["context_id"],
+        assumption_fingerprint=payload["assumption_fingerprint"],
+        ontology_fingerprint=payload["ontology_fingerprint"], created_at=payload["created_at"],
+        snapshot_fingerprint=payload["snapshot_fingerprint"], schema_version=payload["schema_version"],
+    )
 
 
 @dataclass(frozen=True)
