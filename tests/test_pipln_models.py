@@ -59,6 +59,49 @@ class PiPlnModelTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "conflicting contribution"):
             merge_evidence_capsules(left, right)
 
+    def test_reviewed_merge_is_commutative_and_associative_for_disjoint_bases(self):
+        capsules = [
+            EvidenceCapsule((EvidenceContribution(f"basis-{name}", positive_weight=1),))
+            for name in ("a", "b", "c")
+        ]
+        bases = [
+            EvidenceBasis(f"basis-{name}", (f"token-{name}",), (), "PROVEN_DISJOINT", f"cid:basis-{name}")
+            for name in ("a", "b", "c")
+        ]
+        self.assertEqual(
+            merge_evidence_capsules(capsules[0], capsules[1], bases=bases),
+            merge_evidence_capsules(capsules[1], capsules[0], bases=bases),
+        )
+        self.assertEqual(
+            merge_evidence_capsules(merge_evidence_capsules(capsules[0], capsules[1], bases=bases), capsules[2], bases=bases),
+            merge_evidence_capsules(capsules[0], merge_evidence_capsules(capsules[1], capsules[2], bases=bases), bases=bases),
+        )
+
+    def test_reviewed_merge_fails_closed_on_partial_or_unknown_overlap(self):
+        left = EvidenceCapsule((EvidenceContribution("basis-a", positive_weight=1),))
+        right = EvidenceCapsule((EvidenceContribution("basis-b", negative_weight=1),))
+        partial = [
+            EvidenceBasis("basis-a", ("shared",), (), "PROVEN_DISJOINT", "cid:basis-a"),
+            EvidenceBasis("basis-b", ("shared",), (), "PROVEN_DISJOINT", "cid:basis-b"),
+        ]
+        with self.assertRaisesRegex(ValueError, "partial overlap"):
+            merge_evidence_capsules(left, right, bases=partial)
+        unknown = [
+            EvidenceBasis("basis-a", ("token-a",), (), "PROVEN_DISJOINT", "cid:basis-a"),
+            EvidenceBasis("basis-b", ("token-b",), (), "UNKNOWN", "cid-basis-b"),
+        ]
+        with self.assertRaisesRegex(ValueError, "UNKNOWN"):
+            merge_evidence_capsules(left, right, bases=unknown)
+
+    def test_reviewed_merge_requires_complete_unique_basis_metadata(self):
+        left = EvidenceCapsule((EvidenceContribution("basis-a", positive_weight=1),))
+        right = EvidenceCapsule((EvidenceContribution("basis-b", negative_weight=1),))
+        with self.assertRaisesRegex(ValueError, "missing basis metadata"):
+            merge_evidence_capsules(left, right, bases=[self.basis("basis-a", "token-a")])
+        duplicate = [self.basis("basis-a", "token-a"), self.basis("basis-a", "token-a")]
+        with self.assertRaisesRegex(ValueError, "duplicate basis metadata"):
+            merge_evidence_capsules(left, left, bases=duplicate)
+
     def test_capsule_rejects_unsorted_duplicate_or_empty_contributions(self):
         a = EvidenceContribution("basis-a", positive_weight=1)
         b = EvidenceContribution("basis-b", negative_weight=1)

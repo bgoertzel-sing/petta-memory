@@ -179,14 +179,50 @@ class EvidenceCapsule:
         return tuple(item.basis_id for item in self.contributions)
 
 
-def merge_evidence_capsules(left: EvidenceCapsule, right: EvidenceCapsule) -> EvidenceCapsule:
-    """Union exact capsules by basis; reject inconsistent duplicate contributions."""
+def merge_evidence_capsules(
+    left: EvidenceCapsule,
+    right: EvidenceCapsule,
+    *,
+    bases: Iterable[EvidenceBasis] | None = None,
+) -> EvidenceCapsule:
+    """Union exact capsules by basis, optionally enforcing reviewed overlap metadata.
+
+    With ``bases`` supplied, every contribution must resolve to one basis. Distinct
+    bases may not share tokens, and UNKNOWN basis units cannot be combined with
+    other units. This deliberately fails closed instead of treating partial or
+    unknown overlap as independent evidence.
+    """
     merged = {item.basis_id: item for item in left.contributions}
     for item in right.contributions:
         existing = merged.get(item.basis_id)
         if existing is not None and existing != item:
             raise ValueError(f"conflicting contribution for shared basis_id: {item.basis_id}")
         merged[item.basis_id] = item
+
+    if bases is not None:
+        registry: dict[str, EvidenceBasis] = {}
+        for basis in bases:
+            if basis.basis_id in registry:
+                raise ValueError(f"duplicate basis metadata: {basis.basis_id}")
+            registry[basis.basis_id] = basis
+        missing = sorted(set(merged) - set(registry))
+        if missing:
+            raise ValueError(f"missing basis metadata: {', '.join(missing)}")
+        ordered_bases = [registry[basis_id] for basis_id in sorted(merged)]
+        if len(ordered_bases) > 1:
+            unknown = [basis.basis_id for basis in ordered_bases if basis.independence_status == "UNKNOWN"]
+            if unknown:
+                raise ValueError(f"cannot combine UNKNOWN basis units: {', '.join(unknown)}")
+        for index, basis in enumerate(ordered_bases):
+            tokens = set(basis.member_token_ids)
+            for other in ordered_bases[index + 1 :]:
+                overlap = sorted(tokens.intersection(other.member_token_ids))
+                if overlap:
+                    raise ValueError(
+                        f"partial overlap between distinct bases {basis.basis_id} and "
+                        f"{other.basis_id}: {', '.join(overlap)}"
+                    )
+
     return EvidenceCapsule(tuple(merged[key] for key in sorted(merged)))
 
 
