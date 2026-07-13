@@ -554,6 +554,56 @@ class ProjectionRecord:
     beta_beta: float
 
 
+def canonical_projection_from_beta(
+    beta_alpha: float,
+    beta_beta: float,
+    *,
+    prior_strength: float,
+    prior_weight: float,
+) -> ProjectionRecord:
+    """Recover empirical counts from beta parameters and reproject canonically.
+
+    This is the reviewed prior-cycling boundary: the old prior pseudo-counts are
+    subtracted before projection, so changing priors cannot turn prior mass into
+    empirical evidence. Small floating-point cancellation errors are clamped;
+    materially negative recovered counts fail closed.
+    """
+    _finite_nonnegative(beta_alpha, "beta_alpha")
+    _finite_nonnegative(beta_beta, "beta_beta")
+    if isinstance(prior_strength, bool) or not isinstance(prior_strength, (int, float)) or not math.isfinite(prior_strength) or not 0 <= prior_strength <= 1:
+        raise ValueError("prior_strength must be finite and in [0, 1]")
+    if isinstance(prior_weight, bool) or not isinstance(prior_weight, (int, float)) or not math.isfinite(prior_weight) or prior_weight <= 0:
+        raise ValueError("prior_weight must be finite and positive")
+    positive_count = beta_alpha - prior_weight * prior_strength
+    negative_count = beta_beta - prior_weight * (1 - prior_strength)
+    tolerance = 1e-12 * max(1.0, beta_alpha, beta_beta, prior_weight)
+    if positive_count < -tolerance or negative_count < -tolerance:
+        raise ValueError("beta parameters contain less mass than the declared prior")
+    return canonical_local_chart_projection(
+        max(0.0, positive_count), max(0.0, negative_count),
+        prior_strength=prior_strength, prior_weight=prior_weight,
+    )
+
+
+def cycle_local_chart_prior(
+    projection: ProjectionRecord,
+    *,
+    old_prior_strength: float,
+    old_prior_weight: float,
+    new_prior_strength: float,
+    new_prior_weight: float,
+) -> ProjectionRecord:
+    """Remove one declared prior from a projection and apply another."""
+    recovered = canonical_projection_from_beta(
+        projection.beta_alpha, projection.beta_beta,
+        prior_strength=old_prior_strength, prior_weight=old_prior_weight,
+    )
+    return canonical_local_chart_projection(
+        recovered.positive_count, recovered.negative_count,
+        prior_strength=new_prior_strength, prior_weight=new_prior_weight,
+    )
+
+
 def canonical_local_chart_projection(
     positive_count: float,
     negative_count: float,

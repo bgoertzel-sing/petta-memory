@@ -18,6 +18,8 @@ from petta_memory.pipln_models import (
     build_pi_chart,
     build_evidence_snapshot,
     canonical_local_chart_projection,
+    canonical_projection_from_beta,
+    cycle_local_chart_prior,
     deterministic_stamp_map,
     evidence_basis_from_packet,
     evidence_snapshot_document,
@@ -292,6 +294,37 @@ class PiPlnModelTests(unittest.TestCase):
         self.assertEqual(projection.conflict_balance, 0.5)
         self.assertEqual(projection.signed_tendency, 0.5)
         self.assertEqual((projection.beta_alpha, projection.beta_beta), (4, 2))
+
+    def test_beta_roundtrip_recovers_empirical_counts(self):
+        original = canonical_local_chart_projection(3.25, 1.5, prior_strength=0.4, prior_weight=2.5)
+        recovered = canonical_projection_from_beta(
+            original.beta_alpha, original.beta_beta, prior_strength=0.4, prior_weight=2.5
+        )
+        self.assertAlmostEqual(recovered.positive_count, 3.25)
+        self.assertAlmostEqual(recovered.negative_count, 1.5)
+        self.assertAlmostEqual(recovered.strength, original.strength)
+        self.assertAlmostEqual(recovered.confidence, original.confidence)
+
+    def test_prior_cycle_preserves_evidence_and_is_reversible(self):
+        original = canonical_local_chart_projection(7, 2, prior_strength=0.5, prior_weight=2)
+        changed = cycle_local_chart_prior(
+            original, old_prior_strength=0.5, old_prior_weight=2,
+            new_prior_strength=0.8, new_prior_weight=5,
+        )
+        self.assertEqual((changed.positive_count, changed.negative_count), (7, 2))
+        self.assertNotEqual(changed.strength, original.strength)
+        restored = cycle_local_chart_prior(
+            changed, old_prior_strength=0.8, old_prior_weight=5,
+            new_prior_strength=0.5, new_prior_weight=2,
+        )
+        self.assertAlmostEqual(restored.strength, original.strength)
+        self.assertAlmostEqual(restored.confidence, original.confidence)
+        self.assertAlmostEqual(restored.beta_alpha, original.beta_alpha)
+        self.assertAlmostEqual(restored.beta_beta, original.beta_beta)
+
+    def test_beta_roundtrip_rejects_prior_mass_mismatch(self):
+        with self.assertRaisesRegex(ValueError, "less mass"):
+            canonical_projection_from_beta(0.1, 0.1, prior_strength=0.5, prior_weight=2)
 
     def test_balanced_conflict_preserves_mass_distinction(self):
         small = canonical_local_chart_projection(1, 1, prior_strength=0.5, prior_weight=2)
