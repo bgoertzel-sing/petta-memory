@@ -38,6 +38,11 @@ def _canonical_hash(payload: object) -> str:
     return sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _sha256_digest(value: str, field: str) -> None:
+    if not isinstance(value, str) or len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+        raise ValueError(f"{field} must be a lowercase SHA-256 digest")
+
+
 @dataclass(frozen=True)
 class EvidenceToken:
     id: str
@@ -127,6 +132,13 @@ class StampMapEntry:
     basis_id: str
     member_token_digest: str
 
+    def __post_init__(self) -> None:
+        _nonempty(self.episode_id, "episode_id")
+        _nonempty(self.basis_id, "basis_id")
+        if isinstance(self.stamp_int, bool) or not isinstance(self.stamp_int, int) or self.stamp_int < 0:
+            raise ValueError("stamp_int must be a non-negative integer")
+        _sha256_digest(self.member_token_digest, "member_token_digest")
+
 
 @dataclass(frozen=True)
 class KernelSentenceMeta:
@@ -147,6 +159,8 @@ class KernelSentenceMeta:
             "context_id", "chart_id",
         ):
             _nonempty(getattr(self, field), field)
+        _sha256_digest(self.sentence_digest, "sentence_digest")
+        _sha256_digest(self.projection_id, "projection_id")
         if tuple(sorted(set(self.stamp_ints))) != self.stamp_ints:
             raise ValueError("stamp_ints must be unique and sorted")
         if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in self.stamp_ints):
@@ -182,8 +196,29 @@ class CompiledEpisodeInputs:
     def __post_init__(self) -> None:
         for field in ("episode_id", "chart_fingerprint", "evidence_snapshot_fingerprint"):
             _nonempty(getattr(self, field), field)
+        _sha256_digest(self.chart_fingerprint, "chart_fingerprint")
+        _sha256_digest(self.evidence_snapshot_fingerprint, "evidence_snapshot_fingerprint")
         if not self.sentences:
             raise ValueError("compiled episode must contain at least one sentence")
+        basis_by_stamp: dict[int, str] = {}
+        for entry in self.stamp_map:
+            if entry.episode_id != self.episode_id:
+                raise ValueError("stamp map episode mismatch")
+            if entry.stamp_int in basis_by_stamp or entry.basis_id in basis_by_stamp.values():
+                raise ValueError("stamp map must contain unique stamps and basis ids")
+            basis_by_stamp[entry.stamp_int] = entry.basis_id
+        if tuple(sorted(basis_by_stamp)) != tuple(range(len(basis_by_stamp))):
+            raise ValueError("stamp map integers must be contiguous from zero")
+        sentence_digests: set[str] = set()
+        for sentence in self.sentences:
+            if sentence.meta.episode_id != self.episode_id:
+                raise ValueError("compiled sentence episode mismatch")
+            if sentence.meta.sentence_digest in sentence_digests:
+                raise ValueError("compiled sentence digests must be unique")
+            sentence_digests.add(sentence.meta.sentence_digest)
+            mapped_bases = tuple(basis_by_stamp.get(stamp) for stamp in sentence.meta.stamp_ints)
+            if None in mapped_bases or mapped_bases != sentence.meta.evidence_basis_ids:
+                raise ValueError("compiled sentence stamps do not match evidence bases")
 
 
 @dataclass(frozen=True)
@@ -209,8 +244,7 @@ class EvidenceSnapshot:
             raise ValueError("packet_ids must be non-empty, unique, and sorted")
         for packet_id in self.packet_ids:
             _nonempty(packet_id, "packet_id")
-        if len(self.snapshot_fingerprint) != 64 or any(character not in "0123456789abcdef" for character in self.snapshot_fingerprint):
-            raise ValueError("snapshot_fingerprint must be a lowercase SHA-256 digest")
+        _sha256_digest(self.snapshot_fingerprint, "snapshot_fingerprint")
         if isinstance(self.schema_version, bool) or not isinstance(self.schema_version, int) or self.schema_version < 1:
             raise ValueError("schema_version must be a positive integer")
 
@@ -436,11 +470,8 @@ class PiChart:
             raise ValueError("selected_packet_ids must be non-empty, unique, and sorted")
         for packet_id in self.selected_packet_ids:
             _nonempty(packet_id, "selected_packet_id")
-        if len(self.evidence_snapshot_fingerprint) != 64 or any(
-            character not in "0123456789abcdef"
-            for character in self.evidence_snapshot_fingerprint
-        ):
-            raise ValueError("evidence_snapshot_fingerprint must be a lowercase SHA-256 digest")
+        _sha256_digest(self.evidence_snapshot_fingerprint, "evidence_snapshot_fingerprint")
+        _sha256_digest(self.chart_fingerprint, "chart_fingerprint")
         if isinstance(self.schema_version, bool) or not isinstance(self.schema_version, int) or self.schema_version < 1:
             raise ValueError("schema_version must be a positive integer")
 
@@ -639,6 +670,20 @@ class ProjectionRecord:
     beta_alpha: float
     beta_beta: float
 
+    def __post_init__(self) -> None:
+        for field in self.__dataclass_fields__:
+            value = getattr(self, field)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                raise ValueError(f"{field} must be a finite number")
+        for field in ("positive_count", "negative_count", "evidence_mass", "conflict_balance", "strength", "confidence", "beta_alpha", "beta_beta"):
+            if getattr(self, field) < 0:
+                raise ValueError(f"{field} must be non-negative")
+        for field in ("conflict_balance", "strength", "confidence"):
+            if getattr(self, field) > 1:
+                raise ValueError(f"{field} must be in [0, 1]")
+        if not -1 <= self.signed_tendency <= 1:
+            raise ValueError("signed_tendency must be in [-1, 1]")
+
 
 def canonical_projection_from_beta(
     beta_alpha: float,
@@ -802,4 +847,113 @@ def compile_episode_inputs(
     return CompiledEpisodeInputs(
         episode_id, chart.chart_fingerprint, evidence_snapshot.snapshot_fingerprint,
         stamp_map, tuple(sentences),
+    )
+
+
+def compiled_episode_inputs_document(compiled: CompiledEpisodeInputs) -> dict[str, object]:
+    """Return a canonical checksummed artifact for exact compiler-output replay."""
+    payload = {
+        "episode_id": compiled.episode_id,
+        "chart_fingerprint": compiled.chart_fingerprint,
+        "evidence_snapshot_fingerprint": compiled.evidence_snapshot_fingerprint,
+        "stamp_map": [
+            {
+                "episode_id": entry.episode_id,
+                "stamp_int": entry.stamp_int,
+                "basis_id": entry.basis_id,
+                "member_token_digest": entry.member_token_digest,
+            }
+            for entry in compiled.stamp_map
+        ],
+        "sentences": [
+            {
+                "atom": sentence.atom,
+                "projection": {
+                    field: getattr(sentence.projection, field)
+                    for field in sentence.projection.__dataclass_fields__
+                },
+                "meta": {
+                    "episode_id": sentence.meta.episode_id,
+                    "sentence_digest": sentence.meta.sentence_digest,
+                    "canonical_term": sentence.meta.canonical_term,
+                    "projection_id": sentence.meta.projection_id,
+                    "context_id": sentence.meta.context_id,
+                    "chart_id": sentence.meta.chart_id,
+                    "stamp_ints": list(sentence.meta.stamp_ints),
+                    "evidence_basis_ids": list(sentence.meta.evidence_basis_ids),
+                },
+            }
+            for sentence in compiled.sentences
+        ],
+    }
+    return {
+        "schema": "petta-memory-pipln-compiled-episode-inputs-v1",
+        "payload": payload,
+        "document_digest": _canonical_hash(payload),
+    }
+
+
+def write_compiled_episode_inputs(path: str | Path, compiled: CompiledEpisodeInputs) -> None:
+    """Create one immutable compiler-output artifact; never replace a path."""
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    data = json.dumps(compiled_episode_inputs_document(compiled), sort_keys=True, indent=2) + "\n"
+    descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        destination.unlink(missing_ok=True)
+        raise
+
+
+def read_compiled_episode_inputs(path: str | Path) -> CompiledEpisodeInputs:
+    """Load and fully validate an immutable compiler-output artifact."""
+    document = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(document, dict) or document.get("schema") != "petta-memory-pipln-compiled-episode-inputs-v1":
+        raise ValueError("invalid compiled episode inputs document schema")
+    payload = document.get("payload")
+    if not isinstance(payload, dict) or document.get("document_digest") != _canonical_hash(payload):
+        raise ValueError("compiled episode inputs document checksum mismatch")
+    expected_payload = {
+        "episode_id", "chart_fingerprint", "evidence_snapshot_fingerprint", "stamp_map", "sentences",
+    }
+    if set(payload) != expected_payload or not isinstance(payload["stamp_map"], list) or not isinstance(payload["sentences"], list):
+        raise ValueError("invalid compiled episode inputs payload")
+    stamp_fields = {"episode_id", "stamp_int", "basis_id", "member_token_digest"}
+    stamps: list[StampMapEntry] = []
+    for item in payload["stamp_map"]:
+        if not isinstance(item, dict) or set(item) != stamp_fields:
+            raise ValueError("invalid compiled episode stamp map")
+        stamps.append(StampMapEntry(**item))
+    projection_fields = set(ProjectionRecord.__dataclass_fields__)
+    meta_fields = {
+        "episode_id", "sentence_digest", "canonical_term", "projection_id", "context_id",
+        "chart_id", "stamp_ints", "evidence_basis_ids",
+    }
+    sentences: list[CompiledSentence] = []
+    for item in payload["sentences"]:
+        if not isinstance(item, dict) or set(item) != {"atom", "projection", "meta"}:
+            raise ValueError("invalid compiled sentence payload")
+        projection = item["projection"]
+        meta = item["meta"]
+        if not isinstance(projection, dict) or set(projection) != projection_fields:
+            raise ValueError("invalid compiled sentence projection")
+        if not isinstance(meta, dict) or set(meta) != meta_fields:
+            raise ValueError("invalid compiled sentence metadata")
+        if not isinstance(meta["stamp_ints"], list) or not isinstance(meta["evidence_basis_ids"], list):
+            raise ValueError("invalid compiled sentence metadata collections")
+        sentence_meta = KernelSentenceMeta(
+            episode_id=meta["episode_id"], sentence_digest=meta["sentence_digest"],
+            canonical_term=meta["canonical_term"], projection_id=meta["projection_id"],
+            context_id=meta["context_id"], chart_id=meta["chart_id"],
+            stamp_ints=tuple(meta["stamp_ints"]), evidence_basis_ids=tuple(meta["evidence_basis_ids"]),
+        )
+        sentences.append(CompiledSentence(item["atom"], ProjectionRecord(**projection), sentence_meta))
+    return CompiledEpisodeInputs(
+        episode_id=payload["episode_id"], chart_fingerprint=payload["chart_fingerprint"],
+        evidence_snapshot_fingerprint=payload["evidence_snapshot_fingerprint"],
+        stamp_map=tuple(stamps), sentences=tuple(sentences),
     )

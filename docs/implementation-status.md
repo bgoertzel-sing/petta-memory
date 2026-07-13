@@ -22,7 +22,8 @@ Normative design source: `library/atlas-indexed-reversible-pipln/specification.p
 - deterministic, collision-free episode stamp assignment sorted by stable basis ID;
 - canonical `pipl-local-chart-v1` projection with separate evidence mass, conflict balance, signed tendency, STV, and beta parameters;
 - exact `EvidenceCapsule` union-by-basis algebra that deduplicates identical shared contributions and fails closed on conflicting weights for the same basis ID.
-- the first pure Phase-2 compiler boundary: `compile_episode_inputs()` closes a chart against its immutable snapshot, exact selected packets, and packet-derived basis records; assigns deterministic episode stamps; applies canonical local-chart projection; and emits immutable patham9 `Sentence` atoms with `KernelSentenceMeta` provenance sidecars. It does not invoke a runtime or persist a manifest/result.
+- the first pure Phase-2 compiler boundary: `compile_episode_inputs()` closes a chart against its immutable snapshot, exact selected packets, and packet-derived basis records; assigns deterministic episode stamps; applies canonical local-chart projection; and emits immutable patham9 `Sentence` atoms with `KernelSentenceMeta` provenance sidecars;
+- immutable checksummed persistence for `CompiledEpisodeInputs`: create-once JSON artifacts round-trip the exact sentences, projections, stamp map, and provenance metadata while rejecting document checksum drift, sentence tampering, invalid projection values, and inconsistent stamp/basis mappings. This is a replay input artifact, not the complete runtime `EpisodeManifest`.
 
 Direct tests cover immutability, malformed/nonfinite inputs, permutation-invariant stamps, duplicate basis rejection, exact overlap deduplication/conflict rejection, chart-to-snapshot closure and fingerprint sensitivity, the canonical equations, balanced conflict at different masses, and ignorance versus conflict.
 
@@ -30,7 +31,7 @@ Direct tests cover immutability, malformed/nonfinite inputs, permutation-invaria
 
 - partial-overlap residualization and independence discount policy;
 - migration of legacy aggregate EC sidecars to token-level provenance;
-- runtime program assembly, kernel-control port, replay manifests, and trace decoder;
+- runtime program assembly, kernel-control port, complete episode manifests, execution replay, and trace decoder;
 - proof classes, revision, curvature/descent, and reviewed promotion.
 
 Until overlap policy is implemented, `UNKNOWN` evidence bases must not be naively combined as independent evidence. Reliability and temporal relevance are metadata only; no weighting policy has been adopted.

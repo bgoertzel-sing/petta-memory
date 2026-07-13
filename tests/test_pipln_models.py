@@ -3,6 +3,7 @@ import json
 import tempfile
 import unittest
 from dataclasses import FrozenInstanceError
+from hashlib import sha256
 from pathlib import Path
 
 from petta_memory.pipln_models import (
@@ -20,12 +21,15 @@ from petta_memory.pipln_models import (
     canonical_local_chart_projection,
     canonical_projection_from_beta,
     compile_episode_inputs,
+    compiled_episode_inputs_document,
     cycle_local_chart_prior,
     deterministic_stamp_map,
     evidence_basis_from_packet,
     evidence_snapshot_document,
     merge_evidence_capsules,
+    read_compiled_episode_inputs,
     read_evidence_snapshot,
+    write_compiled_episode_inputs,
     write_evidence_snapshot,
 )
 
@@ -328,6 +332,62 @@ class PiPlnModelTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing exact packet basis"):
             compile_episode_inputs(episode_id="episode", chart=chart, evidence_snapshot=snapshot,
                                    packets=[packet], bases=[])
+
+    def test_compiled_episode_inputs_persistence_round_trips_and_is_create_once(self):
+        packet = EvidencePacket("p1", "(S a)", "ctx", 2, 1, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")
+        token = EvidenceToken("t1", "sensor", "s1", "ctx", "observed", "minted")
+        snapshot = build_evidence_snapshot(snapshot_id="snapshot", packets=[packet], context_id="ctx",
+                                           assumption_fingerprint="a1", ontology_fingerprint="o1", created_at="now")
+        context = PiContext("ctx", "lang", "world", "guard", "guard-v1", "query", "assumptions",
+                            "ontology", "ontology-v1", "weak-v1", "relevance-v1")
+        policy = ChartPolicy("factor", "pipl-local-chart-v1", "kernel-projection", "rules", "kernel", "translator")
+        chart = build_pi_chart(chart_id="chart", context=context, prior_strength_p0=0.5, prior_weight_k=2,
+                               prior_provenance="review", policy=policy, selected_packet_ids=["p1"],
+                               evidence_snapshot=snapshot, adequacy_certificate_id="adequacy")
+        basis = evidence_basis_from_packet(packet, [token], independence_status="PROVEN_DISJOINT",
+                                           justification_cid="review:basis")
+        compiled = compile_episode_inputs(episode_id="episode", chart=chart, evidence_snapshot=snapshot,
+                                          packets=[packet], bases=[basis])
+        document = compiled_episode_inputs_document(compiled)
+        self.assertEqual(document["schema"], "petta-memory-pipln-compiled-episode-inputs-v1")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "compiled.json"
+            write_compiled_episode_inputs(path, compiled)
+            self.assertEqual(read_compiled_episode_inputs(path), compiled)
+            with self.assertRaises(FileExistsError):
+                write_compiled_episode_inputs(path, compiled)
+
+    def test_compiled_episode_inputs_loader_rejects_checksum_and_semantic_drift(self):
+        packet = EvidencePacket("p1", "(S a)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")
+        token = EvidenceToken("t1", "sensor", "s1", "ctx", "observed", "minted")
+        snapshot = build_evidence_snapshot(snapshot_id="snapshot", packets=[packet], context_id="ctx",
+                                           assumption_fingerprint="a1", ontology_fingerprint="o1", created_at="now")
+        context = PiContext("ctx", "lang", "world", "guard", "guard-v1", "query", "assumptions",
+                            "ontology", "ontology-v1", "weak-v1", "relevance-v1")
+        chart = build_pi_chart(
+            chart_id="chart", context=context, prior_strength_p0=0.5, prior_weight_k=2,
+            prior_provenance="review", policy=ChartPolicy("factor", "projection", "kernel", "rules", "v1", "v1"),
+            selected_packet_ids=["p1"], evidence_snapshot=snapshot, adequacy_certificate_id="adequacy",
+        )
+        basis = evidence_basis_from_packet(packet, [token], independence_status="PROVEN_DISJOINT",
+                                           justification_cid="review:basis")
+        compiled = compile_episode_inputs(episode_id="episode", chart=chart, evidence_snapshot=snapshot,
+                                          packets=[packet], bases=[basis])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "compiled.json"
+            document = compiled_episode_inputs_document(compiled)
+            document["payload"]["episode_id"] = "changed"
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "checksum"):
+                read_compiled_episode_inputs(path)
+
+            document = compiled_episode_inputs_document(compiled)
+            document["payload"]["sentences"][0]["atom"] = "(Sentence tampered)"
+            encoded = json.dumps(document["payload"], sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+            document["document_digest"] = sha256(encoded.encode("utf-8")).hexdigest()
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "sentence digest"):
+                read_compiled_episode_inputs(path)
 
     def test_context_and_chart_fail_closed_on_noncanonical_identity_inputs(self):
         common = dict(id="ctx", language_fragment_id="lang", universe_id="world", guard="g", guard_version="gv",
