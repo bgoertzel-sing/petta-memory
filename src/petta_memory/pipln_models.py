@@ -373,8 +373,10 @@ class PiChart:
             raise ValueError("prior_strength_p0 must be finite and in [0, 1]")
         if isinstance(self.prior_weight_k, bool) or not isinstance(self.prior_weight_k, (int, float)) or not math.isfinite(self.prior_weight_k) or self.prior_weight_k <= 0:
             raise ValueError("prior_weight_k must be finite and positive")
-        if tuple(sorted(set(self.selected_packet_ids))) != self.selected_packet_ids:
-            raise ValueError("selected_packet_ids must be unique and sorted")
+        if not self.selected_packet_ids or tuple(sorted(set(self.selected_packet_ids))) != self.selected_packet_ids:
+            raise ValueError("selected_packet_ids must be non-empty, unique, and sorted")
+        for packet_id in self.selected_packet_ids:
+            _nonempty(packet_id, "selected_packet_id")
         if isinstance(self.schema_version, bool) or not isinstance(self.schema_version, int) or self.schema_version < 1:
             raise ValueError("schema_version must be a positive integer")
 
@@ -384,8 +386,11 @@ def build_pi_chart(
     prior_provenance: str, policy: ChartPolicy, selected_packet_ids: Iterable[str],
     evidence_snapshot_id: str, adequacy_certificate_id: str,
 ) -> PiChart:
-    """Freeze a chart and hash every SDS-mandated chart-fingerprint field."""
-    packet_ids = tuple(sorted(selected_packet_ids))
+    """Freeze a chart and hash its complete immutable selection and policy identity."""
+    supplied_packet_ids = tuple(selected_packet_ids)
+    packet_ids = tuple(sorted(supplied_packet_ids))
+    if len(packet_ids) != len(set(packet_ids)):
+        raise ValueError("selected_packet_ids must be unique")
     fingerprint = _canonical_hash({
         "context_id": context.id,
         "context_guard_version": context.guard_version,
@@ -395,8 +400,11 @@ def build_pi_chart(
         "prior_weight_k": prior_weight_k,
         "factorization_policy_id": policy.factorization_policy_id,
         "projection_policy_id": policy.projection_policy_id,
+        "kernel_projection_policy_id": policy.kernel_projection_policy_id,
         "rule_profile_id": policy.rule_profile_id,
+        "selected_packet_ids": packet_ids,
         "evidence_snapshot_id": evidence_snapshot_id,
+        "adequacy_certificate_id": adequacy_certificate_id,
         "kernel_version": policy.kernel_version,
         "translator_version": policy.translator_version,
     })

@@ -211,6 +211,37 @@ class PiPlnModelTests(unittest.TestCase):
         changed = build_pi_chart(selected_packet_ids=["p1", "p2"], **{**kwargs, "prior_weight_k": 3})
         self.assertNotEqual(forward.chart_fingerprint, changed.chart_fingerprint)
 
+    def test_chart_fingerprint_covers_complete_selection_and_policy_identity(self):
+        context = PiContext("ctx", "lang-v1", "world", "(Guard x)", "guard-v1", "query", "assumptions-v1",
+                            "ontology", "ontology-v1", "weak-v1", "relevance-v1")
+        policy = ChartPolicy("factor-v1", "projection-v1", "kernel-projection-v1", "rules-v1", "kernel-v1", "translator-v1")
+        kwargs = dict(chart_id="chart", context=context, prior_strength_p0=0.5, prior_weight_k=2,
+                      prior_provenance="review:1", policy=policy, selected_packet_ids=["p1"],
+                      evidence_snapshot_id="snapshot-1", adequacy_certificate_id="adequacy-1")
+        original = build_pi_chart(**kwargs)
+        changed_selection = build_pi_chart(**{**kwargs, "selected_packet_ids": ["p2"]})
+        changed_certificate = build_pi_chart(**{**kwargs, "adequacy_certificate_id": "adequacy-2"})
+        changed_kernel_projection = build_pi_chart(**{
+            **kwargs,
+            "policy": ChartPolicy("factor-v1", "projection-v1", "kernel-projection-v2", "rules-v1", "kernel-v1", "translator-v1"),
+        })
+        for changed in (changed_selection, changed_certificate, changed_kernel_projection):
+            self.assertNotEqual(original.chart_fingerprint, changed.chart_fingerprint)
+
+    def test_chart_rejects_empty_duplicate_or_blank_packet_selection(self):
+        context = PiContext("ctx", "lang", "world", "guard", "guard-v1", "query", "assumptions",
+                            "ontology", "ontology-v1", "weak-v1", "relevance-v1")
+        policy = ChartPolicy("factor-v1", "projection-v1", "kernel-projection-v1", "rules-v1", "kernel-v1", "translator-v1")
+        kwargs = dict(chart_id="chart", context=context, prior_strength_p0=0.5, prior_weight_k=2,
+                      prior_provenance="review:1", policy=policy, evidence_snapshot_id="snapshot-1",
+                      adequacy_certificate_id="adequacy-1")
+        with self.assertRaisesRegex(ValueError, "non-empty"):
+            build_pi_chart(selected_packet_ids=[], **kwargs)
+        with self.assertRaisesRegex(ValueError, "unique"):
+            build_pi_chart(selected_packet_ids=["p1", "p1"], **kwargs)
+        with self.assertRaisesRegex(ValueError, "selected_packet_id"):
+            build_pi_chart(selected_packet_ids=[""], **kwargs)
+
     def test_context_and_chart_fail_closed_on_noncanonical_identity_inputs(self):
         common = dict(id="ctx", language_fragment_id="lang", universe_id="world", guard="g", guard_version="gv",
                       task_class="query", assumption_package_id="a", ontology_id="o", ontology_version="ov",
