@@ -362,12 +362,13 @@ class PiChart:
     policy: ChartPolicy
     selected_packet_ids: tuple[str, ...]
     evidence_snapshot_id: str
+    evidence_snapshot_fingerprint: str
     adequacy_certificate_id: str
     chart_fingerprint: str
     schema_version: int = 1
 
     def __post_init__(self) -> None:
-        for field in ("id", "context_id", "prior_provenance", "evidence_snapshot_id", "adequacy_certificate_id", "chart_fingerprint"):
+        for field in ("id", "context_id", "prior_provenance", "evidence_snapshot_id", "evidence_snapshot_fingerprint", "adequacy_certificate_id", "chart_fingerprint"):
             _nonempty(getattr(self, field), field)
         if isinstance(self.prior_strength_p0, bool) or not isinstance(self.prior_strength_p0, (int, float)) or not math.isfinite(self.prior_strength_p0) or not 0 <= self.prior_strength_p0 <= 1:
             raise ValueError("prior_strength_p0 must be finite and in [0, 1]")
@@ -377,6 +378,11 @@ class PiChart:
             raise ValueError("selected_packet_ids must be non-empty, unique, and sorted")
         for packet_id in self.selected_packet_ids:
             _nonempty(packet_id, "selected_packet_id")
+        if len(self.evidence_snapshot_fingerprint) != 64 or any(
+            character not in "0123456789abcdef"
+            for character in self.evidence_snapshot_fingerprint
+        ):
+            raise ValueError("evidence_snapshot_fingerprint must be a lowercase SHA-256 digest")
         if isinstance(self.schema_version, bool) or not isinstance(self.schema_version, int) or self.schema_version < 1:
             raise ValueError("schema_version must be a positive integer")
 
@@ -384,13 +390,25 @@ class PiChart:
 def build_pi_chart(
     *, chart_id: str, context: PiContext, prior_strength_p0: float, prior_weight_k: float,
     prior_provenance: str, policy: ChartPolicy, selected_packet_ids: Iterable[str],
-    evidence_snapshot_id: str, adequacy_certificate_id: str,
+    evidence_snapshot: EvidenceSnapshot, adequacy_certificate_id: str,
 ) -> PiChart:
-    """Freeze a chart and hash its complete immutable selection and policy identity."""
+    """Freeze a chart against one validated immutable evidence snapshot."""
     supplied_packet_ids = tuple(selected_packet_ids)
     packet_ids = tuple(sorted(supplied_packet_ids))
+    if not packet_ids:
+        raise ValueError("selected_packet_ids must be non-empty")
     if len(packet_ids) != len(set(packet_ids)):
         raise ValueError("selected_packet_ids must be unique")
+    for packet_id in packet_ids:
+        _nonempty(packet_id, "selected_packet_id")
+    if evidence_snapshot.context_id != context.id:
+        raise ValueError("evidence snapshot context does not match chart context")
+    missing_packet_ids = sorted(set(packet_ids) - set(evidence_snapshot.packet_ids))
+    if missing_packet_ids:
+        raise ValueError(
+            "selected packets are absent from evidence snapshot: "
+            + ", ".join(missing_packet_ids)
+        )
     fingerprint = _canonical_hash({
         "context_id": context.id,
         "context_guard_version": context.guard_version,
@@ -403,13 +421,15 @@ def build_pi_chart(
         "kernel_projection_policy_id": policy.kernel_projection_policy_id,
         "rule_profile_id": policy.rule_profile_id,
         "selected_packet_ids": packet_ids,
-        "evidence_snapshot_id": evidence_snapshot_id,
+        "evidence_snapshot_id": evidence_snapshot.id,
+        "evidence_snapshot_fingerprint": evidence_snapshot.snapshot_fingerprint,
         "adequacy_certificate_id": adequacy_certificate_id,
         "kernel_version": policy.kernel_version,
         "translator_version": policy.translator_version,
     })
     return PiChart(chart_id, context.id, prior_strength_p0, prior_weight_k, prior_provenance,
-                   policy, packet_ids, evidence_snapshot_id, adequacy_certificate_id, fingerprint)
+                   policy, packet_ids, evidence_snapshot.id, evidence_snapshot.snapshot_fingerprint,
+                   adequacy_certificate_id, fingerprint)
 
 
 def evidence_basis_from_packet(

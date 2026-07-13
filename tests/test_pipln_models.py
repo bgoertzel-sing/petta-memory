@@ -33,6 +33,17 @@ class PiPlnModelTests(unittest.TestCase):
     def basis(self, basis_id, token_id):
         return EvidenceBasis(basis_id, (token_id,), (), "UNKNOWN", f"cid:{basis_id}")
 
+    def snapshot(self, packet_ids=("p1", "p2"), *, snapshot_id="snapshot-1", context_id="ctx", positive_delta=1):
+        packets = [
+            EvidencePacket(packet_id, "(S x)", context_id, positive_delta, 0, (f"t-{packet_id}",),
+                           1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")
+            for packet_id in packet_ids
+        ]
+        return build_evidence_snapshot(
+            snapshot_id=snapshot_id, packets=packets, context_id=context_id,
+            assumption_fingerprint="a1", ontology_fingerprint="o1", created_at="now",
+        )
+
     def test_token_and_packet_are_immutable_and_packet_digest_is_stable(self):
         token = EvidenceToken("t1", "sensor", "s1", "c1", "2026-07-11T00:00:00Z", "2026-07-11T00:00:01Z")
         packet = EvidencePacket("p1", "(S x)", "c1", 2, 1, (token.id,), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")
@@ -202,7 +213,7 @@ class PiPlnModelTests(unittest.TestCase):
                             "ontology", "ontology-v1", "weak-v1", "relevance-v1")
         policy = ChartPolicy("factor-v1", "projection-v1", "kernel-projection-v1", "rules-v1", "kernel-v1", "translator-v1")
         kwargs = dict(chart_id="chart", context=context, prior_strength_p0=0.5, prior_weight_k=2,
-                      prior_provenance="review:1", policy=policy, evidence_snapshot_id="snapshot-1",
+                      prior_provenance="review:1", policy=policy, evidence_snapshot=self.snapshot(),
                       adequacy_certificate_id="adequacy-1")
         forward = build_pi_chart(selected_packet_ids=["p2", "p1"], **kwargs)
         reverse = build_pi_chart(selected_packet_ids=["p1", "p2"], **kwargs)
@@ -217,7 +228,7 @@ class PiPlnModelTests(unittest.TestCase):
         policy = ChartPolicy("factor-v1", "projection-v1", "kernel-projection-v1", "rules-v1", "kernel-v1", "translator-v1")
         kwargs = dict(chart_id="chart", context=context, prior_strength_p0=0.5, prior_weight_k=2,
                       prior_provenance="review:1", policy=policy, selected_packet_ids=["p1"],
-                      evidence_snapshot_id="snapshot-1", adequacy_certificate_id="adequacy-1")
+                      evidence_snapshot=self.snapshot(), adequacy_certificate_id="adequacy-1")
         original = build_pi_chart(**kwargs)
         changed_selection = build_pi_chart(**{**kwargs, "selected_packet_ids": ["p2"]})
         changed_certificate = build_pi_chart(**{**kwargs, "adequacy_certificate_id": "adequacy-2"})
@@ -228,12 +239,28 @@ class PiPlnModelTests(unittest.TestCase):
         for changed in (changed_selection, changed_certificate, changed_kernel_projection):
             self.assertNotEqual(original.chart_fingerprint, changed.chart_fingerprint)
 
+        changed_snapshot = self.snapshot(("p1", "p2"), positive_delta=2)
+        changed_snapshot_chart = build_pi_chart(**{**kwargs, "evidence_snapshot": changed_snapshot})
+        self.assertNotEqual(original.chart_fingerprint, changed_snapshot_chart.chart_fingerprint)
+        self.assertEqual(changed_snapshot_chart.evidence_snapshot_fingerprint, changed_snapshot.snapshot_fingerprint)
+
+    def test_chart_closes_selected_packets_and_context_against_snapshot(self):
+        context = PiContext("ctx", "lang", "world", "guard", "guard-v1", "query", "assumptions",
+                            "ontology", "ontology-v1", "weak-v1", "relevance-v1")
+        policy = ChartPolicy("factor-v1", "projection-v1", "kernel-projection-v1", "rules-v1", "kernel-v1", "translator-v1")
+        kwargs = dict(chart_id="chart", context=context, prior_strength_p0=0.5, prior_weight_k=2,
+                      prior_provenance="review:1", policy=policy, adequacy_certificate_id="adequacy-1")
+        with self.assertRaisesRegex(ValueError, "absent from evidence snapshot"):
+            build_pi_chart(selected_packet_ids=["p3"], evidence_snapshot=self.snapshot(("p1",)), **kwargs)
+        with self.assertRaisesRegex(ValueError, "context"):
+            build_pi_chart(selected_packet_ids=["p1"], evidence_snapshot=self.snapshot(("p1",), context_id="other"), **kwargs)
+
     def test_chart_rejects_empty_duplicate_or_blank_packet_selection(self):
         context = PiContext("ctx", "lang", "world", "guard", "guard-v1", "query", "assumptions",
                             "ontology", "ontology-v1", "weak-v1", "relevance-v1")
         policy = ChartPolicy("factor-v1", "projection-v1", "kernel-projection-v1", "rules-v1", "kernel-v1", "translator-v1")
         kwargs = dict(chart_id="chart", context=context, prior_strength_p0=0.5, prior_weight_k=2,
-                      prior_provenance="review:1", policy=policy, evidence_snapshot_id="snapshot-1",
+                      prior_provenance="review:1", policy=policy, evidence_snapshot=self.snapshot(),
                       adequacy_certificate_id="adequacy-1")
         with self.assertRaisesRegex(ValueError, "non-empty"):
             build_pi_chart(selected_packet_ids=[], **kwargs)

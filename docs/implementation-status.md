@@ -17,16 +17,17 @@ Normative design source: `library/atlas-indexed-reversible-pipln/specification.p
 - immutable validated `EvidenceToken`, `EvidencePacket`, and `EvidenceBasis` records;
 - immutable create-once JSON snapshot documents with a canonical payload checksum and fail-closed loader; snapshot records require at least one canonical packet ID and a lowercase SHA-256 fingerprint, including after loading a separately checksummed document;
 - a content-addressed `EvidenceSnapshotRepository` that discovers validated snapshot documents, rejects filename/fingerprint drift and duplicate logical snapshot IDs, and provides fail-closed lookup;
+- immutable semantic `PiContext`, `ChartPolicy`, and `PiChart` records; chart construction accepts a validated `EvidenceSnapshot` rather than an independent snapshot ID, requires matching context and selected-packet membership, and fingerprints the snapshot's semantic content identity;
 - stable packet provenance digests;
 - deterministic, collision-free episode stamp assignment sorted by stable basis ID;
 - canonical `pipl-local-chart-v1` projection with separate evidence mass, conflict balance, signed tendency, STV, and beta parameters;
 - exact `EvidenceCapsule` union-by-basis algebra that deduplicates identical shared contributions and fails closed on conflicting weights for the same basis ID.
 
-Direct tests cover immutability, malformed/nonfinite inputs, permutation-invariant stamps, duplicate basis rejection, exact overlap deduplication/conflict rejection, the canonical equations, balanced conflict at different masses, and ignorance versus conflict.
+Direct tests cover immutability, malformed/nonfinite inputs, permutation-invariant stamps, duplicate basis rejection, exact overlap deduplication/conflict rejection, chart-to-snapshot closure and fingerprint sensitivity, the canonical equations, balanced conflict at different masses, and ignorance versus conflict.
 
 ## Explicitly deferred
 
-- packet-to-basis construction, partial-overlap residualization, and independence discount policy;
+- partial-overlap residualization and independence discount policy;
 - migration of legacy aggregate EC sidecars to token-level provenance;
 - episode compiler, kernel-control port, replay manifests, and trace decoder;
 - proof classes, revision, curvature/descent, and reviewed promotion.
