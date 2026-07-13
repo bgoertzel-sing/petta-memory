@@ -409,6 +409,9 @@ def run_patham9_pln_derivation_smoke(
     }
 
 
+EC_PROJECTED_STV_POLICY_ID = "adapter-weighted-v1"
+
+
 def ec_projected_stv(
     base_strength: float,
     base_confidence: float,
@@ -416,7 +419,8 @@ def ec_projected_stv(
 ) -> dict[str, Any]:
     """Compute a wrapper-level projected STV from base STV and contextual EC packets.
 
-    This is the first reviewed pi-PLN wrapper formula.  It blends the base STV
+    This is the legacy ``adapter-weighted-v1`` compatibility formula, not the
+    canonical count/prior chart projection in ``pipln_models``. It blends the base STV
     with EC-derived evidence using a confidence-weighted average, mirroring the
     formula already used in the non-live GoalChainer precompiled EC smoke but
     made explicit and self-contained for the patham9/PLN wrapper boundary.
@@ -485,6 +489,11 @@ def ec_projected_stv(
         "packets": packet_summaries,
         "formula": "confidence-weighted blend: projected_strength = sum(s_i * w_i) / sum(w_i); projected_confidence = max(all confidences)",
     }
+
+
+# Introspection metadata labels the compatibility adapter without adding a field
+# to its long-standing serialized result dictionaries.
+ec_projected_stv.projection_policy_id = EC_PROJECTED_STV_POLICY_ID
 
 
 def patham9_pln_ec_projection_smoke_program(

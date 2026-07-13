@@ -6,7 +6,7 @@ Normative design source: `library/atlas-indexed-reversible-pipln/specification.p
 
 - patham9 PLN checkout: `../patham9-pln`, commit `55f1751d993f71b8a24da03e3aec94ab40789a59`.
 - Existing wrapper functions and serialized artifacts remain compatibility baselines.
-- `ec_projected_stv()` implements the legacy `adapter-weighted-v1` behavior, not the canonical count/prior chart projection.
+- `ec_projected_stv()` implements the legacy `adapter-weighted-v1` behavior, not the canonical count/prior chart projection. `EC_PROJECTED_STV_POLICY_ID` and the function's introspection metadata label that compatibility boundary without changing its serialized result dictionaries.
 - Existing numeric runtime stamps are item-position aliases and are not yet the specification's evidence-basis stamp map.
 - Vendor smoke history includes examples/rule tests that emit semantic failure markers despite exit code zero; Phase 0 must freeze and classify the expected baseline before claiming differential compatibility.
 

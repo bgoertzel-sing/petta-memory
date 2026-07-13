@@ -8,6 +8,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from petta_memory.patham9_pln import (
+    EC_PROJECTED_STV_POLICY_ID,
     build_meta_learning_benchmark_handoff,
     classify_smoke_result,
     classify_smoke_result_with_retry,
@@ -40,6 +41,12 @@ from petta_memory.patham9_pln import (
 
 
 class Patham9PlnSmokeGateTests(unittest.TestCase):
+    def test_ec_projected_stv_is_explicitly_legacy_adapter_without_output_drift(self):
+        result = ec_projected_stv(0.8, 0.6, [{"support": 3, "opposition": 1}])
+        self.assertEqual(EC_PROJECTED_STV_POLICY_ID, "adapter-weighted-v1")
+        self.assertEqual(ec_projected_stv.projection_policy_id, EC_PROJECTED_STV_POLICY_ID)
+        self.assertNotIn("projection_policy_id", result)
+
     def test_parse_metta_test_output_counts_semantic_failures(self):
         parsed = parse_metta_test_output(
             "[(TestResult (Passed: #t))]\n"
