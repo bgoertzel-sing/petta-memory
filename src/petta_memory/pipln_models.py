@@ -256,6 +256,52 @@ def read_evidence_snapshot(path: str | Path) -> EvidenceSnapshot:
     )
 
 
+class EvidenceSnapshotRepository:
+    """Content-addressed, create-once snapshot discovery boundary.
+
+    Repository files are named by the semantic snapshot fingerprint. Lookup scans
+    and validates every document so filename drift, duplicate snapshot IDs, and
+    conflicting content fail closed instead of selecting an arbitrary record.
+    """
+
+    def __init__(self, root: str | Path) -> None:
+        self.root = Path(root)
+
+    def snapshots(self) -> tuple[EvidenceSnapshot, ...]:
+        if not self.root.exists():
+            return ()
+        if not self.root.is_dir():
+            raise ValueError("snapshot repository root must be a directory")
+        snapshots: list[EvidenceSnapshot] = []
+        ids: set[str] = set()
+        for path in sorted(self.root.iterdir()):
+            if not path.is_file() or path.suffix != ".json":
+                raise ValueError(f"unexpected snapshot repository entry: {path.name}")
+            snapshot = read_evidence_snapshot(path)
+            if path.stem != snapshot.snapshot_fingerprint:
+                raise ValueError(f"snapshot filename fingerprint mismatch: {path.name}")
+            if snapshot.id in ids:
+                raise ValueError(f"duplicate snapshot id in repository: {snapshot.id}")
+            ids.add(snapshot.id)
+            snapshots.append(snapshot)
+        return tuple(sorted(snapshots, key=lambda item: item.id))
+
+    def get(self, snapshot_id: str) -> EvidenceSnapshot:
+        _nonempty(snapshot_id, "snapshot_id")
+        matches = [snapshot for snapshot in self.snapshots() if snapshot.id == snapshot_id]
+        if not matches:
+            raise KeyError(snapshot_id)
+        return matches[0]
+
+    def add(self, snapshot: EvidenceSnapshot) -> Path:
+        existing = {item.id: item for item in self.snapshots()}
+        if snapshot.id in existing:
+            raise FileExistsError(f"snapshot id already exists: {snapshot.id}")
+        destination = self.root / f"{snapshot.snapshot_fingerprint}.json"
+        write_evidence_snapshot(destination, snapshot)
+        return destination
+
+
 @dataclass(frozen=True)
 class PiContext:
     """Semantic context identity and its versioned applicability policies."""

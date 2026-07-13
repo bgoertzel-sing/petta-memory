@@ -16,6 +16,7 @@ Normative design source: `library/atlas-indexed-reversible-pipln/specification.p
 
 - immutable validated `EvidenceToken`, `EvidencePacket`, and `EvidenceBasis` records;
 - immutable create-once JSON snapshot documents with a canonical payload checksum and fail-closed loader; snapshot records require at least one canonical packet ID and a lowercase SHA-256 fingerprint, including after loading a separately checksummed document;
+- a content-addressed `EvidenceSnapshotRepository` that discovers validated snapshot documents, rejects filename/fingerprint drift and duplicate logical snapshot IDs, and provides fail-closed lookup;
 - stable packet provenance digests;
 - deterministic, collision-free episode stamp assignment sorted by stable basis ID;
 - canonical `pipl-local-chart-v1` projection with separate evidence mass, conflict balance, signed tendency, STV, and beta parameters;
@@ -26,7 +27,6 @@ Direct tests cover immutability, malformed/nonfinite inputs, permutation-invaria
 ## Explicitly deferred
 
 - packet-to-basis construction, partial-overlap residualization, and independence discount policy;
-- a repository/index for locating snapshot documents (the create-once file boundary is implemented);
 - migration of legacy aggregate EC sidecars to token-level provenance;
 - episode compiler, kernel-control port, replay manifests, and trace decoder;
 - proof classes, revision, curvature/descent, and reviewed promotion.

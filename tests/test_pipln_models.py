@@ -11,6 +11,7 @@ from petta_memory.pipln_models import (
     EvidenceContribution,
     EvidencePacket,
     EvidenceSnapshot,
+    EvidenceSnapshotRepository,
     EvidenceToken,
     ChartPolicy,
     PiContext,
@@ -157,6 +158,42 @@ class PiPlnModelTests(unittest.TestCase):
             path.write_text(json.dumps(document), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "SHA-256"):
                 read_evidence_snapshot(path)
+
+    def test_snapshot_repository_adds_discovers_and_gets_content_addressed_documents(self):
+        packet = EvidencePacket("p1", "(S x)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")
+        snapshot = build_evidence_snapshot(snapshot_id="snap", packets=[packet], context_id="ctx",
+                                           assumption_fingerprint="a1", ontology_fingerprint="o1", created_at="now")
+        with tempfile.TemporaryDirectory() as directory:
+            repository = EvidenceSnapshotRepository(Path(directory) / "snapshots")
+            path = repository.add(snapshot)
+            self.assertEqual(path.name, f"{snapshot.snapshot_fingerprint}.json")
+            self.assertEqual(repository.snapshots(), (snapshot,))
+            self.assertEqual(repository.get("snap"), snapshot)
+            with self.assertRaises(FileExistsError):
+                repository.add(snapshot)
+            with self.assertRaises(KeyError):
+                repository.get("missing")
+
+    def test_snapshot_repository_fails_closed_on_filename_drift_and_duplicate_ids(self):
+        packet = EvidencePacket("p1", "(S x)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")
+        first = build_evidence_snapshot(snapshot_id="snap", packets=[packet], context_id="ctx",
+                                        assumption_fingerprint="a1", ontology_fingerprint="o1", created_at="one")
+        second = build_evidence_snapshot(snapshot_id="snap", packets=[packet], context_id="ctx",
+                                         assumption_fingerprint="a1", ontology_fingerprint="o1", created_at="two")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_evidence_snapshot(root / "wrong.json", first)
+            with self.assertRaisesRegex(ValueError, "filename fingerprint"):
+                EvidenceSnapshotRepository(root).snapshots()
+            (root / "wrong.json").unlink()
+            write_evidence_snapshot(root / f"{first.snapshot_fingerprint}.json", first)
+            # created_at is audit metadata, so use a changed packet to force another content address.
+            changed_packet = EvidencePacket("p1", "(S x)", "ctx", 2, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")
+            second = build_evidence_snapshot(snapshot_id="snap", packets=[changed_packet], context_id="ctx",
+                                             assumption_fingerprint="a1", ontology_fingerprint="o1", created_at="two")
+            write_evidence_snapshot(root / f"{second.snapshot_fingerprint}.json", second)
+            with self.assertRaisesRegex(ValueError, "duplicate snapshot id"):
+                EvidenceSnapshotRepository(root).snapshots()
 
     def test_chart_fingerprint_is_packet_order_invariant_and_policy_sensitive(self):
         context = PiContext("ctx", "lang-v1", "world", "(Guard x)", "guard-v1", "query", "assumptions-v1",
