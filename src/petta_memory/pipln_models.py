@@ -129,6 +129,64 @@ class StampMapEntry:
 
 
 @dataclass(frozen=True)
+class KernelSentenceMeta:
+    """Immutable provenance sidecar for one chart-compiled kernel sentence."""
+
+    episode_id: str
+    sentence_digest: str
+    canonical_term: str
+    projection_id: str
+    context_id: str
+    chart_id: str
+    stamp_ints: tuple[int, ...]
+    evidence_basis_ids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        for field in (
+            "episode_id", "sentence_digest", "canonical_term", "projection_id",
+            "context_id", "chart_id",
+        ):
+            _nonempty(getattr(self, field), field)
+        if tuple(sorted(set(self.stamp_ints))) != self.stamp_ints:
+            raise ValueError("stamp_ints must be unique and sorted")
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in self.stamp_ints):
+            raise ValueError("stamp_ints must contain non-negative integers")
+        if not self.evidence_basis_ids or tuple(sorted(set(self.evidence_basis_ids))) != self.evidence_basis_ids:
+            raise ValueError("evidence_basis_ids must be non-empty, unique, and sorted")
+
+
+@dataclass(frozen=True)
+class CompiledSentence:
+    """A patham9 sentence plus its non-lossy πPLN provenance sidecar."""
+
+    atom: str
+    projection: "ProjectionRecord"
+    meta: KernelSentenceMeta
+
+    def __post_init__(self) -> None:
+        _nonempty(self.atom, "atom")
+        if self.meta.sentence_digest != _canonical_hash({"atom": self.atom}):
+            raise ValueError("compiled sentence digest does not match atom")
+
+
+@dataclass(frozen=True)
+class CompiledEpisodeInputs:
+    """Pure deterministic output of the first Phase-2 compilation boundary."""
+
+    episode_id: str
+    chart_fingerprint: str
+    evidence_snapshot_fingerprint: str
+    stamp_map: tuple[StampMapEntry, ...]
+    sentences: tuple[CompiledSentence, ...]
+
+    def __post_init__(self) -> None:
+        for field in ("episode_id", "chart_fingerprint", "evidence_snapshot_fingerprint"):
+            _nonempty(getattr(self, field), field)
+        if not self.sentences:
+            raise ValueError("compiled episode must contain at least one sentence")
+
+
+@dataclass(frozen=True)
 class EvidenceSnapshot:
     """Immutable packet selection plus the versions that define its meaning."""
 
@@ -661,4 +719,87 @@ def canonical_local_chart_projection(
         confidence=float(confidence),
         beta_alpha=float(prior_weight * prior_strength + positive_count),
         beta_beta=float(prior_weight * (1 - prior_strength) + negative_count),
+    )
+
+
+def compile_episode_inputs(
+    *, episode_id: str, chart: PiChart, evidence_snapshot: EvidenceSnapshot,
+    packets: Iterable[EvidencePacket], bases: Iterable[EvidenceBasis],
+) -> CompiledEpisodeInputs:
+    """Compile validated chart evidence into deterministic patham9 inputs.
+
+    This pure boundary does not invoke patham9, write a manifest, or persist a
+    derived result. Each selected packet must close against the frozen snapshot
+    and exactly one packet-derived evidence basis.
+    """
+    _nonempty(episode_id, "episode_id")
+    if chart.evidence_snapshot_id != evidence_snapshot.id or chart.evidence_snapshot_fingerprint != evidence_snapshot.snapshot_fingerprint:
+        raise ValueError("chart does not match evidence snapshot")
+    if chart.context_id != evidence_snapshot.context_id:
+        raise ValueError("chart context does not match evidence snapshot")
+
+    packet_by_id: dict[str, EvidencePacket] = {}
+    for packet in packets:
+        if packet.id in packet_by_id:
+            raise ValueError(f"duplicate packet: {packet.id}")
+        packet_by_id[packet.id] = packet
+    if set(packet_by_id) != set(chart.selected_packet_ids):
+        raise ValueError("packets must exactly match the chart selection")
+
+    basis_by_id: dict[str, EvidenceBasis] = {}
+    for basis in bases:
+        if basis.basis_id in basis_by_id:
+            raise ValueError(f"duplicate basis: {basis.basis_id}")
+        basis_by_id[basis.basis_id] = basis
+    packet_basis: dict[str, EvidenceBasis] = {}
+    for packet_id in chart.selected_packet_ids:
+        packet = packet_by_id[packet_id]
+        if packet.status != "ACTIVE" or packet.context_id != chart.context_id:
+            raise ValueError(f"packet is not active in the chart context: {packet_id}")
+        expected_basis_id = f"basis-{_canonical_hash({'packet_id': packet.id, 'token_ids': packet.token_ids})}"
+        basis = basis_by_id.get(expected_basis_id)
+        if basis is None or basis.member_token_ids != packet.token_ids:
+            raise ValueError(f"missing exact packet basis: {packet_id}")
+        packet_basis[packet_id] = basis
+    if set(basis_by_id) != {basis.basis_id for basis in packet_basis.values()}:
+        raise ValueError("bases must exactly match the chart packets")
+
+    stamp_map = deterministic_stamp_map(episode_id, basis_by_id.values())
+    stamp_by_basis = {entry.basis_id: entry.stamp_int for entry in stamp_map}
+    sentences: list[CompiledSentence] = []
+    for packet_id in chart.selected_packet_ids:
+        packet = packet_by_id[packet_id]
+        basis = packet_basis[packet_id]
+        projection = canonical_local_chart_projection(
+            packet.positive_delta, packet.negative_delta,
+            prior_strength=chart.prior_strength_p0, prior_weight=chart.prior_weight_k,
+        )
+        projection_id = _canonical_hash({
+            "chart_fingerprint": chart.chart_fingerprint,
+            "packet_id": packet.id,
+            "policy_id": chart.policy.projection_policy_id,
+            "positive_count": projection.positive_count,
+            "negative_count": projection.negative_count,
+            "strength": projection.strength,
+            "confidence": projection.confidence,
+        })
+        stamps = (stamp_by_basis[basis.basis_id],)
+        atom = (
+            f"(Sentence ({packet.statement} (stv {projection.strength} "
+            f"{projection.confidence})) ({' '.join(str(value) for value in stamps)}))"
+        )
+        meta = KernelSentenceMeta(
+            episode_id=episode_id,
+            sentence_digest=_canonical_hash({"atom": atom}),
+            canonical_term=packet.statement,
+            projection_id=projection_id,
+            context_id=chart.context_id,
+            chart_id=chart.id,
+            stamp_ints=stamps,
+            evidence_basis_ids=(basis.basis_id,),
+        )
+        sentences.append(CompiledSentence(atom, projection, meta))
+    return CompiledEpisodeInputs(
+        episode_id, chart.chart_fingerprint, evidence_snapshot.snapshot_fingerprint,
+        stamp_map, tuple(sentences),
     )

@@ -19,6 +19,7 @@ from petta_memory.pipln_models import (
     build_evidence_snapshot,
     canonical_local_chart_projection,
     canonical_projection_from_beta,
+    compile_episode_inputs,
     cycle_local_chart_prior,
     deterministic_stamp_map,
     evidence_basis_from_packet,
@@ -268,6 +269,65 @@ class PiPlnModelTests(unittest.TestCase):
             build_pi_chart(selected_packet_ids=["p1", "p1"], **kwargs)
         with self.assertRaisesRegex(ValueError, "selected_packet_id"):
             build_pi_chart(selected_packet_ids=[""], **kwargs)
+
+    def test_episode_input_compiler_is_deterministic_and_preserves_provenance(self):
+        context = PiContext("ctx", "lang", "world", "guard", "guard-v1", "query", "assumptions",
+                            "ontology", "ontology-v1", "weak-v1", "relevance-v1")
+        policy = ChartPolicy("factor-v1", "pipl-local-chart-v1", "prior-aware-no-revision-v1",
+                             "deduction-only-v1", "kernel-v1", "translator-v1")
+        tokens = [
+            EvidenceToken("t1", "sensor", "s1", "ctx", "observed", "minted"),
+            EvidenceToken("t2", "sensor", "s2", "ctx", "observed", "minted"),
+        ]
+        packets = [
+            EvidencePacket("p2", "(S b)", "ctx", 1, 1, ("t2",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION"),
+            EvidencePacket("p1", "(S a)", "ctx", 3, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION"),
+        ]
+        snapshot = build_evidence_snapshot(snapshot_id="snapshot", packets=packets, context_id="ctx",
+                                           assumption_fingerprint="a1", ontology_fingerprint="o1", created_at="now")
+        chart = build_pi_chart(chart_id="chart", context=context, prior_strength_p0=0.5, prior_weight_k=2,
+                               prior_provenance="review:1", policy=policy, selected_packet_ids=["p2", "p1"],
+                               evidence_snapshot=snapshot, adequacy_certificate_id="adequacy:1")
+        bases = [
+            evidence_basis_from_packet(packet, [tokens[index]], independence_status="PROVEN_DISJOINT",
+                                       justification_cid=f"review:{packet.id}")
+            for index, packet in enumerate(reversed(packets))
+        ]
+        compiled = compile_episode_inputs(episode_id="episode-1", chart=chart, evidence_snapshot=snapshot,
+                                          packets=reversed(packets), bases=reversed(bases))
+        repeated = compile_episode_inputs(episode_id="episode-1", chart=chart, evidence_snapshot=snapshot,
+                                          packets=packets, bases=bases)
+        self.assertEqual(compiled, repeated)
+        self.assertEqual([item.meta.canonical_term for item in compiled.sentences], ["(S a)", "(S b)"])
+        self.assertEqual([entry.stamp_int for entry in compiled.stamp_map], [0, 1])
+        self.assertEqual(compiled.sentences[0].projection.positive_count, 3)
+        self.assertIn("(Sentence ((S a) (stv", compiled.sentences[0].atom)
+        self.assertEqual(compiled.sentences[0].meta.context_id, chart.context_id)
+        self.assertEqual(compiled.evidence_snapshot_fingerprint, snapshot.snapshot_fingerprint)
+
+    def test_episode_input_compiler_fails_closed_on_snapshot_packet_or_basis_drift(self):
+        packet = EvidencePacket("p1", "(S a)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")
+        token = EvidenceToken("t1", "sensor", "s1", "ctx", "observed", "minted")
+        snapshot = build_evidence_snapshot(snapshot_id="snapshot", packets=[packet], context_id="ctx",
+                                           assumption_fingerprint="a1", ontology_fingerprint="o1", created_at="now")
+        context = PiContext("ctx", "lang", "world", "guard", "guard-v1", "query", "assumptions",
+                            "ontology", "ontology-v1", "weak-v1", "relevance-v1")
+        policy = ChartPolicy("factor", "projection", "kernel-projection", "rules", "kernel", "translator")
+        chart = build_pi_chart(chart_id="chart", context=context, prior_strength_p0=0.5, prior_weight_k=2,
+                               prior_provenance="review", policy=policy, selected_packet_ids=["p1"],
+                               evidence_snapshot=snapshot, adequacy_certificate_id="adequacy")
+        basis = evidence_basis_from_packet(packet, [token], independence_status="PROVEN_DISJOINT",
+                                           justification_cid="review:basis")
+        other_snapshot = self.snapshot(("p1",), snapshot_id="other")
+        with self.assertRaisesRegex(ValueError, "chart does not match"):
+            compile_episode_inputs(episode_id="episode", chart=chart, evidence_snapshot=other_snapshot,
+                                   packets=[packet], bases=[basis])
+        with self.assertRaisesRegex(ValueError, "exactly match"):
+            compile_episode_inputs(episode_id="episode", chart=chart, evidence_snapshot=snapshot,
+                                   packets=[], bases=[basis])
+        with self.assertRaisesRegex(ValueError, "missing exact packet basis"):
+            compile_episode_inputs(episode_id="episode", chart=chart, evidence_snapshot=snapshot,
+                                   packets=[packet], bases=[])
 
     def test_context_and_chart_fail_closed_on_noncanonical_identity_inputs(self):
         common = dict(id="ctx", language_fragment_id="lang", universe_id="world", guard="g", guard_version="gv",
