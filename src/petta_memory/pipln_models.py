@@ -15,10 +15,19 @@ import os
 from pathlib import Path
 from typing import Iterable, Literal
 
+from .sexpr import SExpr, SExpressionSyntaxError, parse_one_list, symbol_text, to_source
+
 
 IndependenceStatus = Literal["PROVEN_DISJOINT", "ASSUMED", "COUPLED", "UNKNOWN"]
 PacketStatus = Literal["ACTIVE", "QUARANTINED", "RETRACTED"]
 PacketOrigin = Literal["OBSERVATION", "IMPORT", "REVIEWED_EXPORT"]
+
+DEFAULT_MAX_COMPILED_SENTENCES = 256
+DEFAULT_MAX_COMPILED_ATOM_CHARS = 1_000_000
+_EXECUTABLE_TERM_HEADS = frozenset({
+    "!", "bind!", "case", "collapse", "eval", "if", "import!", "include", "let", "let*",
+    "match", "pragma!", "superpose",
+})
 
 
 def _nonempty(value: str, field: str) -> None:
@@ -41,6 +50,32 @@ def _canonical_hash(payload: object) -> str:
 def _sha256_digest(value: str, field: str) -> None:
     if not isinstance(value, str) or len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
         raise ValueError(f"{field} must be a lowercase SHA-256 digest")
+
+
+def _canonical_kernel_term(statement: str) -> str:
+    """Canonicalize one data term and reject embedded MeTTa control forms."""
+    _nonempty(statement, "statement")
+    try:
+        term = parse_one_list(statement)
+    except SExpressionSyntaxError as error:
+        raise ValueError(f"statement must be one valid S-expression list: {error}") from error
+
+    def reject_executable_forms(expression: SExpr) -> None:
+        if not isinstance(expression, tuple):
+            return
+        head = symbol_text(expression[0]) if expression else None
+        if head in _EXECUTABLE_TERM_HEADS:
+            raise ValueError(f"statement contains executable/control form: {head}")
+        for child in expression:
+            reject_executable_forms(child)
+
+    reject_executable_forms(term)
+    return to_source(term)
+
+
+def _positive_int(value: int, field: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"{field} must be a positive integer")
 
 
 @dataclass(frozen=True)
@@ -179,6 +214,16 @@ class CompiledSentence:
 
     def __post_init__(self) -> None:
         _nonempty(self.atom, "atom")
+        canonical_term = _canonical_kernel_term(self.meta.canonical_term)
+        if canonical_term != self.meta.canonical_term:
+            raise ValueError("compiled sentence canonical_term is not canonical")
+        expected_atom = (
+            f"(Sentence ({canonical_term} (stv {self.projection.strength} "
+            f"{self.projection.confidence})) "
+            f"({' '.join(str(value) for value in self.meta.stamp_ints)}))"
+        )
+        if self.atom != expected_atom:
+            raise ValueError("compiled sentence atom does not match typed metadata")
         if self.meta.sentence_digest != _canonical_hash({"atom": self.atom}):
             raise ValueError("compiled sentence digest does not match atom")
 
@@ -770,6 +815,8 @@ def canonical_local_chart_projection(
 def compile_episode_inputs(
     *, episode_id: str, chart: PiChart, evidence_snapshot: EvidenceSnapshot,
     packets: Iterable[EvidencePacket], bases: Iterable[EvidenceBasis],
+    max_sentences: int = DEFAULT_MAX_COMPILED_SENTENCES,
+    max_atom_chars: int = DEFAULT_MAX_COMPILED_ATOM_CHARS,
 ) -> CompiledEpisodeInputs:
     """Compile validated chart evidence into deterministic patham9 inputs.
 
@@ -778,6 +825,8 @@ def compile_episode_inputs(
     and exactly one packet-derived evidence basis.
     """
     _nonempty(episode_id, "episode_id")
+    _positive_int(max_sentences, "max_sentences")
+    _positive_int(max_atom_chars, "max_atom_chars")
     if chart.evidence_snapshot_id != evidence_snapshot.id or chart.evidence_snapshot_fingerprint != evidence_snapshot.snapshot_fingerprint:
         raise ValueError("chart does not match evidence snapshot")
     if chart.context_id != evidence_snapshot.context_id:
@@ -790,6 +839,8 @@ def compile_episode_inputs(
         packet_by_id[packet.id] = packet
     if set(packet_by_id) != set(chart.selected_packet_ids):
         raise ValueError("packets must exactly match the chart selection")
+    if len(packet_by_id) > max_sentences:
+        raise ValueError("chart selection exceeds max_sentences")
 
     basis_by_id: dict[str, EvidenceBasis] = {}
     for basis in bases:
@@ -812,9 +863,11 @@ def compile_episode_inputs(
     stamp_map = deterministic_stamp_map(episode_id, basis_by_id.values())
     stamp_by_basis = {entry.basis_id: entry.stamp_int for entry in stamp_map}
     sentences: list[CompiledSentence] = []
+    emitted_atom_chars = 0
     for packet_id in chart.selected_packet_ids:
         packet = packet_by_id[packet_id]
         basis = packet_basis[packet_id]
+        canonical_term = _canonical_kernel_term(packet.statement)
         projection = canonical_local_chart_projection(
             packet.positive_delta, packet.negative_delta,
             prior_strength=chart.prior_strength_p0, prior_weight=chart.prior_weight_k,
@@ -830,13 +883,16 @@ def compile_episode_inputs(
         })
         stamps = (stamp_by_basis[basis.basis_id],)
         atom = (
-            f"(Sentence ({packet.statement} (stv {projection.strength} "
+            f"(Sentence ({canonical_term} (stv {projection.strength} "
             f"{projection.confidence})) ({' '.join(str(value) for value in stamps)}))"
         )
+        emitted_atom_chars += len(atom)
+        if emitted_atom_chars > max_atom_chars:
+            raise ValueError("compiled Sentence atoms exceed max_atom_chars")
         meta = KernelSentenceMeta(
             episode_id=episode_id,
             sentence_digest=_canonical_hash({"atom": atom}),
-            canonical_term=packet.statement,
+            canonical_term=canonical_term,
             projection_id=projection_id,
             context_id=chart.context_id,
             chart_id=chart.id,

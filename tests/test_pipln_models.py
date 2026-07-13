@@ -333,6 +333,58 @@ class PiPlnModelTests(unittest.TestCase):
             compile_episode_inputs(episode_id="episode", chart=chart, evidence_snapshot=snapshot,
                                    packets=[packet], bases=[])
 
+    def test_episode_input_compiler_canonicalizes_terms_and_rejects_control_forms(self):
+        def compile_statement(statement):
+            packet = EvidencePacket("p1", statement, "ctx", 1, 0, ("t1",), 1, 1,
+                                    "ACTIVE", "a1", "o1", "OBSERVATION")
+            token = EvidenceToken("t1", "sensor", "s1", "ctx", "observed", "minted")
+            snapshot = build_evidence_snapshot(
+                snapshot_id="snapshot", packets=[packet], context_id="ctx",
+                assumption_fingerprint="a1", ontology_fingerprint="o1", created_at="now",
+            )
+            context = PiContext("ctx", "lang", "world", "guard", "guard-v1", "query", "assumptions",
+                                "ontology", "ontology-v1", "weak-v1", "relevance-v1")
+            chart = build_pi_chart(
+                chart_id="chart", context=context, prior_strength_p0=0.5, prior_weight_k=2,
+                prior_provenance="review", policy=ChartPolicy("factor", "projection", "kernel", "rules", "v1", "v1"),
+                selected_packet_ids=["p1"], evidence_snapshot=snapshot, adequacy_certificate_id="adequacy",
+            )
+            basis = evidence_basis_from_packet(packet, [token], independence_status="PROVEN_DISJOINT",
+                                               justification_cid="review:basis")
+            return compile_episode_inputs(episode_id="episode", chart=chart, evidence_snapshot=snapshot,
+                                          packets=[packet], bases=[basis])
+
+        compiled = compile_statement(" (S   (Nested x)) ; harmless comment\n ")
+        self.assertEqual(compiled.sentences[0].meta.canonical_term, "(S (Nested x))")
+        self.assertIn("(Sentence ((S (Nested x))", compiled.sentences[0].atom)
+        for statement in ("(import! &self PLN)", "(Claim (eval dangerous))", "(let $x value body)",
+                          "(Claim (if condition then else))"):
+            with self.subTest(statement=statement), self.assertRaisesRegex(ValueError, "executable/control form"):
+                compile_statement(statement)
+        with self.assertRaisesRegex(ValueError, "one valid S-expression"):
+            compile_statement("(S x) (S y)")
+
+    def test_episode_input_compiler_enforces_sentence_and_character_budgets(self):
+        packet = EvidencePacket("p1", "(S a)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")
+        token = EvidenceToken("t1", "sensor", "s1", "ctx", "observed", "minted")
+        snapshot = build_evidence_snapshot(snapshot_id="snapshot", packets=[packet], context_id="ctx",
+                                           assumption_fingerprint="a1", ontology_fingerprint="o1", created_at="now")
+        context = PiContext("ctx", "lang", "world", "guard", "guard-v1", "query", "assumptions",
+                            "ontology", "ontology-v1", "weak-v1", "relevance-v1")
+        chart = build_pi_chart(
+            chart_id="chart", context=context, prior_strength_p0=0.5, prior_weight_k=2,
+            prior_provenance="review", policy=ChartPolicy("factor", "projection", "kernel", "rules", "v1", "v1"),
+            selected_packet_ids=["p1"], evidence_snapshot=snapshot, adequacy_certificate_id="adequacy",
+        )
+        basis = evidence_basis_from_packet(packet, [token], independence_status="PROVEN_DISJOINT",
+                                           justification_cid="review:basis")
+        kwargs = dict(episode_id="episode", chart=chart, evidence_snapshot=snapshot,
+                      packets=[packet], bases=[basis])
+        with self.assertRaisesRegex(ValueError, "max_sentences"):
+            compile_episode_inputs(**kwargs, max_sentences=True)
+        with self.assertRaisesRegex(ValueError, "max_atom_chars"):
+            compile_episode_inputs(**kwargs, max_atom_chars=10)
+
     def test_compiled_episode_inputs_persistence_round_trips_and_is_create_once(self):
         packet = EvidencePacket("p1", "(S a)", "ctx", 2, 1, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")
         token = EvidenceToken("t1", "sensor", "s1", "ctx", "observed", "minted")
@@ -386,7 +438,32 @@ class PiPlnModelTests(unittest.TestCase):
             encoded = json.dumps(document["payload"], sort_keys=True, separators=(",", ":"), ensure_ascii=False)
             document["document_digest"] = sha256(encoded.encode("utf-8")).hexdigest()
             path.write_text(json.dumps(document), encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "sentence digest"):
+            with self.assertRaisesRegex(ValueError, "typed metadata"):
+                read_compiled_episode_inputs(path)
+
+            document = compiled_episode_inputs_document(compiled)
+            sentence = document["payload"]["sentences"][0]
+            sentence["meta"]["canonical_term"] = "(Changed term)"
+            sentence["meta"]["sentence_digest"] = sha256(
+                json.dumps({"atom": sentence["atom"]}, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            encoded = json.dumps(document["payload"], sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+            document["document_digest"] = sha256(encoded.encode("utf-8")).hexdigest()
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "typed metadata"):
+                read_compiled_episode_inputs(path)
+
+            document = compiled_episode_inputs_document(compiled)
+            sentence = document["payload"]["sentences"][0]
+            sentence["meta"]["canonical_term"] = "(Claim (eval dangerous))"
+            sentence["atom"] = sentence["atom"].replace("(S a)", "(Claim (eval dangerous))")
+            sentence["meta"]["sentence_digest"] = sha256(
+                json.dumps({"atom": sentence["atom"]}, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            encoded = json.dumps(document["payload"], sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+            document["document_digest"] = sha256(encoded.encode("utf-8")).hexdigest()
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "executable/control form"):
                 read_compiled_episode_inputs(path)
 
     def test_context_and_chart_fail_closed_on_noncanonical_identity_inputs(self):
