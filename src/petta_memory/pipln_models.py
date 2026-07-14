@@ -52,6 +52,18 @@ def _sha256_digest(value: str, field: str) -> None:
         raise ValueError(f"{field} must be a lowercase SHA-256 digest")
 
 
+def _snapshot_fingerprint(
+    packet_content_digests: tuple[tuple[str, str], ...], *, context_id: str,
+    assumption_fingerprint: str, ontology_fingerprint: str,
+) -> str:
+    return _canonical_hash({
+        "packet_content_digests": packet_content_digests,
+        "context_id": context_id,
+        "assumption_fingerprint": assumption_fingerprint,
+        "ontology_fingerprint": ontology_fingerprint,
+    })
+
+
 def _canonical_kernel_term(statement: str) -> str:
     """Canonicalize one data term and reject embedded MeTTa control forms."""
     _nonempty(statement, "statement")
@@ -277,6 +289,7 @@ class EvidenceSnapshot:
     ontology_fingerprint: str
     created_at: str
     snapshot_fingerprint: str
+    packet_content_digests: tuple[tuple[str, str], ...]
     schema_version: int = 1
 
     def __post_init__(self) -> None:
@@ -290,8 +303,41 @@ class EvidenceSnapshot:
         for packet_id in self.packet_ids:
             _nonempty(packet_id, "packet_id")
         _sha256_digest(self.snapshot_fingerprint, "snapshot_fingerprint")
+        digest_ids = tuple(packet_id for packet_id, _ in self.packet_content_digests)
+        if digest_ids != self.packet_ids:
+            raise ValueError("packet_content_digests must exactly match sorted packet_ids")
+        for packet_id, digest in self.packet_content_digests:
+            _nonempty(packet_id, "packet_content_digest packet_id")
+            _sha256_digest(digest, "packet_content_digest")
+        expected_fingerprint = _snapshot_fingerprint(
+            self.packet_content_digests, context_id=self.context_id,
+            assumption_fingerprint=self.assumption_fingerprint,
+            ontology_fingerprint=self.ontology_fingerprint,
+        )
+        if self.snapshot_fingerprint != expected_fingerprint:
+            raise ValueError("snapshot_fingerprint does not match packet content digests")
         if isinstance(self.schema_version, bool) or not isinstance(self.schema_version, int) or self.schema_version < 1:
             raise ValueError("schema_version must be a positive integer")
+
+
+def _snapshot_packet_payload(packet: EvidencePacket) -> dict[str, object]:
+    """Return the complete packet content committed by an evidence snapshot."""
+    return {
+        "id": packet.id,
+        "statement": packet.statement,
+        "context_id": packet.context_id,
+        "positive_delta": packet.positive_delta,
+        "negative_delta": packet.negative_delta,
+        "token_ids": packet.token_ids,
+        "source_reliability": packet.source_reliability,
+        "temporal_relevance": packet.temporal_relevance,
+        "status": packet.status,
+        "assumption_fingerprint": packet.assumption_fingerprint,
+        "ontology_fingerprint": packet.ontology_fingerprint,
+        "created_by": packet.created_by,
+        "parent_packet_ids": packet.parent_packet_ids,
+        "schema_version": packet.schema_version,
+    }
 
 
 def build_evidence_snapshot(
@@ -312,28 +358,20 @@ def build_evidence_snapshot(
             raise ValueError(f"snapshot packet assumption mismatch: {packet.id}")
         if packet.ontology_fingerprint != ontology_fingerprint:
             raise ValueError(f"snapshot packet ontology mismatch: {packet.id}")
-    fingerprint = _canonical_hash({
-        "packets": [
-            {
-                "id": packet.id,
-                "statement": packet.statement,
-                "positive_delta": packet.positive_delta,
-                "negative_delta": packet.negative_delta,
-                "token_ids": packet.token_ids,
-                "source_reliability": packet.source_reliability,
-                "temporal_relevance": packet.temporal_relevance,
-                "created_by": packet.created_by,
-                "parent_packet_ids": packet.parent_packet_ids,
-                "schema_version": packet.schema_version,
-            }
-            for packet in sorted(packet_list, key=lambda item: item.id)
-        ],
-        "context_id": context_id,
-        "assumption_fingerprint": assumption_fingerprint,
-        "ontology_fingerprint": ontology_fingerprint,
-    })
+    ordered_packets = tuple(sorted(packet_list, key=lambda item: item.id))
+    packet_payloads = [_snapshot_packet_payload(packet) for packet in ordered_packets]
+    packet_content_digests = tuple(
+        (packet.id, _canonical_hash(payload))
+        for packet, payload in zip(ordered_packets, packet_payloads)
+    )
+    fingerprint = _snapshot_fingerprint(
+        packet_content_digests, context_id=context_id,
+        assumption_fingerprint=assumption_fingerprint,
+        ontology_fingerprint=ontology_fingerprint,
+    )
     return EvidenceSnapshot(snapshot_id, ids, context_id, assumption_fingerprint,
-                            ontology_fingerprint, created_at, fingerprint)
+                            ontology_fingerprint, created_at, fingerprint,
+                            packet_content_digests)
 
 
 def evidence_snapshot_document(snapshot: EvidenceSnapshot) -> dict[str, object]:
@@ -346,10 +384,11 @@ def evidence_snapshot_document(snapshot: EvidenceSnapshot) -> dict[str, object]:
         "ontology_fingerprint": snapshot.ontology_fingerprint,
         "created_at": snapshot.created_at,
         "snapshot_fingerprint": snapshot.snapshot_fingerprint,
+        "packet_content_digests": [list(item) for item in snapshot.packet_content_digests],
         "schema_version": snapshot.schema_version,
     }
     return {
-        "schema": "petta-memory-pipln-evidence-snapshot-v1",
+        "schema": "petta-memory-pipln-evidence-snapshot-v2",
         "payload": payload,
         "document_digest": _canonical_hash(payload),
     }
@@ -374,22 +413,27 @@ def write_evidence_snapshot(path: str | Path, snapshot: EvidenceSnapshot) -> Non
 def read_evidence_snapshot(path: str | Path) -> EvidenceSnapshot:
     """Load a snapshot document and fail closed on schema or checksum drift."""
     document = json.loads(Path(path).read_text(encoding="utf-8"))
-    if not isinstance(document, dict) or document.get("schema") != "petta-memory-pipln-evidence-snapshot-v1":
+    if not isinstance(document, dict) or document.get("schema") != "petta-memory-pipln-evidence-snapshot-v2":
         raise ValueError("invalid evidence snapshot document schema")
     payload = document.get("payload")
     if not isinstance(payload, dict) or document.get("document_digest") != _canonical_hash(payload):
         raise ValueError("evidence snapshot document checksum mismatch")
     expected = {
         "id", "packet_ids", "context_id", "assumption_fingerprint", "ontology_fingerprint",
-        "created_at", "snapshot_fingerprint", "schema_version",
+        "created_at", "snapshot_fingerprint", "packet_content_digests", "schema_version",
     }
-    if set(payload) != expected or not isinstance(payload["packet_ids"], list):
+    if (set(payload) != expected or not isinstance(payload["packet_ids"], list)
+            or not isinstance(payload["packet_content_digests"], list)
+            or any(not isinstance(item, list) or len(item) != 2
+                   for item in payload["packet_content_digests"])):
         raise ValueError("invalid evidence snapshot payload")
     return EvidenceSnapshot(
         id=payload["id"], packet_ids=tuple(payload["packet_ids"]), context_id=payload["context_id"],
         assumption_fingerprint=payload["assumption_fingerprint"],
         ontology_fingerprint=payload["ontology_fingerprint"], created_at=payload["created_at"],
-        snapshot_fingerprint=payload["snapshot_fingerprint"], schema_version=payload["schema_version"],
+        snapshot_fingerprint=payload["snapshot_fingerprint"],
+        packet_content_digests=tuple(tuple(item) for item in payload["packet_content_digests"]),
+        schema_version=payload["schema_version"],
     )
 
 
@@ -839,6 +883,10 @@ def compile_episode_inputs(
         packet_by_id[packet.id] = packet
     if set(packet_by_id) != set(chart.selected_packet_ids):
         raise ValueError("packets must exactly match the chart selection")
+    snapshot_packet_digests = dict(evidence_snapshot.packet_content_digests)
+    for packet_id, packet in packet_by_id.items():
+        if _canonical_hash(_snapshot_packet_payload(packet)) != snapshot_packet_digests[packet_id]:
+            raise ValueError(f"packet content does not match evidence snapshot: {packet_id}")
     if len(packet_by_id) > max_sentences:
         raise ValueError("chart selection exceeds max_sentences")
 

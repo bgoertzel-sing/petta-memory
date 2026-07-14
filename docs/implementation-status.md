@@ -15,7 +15,7 @@ Normative design source: `library/atlas-indexed-reversible-pipln/specification.p
 `petta_memory.pipln_models` provides the first dependency-free Phase-1 primitives:
 
 - immutable validated `EvidenceToken`, `EvidencePacket`, and `EvidenceBasis` records;
-- immutable create-once JSON snapshot documents with a canonical payload checksum and fail-closed loader; snapshot records require at least one canonical packet ID and a lowercase SHA-256 fingerprint, including after loading a separately checksummed document;
+- immutable create-once JSON snapshot documents with a canonical payload checksum and fail-closed loader; v2 snapshots commit a digest for each packet's complete frozen semantic content and derive the snapshot fingerprint from those digests, preventing a caller from compiling changed packet content under an unchanged snapshot identity;
 - a content-addressed `EvidenceSnapshotRepository` that discovers validated snapshot documents, rejects filename/fingerprint drift and duplicate logical snapshot IDs, and provides fail-closed lookup;
 - immutable semantic `PiContext`, `ChartPolicy`, and `PiChart` records; chart construction accepts a validated `EvidenceSnapshot` rather than an independent snapshot ID, requires matching context and selected-packet membership, and fingerprints the snapshot's semantic content identity;
 - stable packet provenance digests;
@@ -25,7 +25,7 @@ Normative design source: `library/atlas-indexed-reversible-pipln/specification.p
 - the first pure Phase-2 compiler boundary: `compile_episode_inputs()` closes a chart against its immutable snapshot, exact selected packets, and packet-derived basis records; assigns deterministic episode stamps; applies canonical local-chart projection; and emits immutable patham9 `Sentence` atoms with `KernelSentenceMeta` provenance sidecars. It parses and canonicalizes each data term, rejects nested MeTTa executable/control forms, and enforces explicit sentence-count and emitted-character budgets before any runtime boundary;
 - immutable checksummed persistence for `CompiledEpisodeInputs`: create-once JSON artifacts round-trip the exact sentences, projections, stamp map, and provenance metadata while rejecting document checksum drift, sentence/typed-metadata mismatch, executable-term smuggling, invalid projection values, and inconsistent stamp/basis mappings. This is a replay input artifact, not the complete runtime `EpisodeManifest`.
 
-Direct tests cover immutability, malformed/nonfinite inputs, permutation-invariant stamps, duplicate basis rejection, exact overlap deduplication/conflict rejection, chart-to-snapshot closure and fingerprint sensitivity, the canonical equations, balanced conflict at different masses, and ignorance versus conflict.
+Direct tests cover immutability, malformed/nonfinite inputs, permutation-invariant stamps, duplicate basis rejection, exact overlap deduplication/conflict rejection, chart-to-snapshot closure and fingerprint sensitivity, compiler rejection of post-snapshot statement/count/metadata drift, the canonical equations, balanced conflict at different masses, and ignorance versus conflict.
 
 ## Explicitly deferred
 

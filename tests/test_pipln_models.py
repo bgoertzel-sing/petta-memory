@@ -132,7 +132,8 @@ class PiPlnModelTests(unittest.TestCase):
             build_evidence_snapshot(snapshot_id="snap", packets=[], context_id="ctx",
                                     assumption_fingerprint="a1", ontology_fingerprint="o1", created_at="now")
         with self.assertRaisesRegex(ValueError, "SHA-256"):
-            EvidenceSnapshot("snap", ("p1",), "ctx", "a1", "o1", "now", "not-a-digest")
+            EvidenceSnapshot("snap", ("p1",), "ctx", "a1", "o1", "now", "not-a-digest",
+                             (("p1", "0" * 64),))
 
     def test_evidence_snapshot_persistence_is_immutable_and_roundtrips(self):
         packet = EvidencePacket("p1", "(S x)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")
@@ -175,6 +176,15 @@ class PiPlnModelTests(unittest.TestCase):
             ).hexdigest()
             path.write_text(json.dumps(document), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "SHA-256"):
+                read_evidence_snapshot(path)
+
+            document = evidence_snapshot_document(snapshot)
+            document["payload"]["packet_content_digests"][0][1] = "0" * 64
+            document["document_digest"] = sha256(
+                json.dumps(document["payload"], sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+            ).hexdigest()
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "does not match packet content digests"):
                 read_evidence_snapshot(path)
 
     def test_snapshot_repository_adds_discovers_and_gets_content_addressed_documents(self):
@@ -332,6 +342,30 @@ class PiPlnModelTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing exact packet basis"):
             compile_episode_inputs(episode_id="episode", chart=chart, evidence_snapshot=snapshot,
                                    packets=[packet], bases=[])
+
+    def test_episode_input_compiler_rejects_packet_content_drift_under_snapshot_identity(self):
+        packet = EvidencePacket("p1", "(S a)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")
+        token = EvidenceToken("t1", "sensor", "s1", "ctx", "observed", "minted")
+        snapshot = build_evidence_snapshot(snapshot_id="snapshot", packets=[packet], context_id="ctx",
+                                           assumption_fingerprint="a1", ontology_fingerprint="o1", created_at="now")
+        context = PiContext("ctx", "lang", "world", "guard", "guard-v1", "query", "assumptions",
+                            "ontology", "ontology-v1", "weak-v1", "relevance-v1")
+        chart = build_pi_chart(
+            chart_id="chart", context=context, prior_strength_p0=0.5, prior_weight_k=2,
+            prior_provenance="review", policy=ChartPolicy("factor", "projection", "kernel", "rules", "v1", "v1"),
+            selected_packet_ids=["p1"], evidence_snapshot=snapshot, adequacy_certificate_id="adequacy",
+        )
+        basis = evidence_basis_from_packet(packet, [token], independence_status="PROVEN_DISJOINT",
+                                           justification_cid="review:basis")
+        for changed in (
+            EvidencePacket("p1", "(S changed)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION"),
+            EvidencePacket("p1", "(S a)", "ctx", 2, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION"),
+            EvidencePacket("p1", "(S a)", "ctx", 1, 0, ("t1",), 0.5, 1, "ACTIVE", "a1", "o1", "OBSERVATION"),
+            EvidencePacket("p1", "(S a)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "REVIEWED_EXPORT"),
+        ):
+            with self.subTest(changed=changed), self.assertRaisesRegex(ValueError, "packet content does not match"):
+                compile_episode_inputs(episode_id="episode", chart=chart, evidence_snapshot=snapshot,
+                                       packets=[changed], bases=[basis])
 
     def test_episode_input_compiler_canonicalizes_terms_and_rejects_control_forms(self):
         def compile_statement(statement):
