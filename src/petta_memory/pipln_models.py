@@ -400,6 +400,42 @@ def validate_kernel_result(
     )
 
 
+def validate_exact_kernel_replay(
+    result_atom: str,
+    *,
+    expected: ValidatedKernelResult,
+    compiled: CompiledEpisodeInputs,
+    max_result_chars: int = DEFAULT_MAX_KERNEL_RESULT_CHARS,
+) -> ValidatedKernelResult:
+    """Validate one replay output and require exact semantic equivalence.
+
+    The expected result must itself close against the supplied immutable
+    compiler inputs.  This function compares typed semantic content rather
+    than raw output formatting, but it does not execute a kernel or establish
+    rule/trace identity.
+    """
+    if (expected.episode_id != compiled.episode_id
+            or expected.chart_fingerprint != compiled.chart_fingerprint):
+        raise ValueError("expected kernel result does not match compiled episode")
+    basis_by_stamp = {entry.stamp_int: entry.basis_id for entry in compiled.stamp_map}
+    unknown = tuple(stamp for stamp in expected.stamp_ints if stamp not in basis_by_stamp)
+    if unknown:
+        raise ValueError(f"expected kernel result contains unknown episode stamps: {unknown}")
+    expected_bases = tuple(basis_by_stamp[stamp] for stamp in expected.stamp_ints)
+    if expected.evidence_basis_ids != expected_bases:
+        raise ValueError("expected kernel result evidence bases do not match compiled episode stamps")
+
+    replayed = validate_kernel_result(
+        result_atom,
+        query_term=expected.query_term,
+        compiled=compiled,
+        max_result_chars=max_result_chars,
+    )
+    if replayed.result_digest != expected.result_digest:
+        raise ValueError("kernel replay result does not exactly match expected semantic result")
+    return replayed
+
+
 def validated_kernel_result_document(result: ValidatedKernelResult) -> dict[str, object]:
     """Return a checksummed artifact for one provenance-closed kernel result."""
     payload = {

@@ -30,6 +30,7 @@ from petta_memory.pipln_models import (
     read_compiled_episode_inputs,
     read_evidence_snapshot,
     read_validated_kernel_result,
+    validate_exact_kernel_replay,
     validate_kernel_result,
     validated_kernel_result_document,
     write_compiled_episode_inputs,
@@ -612,6 +613,46 @@ class PiPlnModelTests(unittest.TestCase):
                                    max_result_chars=5)
         with self.assertRaisesRegex(ValueError, "executable/control form"):
             validate_kernel_result("((stv 0.5 0.5) (0))", query_term="(eval dangerous)", compiled=compiled)
+
+    def test_exact_kernel_replay_requires_semantic_and_provenance_identity(self):
+        packets = [
+            EvidencePacket("p1", "(S a)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION"),
+            EvidencePacket("p2", "(S b)", "ctx", 1, 0, ("t2",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION"),
+        ]
+        tokens = [
+            EvidenceToken("t1", "sensor", "s1", "ctx", "observed", "minted"),
+            EvidenceToken("t2", "sensor", "s2", "ctx", "observed", "minted"),
+        ]
+        snapshot = build_evidence_snapshot(snapshot_id="snapshot", packets=packets, context_id="ctx",
+                                           assumption_fingerprint="a1", ontology_fingerprint="o1", created_at="now")
+        context = PiContext("ctx", "lang", "world", "guard", "guard-v1", "query", "assumptions",
+                            "ontology", "ontology-v1", "weak-v1", "relevance-v1")
+        chart = build_pi_chart(
+            chart_id="chart", context=context, prior_strength_p0=0.5, prior_weight_k=2,
+            prior_provenance="review", policy=ChartPolicy("factor", "projection", "kernel", "rules", "v1", "v1"),
+            selected_packet_ids=["p1", "p2"], evidence_snapshot=snapshot, adequacy_certificate_id="adequacy",
+        )
+        bases = [
+            evidence_basis_from_packet(packet, [token], independence_status="PROVEN_DISJOINT",
+                                       justification_cid=f"review:{packet.id}")
+            for packet, token in zip(packets, tokens)
+        ]
+        compiled = compile_episode_inputs(episode_id="episode", chart=chart, evidence_snapshot=snapshot,
+                                          packets=packets, bases=bases)
+        expected = validate_kernel_result("((stv 0.5 0.75) (0 1))", query_term="(Derived x)", compiled=compiled)
+
+        replayed = validate_exact_kernel_replay(
+            "( ( stv 0.50 0.750 ) ( 0 1 ) )", expected=expected, compiled=compiled
+        )
+        self.assertEqual(replayed, expected)
+        for changed in ("((stv 0.6 0.75) (0 1))", "((stv 0.5 0.75) (0))"):
+            with self.subTest(changed=changed), self.assertRaisesRegex(ValueError, "exactly match"):
+                validate_exact_kernel_replay(changed, expected=expected, compiled=compiled)
+
+        other_compiled = compile_episode_inputs(episode_id="other", chart=chart, evidence_snapshot=snapshot,
+                                                packets=packets, bases=bases)
+        with self.assertRaisesRegex(ValueError, "compiled episode"):
+            validate_exact_kernel_replay("((stv 0.5 0.75) (0 1))", expected=expected, compiled=other_compiled)
 
     def test_compiled_episode_inputs_loader_rejects_checksum_and_semantic_drift(self):
         packet = EvidencePacket("p1", "(S a)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")
