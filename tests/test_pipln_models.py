@@ -402,8 +402,12 @@ class PiPlnModelTests(unittest.TestCase):
         compiled = compile_statement(" (S   (Nested x)) ; harmless comment\n ")
         self.assertEqual(compiled.sentences[0].meta.canonical_term, "(S (Nested x))")
         self.assertIn("(Sentence ((S (Nested x))", compiled.sentences[0].atom)
-        for statement in ("(import! &self PLN)", "(Claim (eval dangerous))", "(let $x value body)",
-                          "(Claim (if condition then else))"):
+        for statement in (
+            "(import! &self PLN)", "(Claim (eval dangerous))", "(let $x value body)",
+            "(Claim (if condition then else))", "(PLN.Init ())",
+            "(PLN.Config MaxSteps 10000)", "(Evidence (PLN.Query (S a) (Q a)))",
+            "(Evidence (PLN.Derive (S a)))",
+        ):
             with self.subTest(statement=statement), self.assertRaisesRegex(ValueError, "executable/control form"):
                 compile_statement(statement)
         with self.assertRaisesRegex(ValueError, "one valid S-expression"):
@@ -745,6 +749,8 @@ class PiPlnModelTests(unittest.TestCase):
 
         invalid = (
             ({**kwargs, "query_term": "(eval dangerous)"}, "executable/control"),
+            ({**kwargs, "query_term": "(PLN.Query (S a) (Q a))"}, "executable/control"),
+            ({**kwargs, "query_term": "(Q (PLN.Derive (S a)))"}, "executable/control"),
             ({**kwargs, "query_term": "(Q   a)"}, "already be canonical"),
             ({**kwargs, "max_steps": 0}, "positive integer"),
             ({**kwargs, "max_steps": 10_001}, "bounded limit"),

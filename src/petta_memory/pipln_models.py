@@ -32,6 +32,11 @@ DEFAULT_MAX_EPISODE_QUEUE_SIZE = 100_000
 _EXECUTABLE_TERM_HEADS = frozenset({
     "!", "bind!", "case", "collapse", "eval", "if", "import!", "include", "let", "let*",
     "match", "pragma!", "superpose",
+    # Stock patham9 evaluator/control entry points at pinned revision 55f1751.
+    # These are data-looking symbols until the assembled program imports PLN,
+    # where they become executable and must never arrive through evidence or a
+    # caller-supplied query term.
+    "PLN.Config", "PLN.Derive", "PLN.Init", "PLN.Query",
 })
 
 
