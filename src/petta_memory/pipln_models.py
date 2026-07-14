@@ -28,6 +28,7 @@ DEFAULT_MAX_COMPILED_ATOM_CHARS = 1_000_000
 DEFAULT_MAX_KERNEL_RESULT_CHARS = 65_536
 DEFAULT_MAX_EPISODE_PROGRAM_CHARS = 2_000_000
 DEFAULT_MAX_EPISODE_QUERY_STEPS = 10_000
+DEFAULT_MAX_EPISODE_QUEUE_SIZE = 100_000
 _EXECUTABLE_TERM_HEADS = frozenset({
     "!", "bind!", "case", "collapse", "eval", "if", "import!", "include", "let", "let*",
     "match", "pragma!", "superpose",
@@ -437,6 +438,14 @@ def assemble_legacy_kernel_query_program(
     if max_steps > DEFAULT_MAX_EPISODE_QUERY_STEPS:
         raise ValueError(
             f"max_steps exceeds bounded limit {DEFAULT_MAX_EPISODE_QUERY_STEPS}"
+        )
+    if task_queue_size > DEFAULT_MAX_EPISODE_QUEUE_SIZE:
+        raise ValueError(
+            f"task_queue_size exceeds bounded limit {DEFAULT_MAX_EPISODE_QUEUE_SIZE}"
+        )
+    if belief_queue_size > DEFAULT_MAX_EPISODE_QUEUE_SIZE:
+        raise ValueError(
+            f"belief_queue_size exceeds bounded limit {DEFAULT_MAX_EPISODE_QUEUE_SIZE}"
         )
     if not compiled.sentences:
         raise ValueError("compiled episode must contain at least one sentence")

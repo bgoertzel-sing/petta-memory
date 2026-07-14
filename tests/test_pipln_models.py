@@ -736,6 +736,8 @@ class PiPlnModelTests(unittest.TestCase):
             ({**kwargs, "query_term": "(Q   a)"}, "already be canonical"),
             ({**kwargs, "max_steps": 0}, "positive integer"),
             ({**kwargs, "max_steps": 10_001}, "bounded limit"),
+            ({**kwargs, "task_queue_size": 100_001}, "bounded limit"),
+            ({**kwargs, "belief_queue_size": 100_001}, "bounded limit"),
             ({**kwargs, "max_program_chars": 5}, "exceeds max_program_chars"),
         )
         for arguments, message in invalid:
