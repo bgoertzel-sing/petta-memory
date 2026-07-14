@@ -93,6 +93,23 @@ class PiPlnModelTests(unittest.TestCase):
                 timeout_ms=1000, max_capture_bytes=10,
             )
 
+    def test_kernel_subprocess_bounds_program_by_encoded_bytes_before_launch(self):
+        marker = Path(tempfile.gettempdir()) / "petta-memory-runner-must-not-launch"
+        marker.unlink(missing_ok=True)
+        with self.assertRaisesRegex(ValueError, "max_program_bytes"):
+            run_kernel_subprocess(
+                "é",  # two UTF-8 bytes despite being one character
+                argv=(sys.executable, "-c", f"from pathlib import Path; Path({str(marker)!r}).touch()"),
+                timeout_ms=1000,
+                max_program_bytes=1,
+            )
+        self.assertFalse(marker.exists())
+        with self.assertRaisesRegex(ValueError, "positive integer"):
+            run_kernel_subprocess(
+                "program", argv=(sys.executable, "-c", "pass"),
+                timeout_ms=1000, max_program_bytes=0,
+            )
+
     def test_packet_rejects_unsorted_duplicate_tokens_and_nonfinite_counts(self):
         common = dict(id="p", statement="(S x)", context_id="c", negative_delta=0, source_reliability=1,
                       temporal_relevance=1, status="ACTIVE", assumption_fingerprint="a",

@@ -609,6 +609,7 @@ def run_kernel_subprocess(
     *,
     argv: Iterable[str],
     timeout_ms: int,
+    max_program_bytes: int = DEFAULT_MAX_EPISODE_PROGRAM_CHARS,
     max_capture_bytes: int = DEFAULT_MAX_KERNEL_CAPTURE_BYTES,
     cwd: str | os.PathLike[str] | None = None,
 ) -> KernelProcessCapture:
@@ -620,6 +621,10 @@ def run_kernel_subprocess(
     """
     if not isinstance(program, str) or not program:
         raise ValueError("program must be a non-empty string")
+    _positive_int(max_program_bytes, "max_program_bytes")
+    encoded_program = program.encode("utf-8")
+    if len(encoded_program) > max_program_bytes:
+        raise ValueError("program exceeds max_program_bytes")
     command = tuple(argv)
     if not command or any(not isinstance(item, str) or not item for item in command):
         raise ValueError("argv must contain non-empty strings")
@@ -628,7 +633,7 @@ def run_kernel_subprocess(
     try:
         completed = subprocess.run(
             command,
-            input=program.encode("utf-8"),
+            input=encoded_program,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             cwd=cwd,
