@@ -25,6 +25,7 @@ Normative design source: `library/atlas-indexed-reversible-pipln/specification.p
 - the first pure Phase-2 compiler boundary: `compile_episode_inputs()` closes a chart against its immutable snapshot, exact selected packets, and packet-derived basis records; assigns deterministic episode stamps; applies canonical local-chart projection; and emits immutable patham9 `Sentence` atoms with `KernelSentenceMeta` provenance sidecars. It parses and canonicalizes each data term, rejects nested MeTTa executable/control forms, and enforces explicit sentence-count and emitted-character budgets before any runtime boundary;
 - immutable checksummed persistence for `CompiledEpisodeInputs`: create-once JSON artifacts round-trip the exact sentences, projections, stamp map, and provenance metadata while rejecting document checksum drift, sentence/typed-metadata mismatch, executable-term smuggling, invalid projection values, and inconsistent stamp/basis mappings. This is a replay input artifact, not the complete runtime `EpisodeManifest`.
 - the first Phase-2 kernel-result validator: `validate_kernel_result()` accepts only one bounded patham9 `((stv S C) (stamps...))` data atom, requires finite unit-interval truth values and canonical sorted stamps, rejects output injection and unknown episode stamps, and returns a digest-bound `ValidatedKernelResult` whose stamps close exactly to compiled evidence-basis provenance. It does not infer rule identity or authorize promotion.
+- immutable checksummed persistence for `ValidatedKernelResult`: create-once v1 JSON artifacts reject envelope/checksum/type drift and reload only when episode/chart identity, canonical stamps, and exact stamp-derived evidence-basis IDs close against the supplied `CompiledEpisodeInputs`. This persists validated output for later manifests but does not constitute execution replay.
 
 Direct tests cover immutability, malformed/nonfinite inputs, permutation-invariant stamps, duplicate basis rejection, exact overlap deduplication/conflict rejection, chart-to-snapshot closure and fingerprint sensitivity, compiler rejection of post-snapshot statement/count/metadata drift, the canonical equations, balanced conflict at different masses, and ignorance versus conflict.
 
@@ -32,7 +33,7 @@ Direct tests cover immutability, malformed/nonfinite inputs, permutation-invaria
 
 - partial-overlap residualization and independence discount policy;
 - migration of legacy aggregate EC sidecars to token-level provenance;
-- runtime program assembly, kernel-control port, complete episode manifests, execution replay, and trace decoder;
+- runtime program assembly, kernel-control port, complete episode manifests, kernel re-execution/comparison, and trace decoder;
 - proof classes, revision, curvature/descent, and reviewed promotion.
 
 Until overlap policy is implemented, `UNKNOWN` evidence bases must not be naively combined as independent evidence. Reliability and temporal relevance are metadata only; no weighting policy has been adopted.

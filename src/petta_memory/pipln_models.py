@@ -400,6 +400,93 @@ def validate_kernel_result(
     )
 
 
+def validated_kernel_result_document(result: ValidatedKernelResult) -> dict[str, object]:
+    """Return a checksummed artifact for one provenance-closed kernel result."""
+    payload = {
+        "episode_id": result.episode_id,
+        "chart_fingerprint": result.chart_fingerprint,
+        "query_term": result.query_term,
+        "strength": result.strength,
+        "confidence": result.confidence,
+        "stamp_ints": list(result.stamp_ints),
+        "evidence_basis_ids": list(result.evidence_basis_ids),
+        "result_digest": result.result_digest,
+    }
+    return {
+        "schema": "petta-memory-pipln-validated-kernel-result-v1",
+        "payload": payload,
+        "document_digest": _canonical_hash(payload),
+    }
+
+
+def write_validated_kernel_result(path: str | Path, result: ValidatedKernelResult) -> None:
+    """Create one immutable validated-result artifact; never replace a path."""
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    data = json.dumps(validated_kernel_result_document(result), sort_keys=True, indent=2) + "\n"
+    descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        destination.unlink(missing_ok=True)
+        raise
+
+
+def read_validated_kernel_result(
+    path: str | Path,
+    *,
+    compiled: CompiledEpisodeInputs,
+) -> ValidatedKernelResult:
+    """Load a result and close its stamps and basis IDs against one episode."""
+    document = json.loads(Path(path).read_text(encoding="utf-8"))
+    schema = "petta-memory-pipln-validated-kernel-result-v1"
+    if (not isinstance(document, dict) or set(document) != {"schema", "payload", "document_digest"}
+            or document.get("schema") != schema):
+        raise ValueError("invalid validated kernel result document schema")
+    payload = document.get("payload")
+    if not isinstance(payload, dict) or document.get("document_digest") != _canonical_hash(payload):
+        raise ValueError("validated kernel result document checksum mismatch")
+    expected_fields = {
+        "episode_id", "chart_fingerprint", "query_term", "strength", "confidence",
+        "stamp_ints", "evidence_basis_ids", "result_digest",
+    }
+    if (set(payload) != expected_fields or not isinstance(payload["stamp_ints"], list)
+            or not isinstance(payload["evidence_basis_ids"], list)):
+        raise ValueError("invalid validated kernel result payload")
+    if (payload["episode_id"] != compiled.episode_id
+            or payload["chart_fingerprint"] != compiled.chart_fingerprint):
+        raise ValueError("validated kernel result does not match compiled episode")
+
+    stamps = tuple(payload["stamp_ints"])
+    if (not stamps or any(isinstance(stamp, bool) or not isinstance(stamp, int) or stamp < 0
+                          for stamp in stamps)
+            or tuple(sorted(set(stamps))) != stamps):
+        raise ValueError("validated kernel result stamps must be canonical non-negative integers")
+    if any(not isinstance(basis_id, str) or not basis_id.strip()
+           for basis_id in payload["evidence_basis_ids"]):
+        raise ValueError("invalid validated kernel result evidence basis ids")
+    basis_by_stamp = {entry.stamp_int: entry.basis_id for entry in compiled.stamp_map}
+    unknown = tuple(stamp for stamp in stamps if stamp not in basis_by_stamp)
+    if unknown:
+        raise ValueError(f"validated kernel result contains unknown episode stamps: {unknown}")
+    expected_bases = tuple(basis_by_stamp[stamp] for stamp in stamps)
+    if tuple(payload["evidence_basis_ids"]) != expected_bases:
+        raise ValueError("validated kernel result evidence bases do not match compiled episode stamps")
+    return ValidatedKernelResult(
+        episode_id=payload["episode_id"],
+        chart_fingerprint=payload["chart_fingerprint"],
+        query_term=payload["query_term"],
+        strength=payload["strength"],
+        confidence=payload["confidence"],
+        stamp_ints=stamps,
+        evidence_basis_ids=tuple(payload["evidence_basis_ids"]),
+        result_digest=payload["result_digest"],
+    )
+
+
 @dataclass(frozen=True)
 class EvidenceSnapshot:
     """Immutable packet selection plus the versions that define its meaning."""

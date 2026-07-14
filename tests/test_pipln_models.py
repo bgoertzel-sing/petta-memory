@@ -29,9 +29,12 @@ from petta_memory.pipln_models import (
     merge_evidence_capsules,
     read_compiled_episode_inputs,
     read_evidence_snapshot,
+    read_validated_kernel_result,
     validate_kernel_result,
+    validated_kernel_result_document,
     write_compiled_episode_inputs,
     write_evidence_snapshot,
+    write_validated_kernel_result,
 )
 
 
@@ -480,6 +483,102 @@ class PiPlnModelTests(unittest.TestCase):
             tuple(entry.basis_id for entry in compiled.stamp_map),
         )
         self.assertEqual(len(result.result_digest), 64)
+
+    def test_validated_kernel_result_persistence_is_create_once_and_replay_closed(self):
+        packets = [
+            EvidencePacket("p1", "(S a)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION"),
+            EvidencePacket("p2", "(S b)", "ctx", 1, 0, ("t2",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION"),
+        ]
+        tokens = [
+            EvidenceToken("t1", "sensor", "s1", "ctx", "observed", "minted"),
+            EvidenceToken("t2", "sensor", "s2", "ctx", "observed", "minted"),
+        ]
+        snapshot = build_evidence_snapshot(snapshot_id="snapshot", packets=packets, context_id="ctx",
+                                           assumption_fingerprint="a1", ontology_fingerprint="o1", created_at="now")
+        context = PiContext("ctx", "lang", "world", "guard", "guard-v1", "query", "assumptions",
+                            "ontology", "ontology-v1", "weak-v1", "relevance-v1")
+        chart = build_pi_chart(
+            chart_id="chart", context=context, prior_strength_p0=0.5, prior_weight_k=2,
+            prior_provenance="review", policy=ChartPolicy("factor", "projection", "kernel", "rules", "v1", "v1"),
+            selected_packet_ids=["p1", "p2"], evidence_snapshot=snapshot, adequacy_certificate_id="adequacy",
+        )
+        bases = [
+            evidence_basis_from_packet(packet, [token], independence_status="PROVEN_DISJOINT",
+                                       justification_cid=f"review:{packet.id}")
+            for packet, token in zip(packets, tokens)
+        ]
+        compiled = compile_episode_inputs(episode_id="episode", chart=chart, evidence_snapshot=snapshot,
+                                          packets=packets, bases=bases)
+        result = validate_kernel_result("((stv 0.91 0.75) (0 1))", query_term="(Derived x)", compiled=compiled)
+        document = validated_kernel_result_document(result)
+        self.assertEqual(document["schema"], "petta-memory-pipln-validated-kernel-result-v1")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "result.json"
+            write_validated_kernel_result(path, result)
+            self.assertEqual(read_validated_kernel_result(path, compiled=compiled), result)
+            with self.assertRaises(FileExistsError):
+                write_validated_kernel_result(path, result)
+
+            drifted_compiled = compile_episode_inputs(episode_id="episode-2", chart=chart, evidence_snapshot=snapshot,
+                                                      packets=packets, bases=bases)
+            with self.assertRaisesRegex(ValueError, "compiled episode"):
+                read_validated_kernel_result(path, compiled=drifted_compiled)
+
+    def test_validated_kernel_result_loader_rejects_checksum_and_semantic_drift(self):
+        packet = EvidencePacket("p1", "(S a)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")
+        token = EvidenceToken("t1", "sensor", "s1", "ctx", "observed", "minted")
+        snapshot = build_evidence_snapshot(snapshot_id="snapshot", packets=[packet], context_id="ctx",
+                                           assumption_fingerprint="a1", ontology_fingerprint="o1", created_at="now")
+        context = PiContext("ctx", "lang", "world", "guard", "guard-v1", "query", "assumptions",
+                            "ontology", "ontology-v1", "weak-v1", "relevance-v1")
+        chart = build_pi_chart(
+            chart_id="chart", context=context, prior_strength_p0=0.5, prior_weight_k=2,
+            prior_provenance="review", policy=ChartPolicy("factor", "projection", "kernel", "rules", "v1", "v1"),
+            selected_packet_ids=["p1"], evidence_snapshot=snapshot, adequacy_certificate_id="adequacy",
+        )
+        basis = evidence_basis_from_packet(packet, [token], independence_status="PROVEN_DISJOINT",
+                                           justification_cid="review:basis")
+        compiled = compile_episode_inputs(episode_id="episode", chart=chart, evidence_snapshot=snapshot,
+                                          packets=[packet], bases=[basis])
+        result = validate_kernel_result("((stv 0.5 0.75) (0))", query_term="(Derived x)", compiled=compiled)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "result.json"
+            document = validated_kernel_result_document(result)
+            document["payload"]["strength"] = 0.9
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "checksum"):
+                read_validated_kernel_result(path, compiled=compiled)
+
+            document = validated_kernel_result_document(result)
+            document["payload"]["query_term"] = "(eval dangerous)"
+            encoded = json.dumps(document["payload"], sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+            document["document_digest"] = sha256(encoded.encode("utf-8")).hexdigest()
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "executable/control form"):
+                read_validated_kernel_result(path, compiled=compiled)
+
+            document = validated_kernel_result_document(result)
+            document["payload"]["stamp_ints"] = [1]
+            document["payload"]["evidence_basis_ids"] = ["basis-missing"]
+            encoded = json.dumps(document["payload"], sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+            document["document_digest"] = sha256(encoded.encode("utf-8")).hexdigest()
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "unknown episode stamps"):
+                read_validated_kernel_result(path, compiled=compiled)
+
+            document = validated_kernel_result_document(result)
+            document["unexpected"] = "sidecar"
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "schema"):
+                read_validated_kernel_result(path, compiled=compiled)
+
+            document = validated_kernel_result_document(result)
+            document["payload"]["stamp_ints"] = [True]
+            encoded = json.dumps(document["payload"], sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+            document["document_digest"] = sha256(encoded.encode("utf-8")).hexdigest()
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "canonical non-negative integers"):
+                read_validated_kernel_result(path, compiled=compiled)
 
     def test_kernel_result_validator_rejects_malformed_unbounded_or_unclosed_output(self):
         packet = EvidencePacket("p1", "(S a)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")
