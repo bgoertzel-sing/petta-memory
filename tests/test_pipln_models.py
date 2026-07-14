@@ -29,6 +29,7 @@ from petta_memory.pipln_models import (
     merge_evidence_capsules,
     read_compiled_episode_inputs,
     read_evidence_snapshot,
+    validate_kernel_result,
     write_compiled_episode_inputs,
     write_evidence_snapshot,
 )
@@ -442,6 +443,76 @@ class PiPlnModelTests(unittest.TestCase):
             self.assertEqual(read_compiled_episode_inputs(path), compiled)
             with self.assertRaises(FileExistsError):
                 write_compiled_episode_inputs(path, compiled)
+
+    def test_kernel_result_validator_closes_numeric_output_to_episode_provenance(self):
+        packets = [
+            EvidencePacket("p1", "(S a)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION"),
+            EvidencePacket("p2", "(S b)", "ctx", 1, 0, ("t2",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION"),
+        ]
+        tokens = [
+            EvidenceToken("t1", "sensor", "s1", "ctx", "observed", "minted"),
+            EvidenceToken("t2", "sensor", "s2", "ctx", "observed", "minted"),
+        ]
+        snapshot = build_evidence_snapshot(snapshot_id="snapshot", packets=packets, context_id="ctx",
+                                           assumption_fingerprint="a1", ontology_fingerprint="o1", created_at="now")
+        context = PiContext("ctx", "lang", "world", "guard", "guard-v1", "query", "assumptions",
+                            "ontology", "ontology-v1", "weak-v1", "relevance-v1")
+        chart = build_pi_chart(
+            chart_id="chart", context=context, prior_strength_p0=0.5, prior_weight_k=2,
+            prior_provenance="review", policy=ChartPolicy("factor", "projection", "kernel", "rules", "v1", "v1"),
+            selected_packet_ids=["p1", "p2"], evidence_snapshot=snapshot, adequacy_certificate_id="adequacy",
+        )
+        bases = [
+            evidence_basis_from_packet(packet, [token], independence_status="PROVEN_DISJOINT",
+                                       justification_cid=f"review:{packet.id}")
+            for packet, token in zip(packets, tokens)
+        ]
+        compiled = compile_episode_inputs(episode_id="episode", chart=chart, evidence_snapshot=snapshot,
+                                          packets=packets, bases=bases)
+
+        result = validate_kernel_result(
+            "((stv 0.91 0.75) (0 1))", query_term=" (Derived   x) ; comment", compiled=compiled,
+        )
+        self.assertEqual(result.query_term, "(Derived x)")
+        self.assertEqual(result.stamp_ints, (0, 1))
+        self.assertEqual(
+            result.evidence_basis_ids,
+            tuple(entry.basis_id for entry in compiled.stamp_map),
+        )
+        self.assertEqual(len(result.result_digest), 64)
+
+    def test_kernel_result_validator_rejects_malformed_unbounded_or_unclosed_output(self):
+        packet = EvidencePacket("p1", "(S a)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")
+        token = EvidenceToken("t1", "sensor", "s1", "ctx", "observed", "minted")
+        snapshot = build_evidence_snapshot(snapshot_id="snapshot", packets=[packet], context_id="ctx",
+                                           assumption_fingerprint="a1", ontology_fingerprint="o1", created_at="now")
+        context = PiContext("ctx", "lang", "world", "guard", "guard-v1", "query", "assumptions",
+                            "ontology", "ontology-v1", "weak-v1", "relevance-v1")
+        chart = build_pi_chart(
+            chart_id="chart", context=context, prior_strength_p0=0.5, prior_weight_k=2,
+            prior_provenance="review", policy=ChartPolicy("factor", "projection", "kernel", "rules", "v1", "v1"),
+            selected_packet_ids=["p1"], evidence_snapshot=snapshot, adequacy_certificate_id="adequacy",
+        )
+        basis = evidence_basis_from_packet(packet, [token], independence_status="PROVEN_DISJOINT",
+                                           justification_cid="review:basis")
+        compiled = compile_episode_inputs(episode_id="episode", chart=chart, evidence_snapshot=snapshot,
+                                          packets=[packet], bases=[basis])
+        invalid = (
+            ("((stv nan 0.5) (0))", "finite"),
+            ("((stv 1.1 0.5) (0))", "finite"),
+            ("((stv 0.5 0.5) (1))", "unknown episode stamps"),
+            ("((stv 0.5 0.5) (0 0))", "unique"),
+            ("((stv 0.5 0.5) (00))", "canonical"),
+            ("((stv 0.5 0.5) (0)) (injected)", "one valid"),
+        )
+        for atom, message in invalid:
+            with self.subTest(atom=atom), self.assertRaisesRegex(ValueError, message):
+                validate_kernel_result(atom, query_term="(Q x)", compiled=compiled)
+        with self.assertRaisesRegex(ValueError, "max_result_chars"):
+            validate_kernel_result("((stv 0.5 0.5) (0))", query_term="(Q x)", compiled=compiled,
+                                   max_result_chars=5)
+        with self.assertRaisesRegex(ValueError, "executable/control form"):
+            validate_kernel_result("((stv 0.5 0.5) (0))", query_term="(eval dangerous)", compiled=compiled)
 
     def test_compiled_episode_inputs_loader_rejects_checksum_and_semantic_drift(self):
         packet = EvidencePacket("p1", "(S a)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")

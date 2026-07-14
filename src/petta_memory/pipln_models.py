@@ -24,6 +24,7 @@ PacketOrigin = Literal["OBSERVATION", "IMPORT", "REVIEWED_EXPORT"]
 
 DEFAULT_MAX_COMPILED_SENTENCES = 256
 DEFAULT_MAX_COMPILED_ATOM_CHARS = 1_000_000
+DEFAULT_MAX_KERNEL_RESULT_CHARS = 65_536
 _EXECUTABLE_TERM_HEADS = frozenset({
     "!", "bind!", "case", "collapse", "eval", "if", "import!", "include", "let", "let*",
     "match", "pragma!", "superpose",
@@ -276,6 +277,127 @@ class CompiledEpisodeInputs:
             mapped_bases = tuple(basis_by_stamp.get(stamp) for stamp in sentence.meta.stamp_ints)
             if None in mapped_bases or mapped_bases != sentence.meta.evidence_basis_ids:
                 raise ValueError("compiled sentence stamps do not match evidence bases")
+
+
+@dataclass(frozen=True)
+class ValidatedKernelResult:
+    """One structurally validated, provenance-closed patham9 result atom."""
+
+    episode_id: str
+    chart_fingerprint: str
+    query_term: str
+    strength: float
+    confidence: float
+    stamp_ints: tuple[int, ...]
+    evidence_basis_ids: tuple[str, ...]
+    result_digest: str
+
+    def __post_init__(self) -> None:
+        _nonempty(self.episode_id, "episode_id")
+        _sha256_digest(self.chart_fingerprint, "chart_fingerprint")
+        canonical_term = _canonical_kernel_term(self.query_term)
+        if canonical_term != self.query_term:
+            raise ValueError("kernel result query_term is not canonical")
+        for field in ("strength", "confidence"):
+            value = getattr(self, field)
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not math.isfinite(value) or not 0 <= value <= 1):
+                raise ValueError(f"kernel result {field} must be finite and in [0, 1]")
+        if not self.stamp_ints or tuple(sorted(set(self.stamp_ints))) != self.stamp_ints:
+            raise ValueError("kernel result stamps must be non-empty, unique, and sorted")
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0
+               for value in self.stamp_ints):
+            raise ValueError("kernel result stamps must be non-negative integers")
+        if len(self.evidence_basis_ids) != len(self.stamp_ints):
+            raise ValueError("kernel result evidence bases must close every stamp")
+        for basis_id in self.evidence_basis_ids:
+            _nonempty(basis_id, "evidence_basis_id")
+        expected_digest = _canonical_hash({
+            "episode_id": self.episode_id,
+            "chart_fingerprint": self.chart_fingerprint,
+            "query_term": self.query_term,
+            "strength": float(self.strength),
+            "confidence": float(self.confidence),
+            "stamp_ints": self.stamp_ints,
+            "evidence_basis_ids": self.evidence_basis_ids,
+        })
+        if self.result_digest != expected_digest:
+            raise ValueError("kernel result digest does not match typed content")
+
+
+def validate_kernel_result(
+    result_atom: str,
+    *,
+    query_term: str,
+    compiled: CompiledEpisodeInputs,
+    max_result_chars: int = DEFAULT_MAX_KERNEL_RESULT_CHARS,
+) -> ValidatedKernelResult:
+    """Validate a patham9 ``((stv S C) (stamps...))`` output fail-closed.
+
+    This boundary validates structure, finite unit-interval truth values, and
+    complete stamp-to-evidence-basis closure. It records an ephemeral result;
+    it does not infer rule identity or authorize evidence promotion.
+    """
+    _positive_int(max_result_chars, "max_result_chars")
+    if not isinstance(result_atom, str) or len(result_atom) > max_result_chars:
+        raise ValueError("kernel result exceeds max_result_chars")
+    canonical_query = _canonical_kernel_term(query_term)
+    try:
+        parsed = parse_one_list(result_atom)
+    except SExpressionSyntaxError as error:
+        raise ValueError(f"kernel result must be one valid S-expression list: {error}") from error
+    if (len(parsed) != 2 or not isinstance(parsed[0], tuple) or len(parsed[0]) != 3
+            or symbol_text(parsed[0][0]) != "stv" or not isinstance(parsed[1], tuple)):
+        raise ValueError("kernel result must have shape ((stv strength confidence) (stamps...))")
+
+    numeric_tokens = (symbol_text(parsed[0][1]), symbol_text(parsed[0][2]))
+    if None in numeric_tokens:
+        raise ValueError("kernel result truth values must be numeric atoms")
+    try:
+        strength, confidence = (float(value) for value in numeric_tokens)
+    except ValueError as error:
+        raise ValueError("kernel result truth values must be numeric atoms") from error
+    if not all(math.isfinite(value) and 0 <= value <= 1 for value in (strength, confidence)):
+        raise ValueError("kernel result truth values must be finite and in [0, 1]")
+
+    stamps: list[int] = []
+    for expression in parsed[1]:
+        token = symbol_text(expression)
+        try:
+            stamp = int(token) if token is not None else -1
+        except ValueError as error:
+            raise ValueError("kernel result stamps must be canonical non-negative integers") from error
+        if token != str(stamp) or stamp < 0:
+            raise ValueError("kernel result stamps must be canonical non-negative integers")
+        stamps.append(stamp)
+    stamp_ints = tuple(stamps)
+    if not stamp_ints or tuple(sorted(set(stamp_ints))) != stamp_ints:
+        raise ValueError("kernel result stamps must be non-empty, unique, and sorted")
+
+    basis_by_stamp = {entry.stamp_int: entry.basis_id for entry in compiled.stamp_map}
+    unknown = tuple(stamp for stamp in stamp_ints if stamp not in basis_by_stamp)
+    if unknown:
+        raise ValueError(f"kernel result contains unknown episode stamps: {unknown}")
+    evidence_basis_ids = tuple(basis_by_stamp[stamp] for stamp in stamp_ints)
+    digest_payload = {
+        "episode_id": compiled.episode_id,
+        "chart_fingerprint": compiled.chart_fingerprint,
+        "query_term": canonical_query,
+        "strength": strength,
+        "confidence": confidence,
+        "stamp_ints": stamp_ints,
+        "evidence_basis_ids": evidence_basis_ids,
+    }
+    return ValidatedKernelResult(
+        episode_id=compiled.episode_id,
+        chart_fingerprint=compiled.chart_fingerprint,
+        query_term=canonical_query,
+        strength=strength,
+        confidence=confidence,
+        stamp_ints=stamp_ints,
+        evidence_basis_ids=evidence_basis_ids,
+        result_digest=_canonical_hash(digest_payload),
+    )
 
 
 @dataclass(frozen=True)
