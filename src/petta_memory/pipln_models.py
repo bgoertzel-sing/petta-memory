@@ -8,6 +8,7 @@ turning derived STVs or chart priors into empirical evidence.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from hashlib import sha256
 import json
 import math
@@ -25,6 +26,7 @@ PacketOrigin = Literal["OBSERVATION", "IMPORT", "REVIEWED_EXPORT"]
 DEFAULT_MAX_COMPILED_SENTENCES = 256
 DEFAULT_MAX_COMPILED_ATOM_CHARS = 1_000_000
 DEFAULT_MAX_KERNEL_RESULT_CHARS = 65_536
+DEFAULT_MAX_EPISODE_PROGRAM_CHARS = 2_000_000
 _EXECUTABLE_TERM_HEADS = frozenset({
     "!", "bind!", "case", "collapse", "eval", "if", "import!", "include", "let", "let*",
     "match", "pragma!", "superpose",
@@ -89,6 +91,17 @@ def _canonical_kernel_term(statement: str) -> str:
 def _positive_int(value: int, field: str) -> None:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise ValueError(f"{field} must be a positive integer")
+
+
+def _timestamp(value: str, field: str) -> datetime:
+    _nonempty(value, field)
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError(f"{field} must be an ISO-8601 timestamp") from error
+    if parsed.tzinfo is None:
+        raise ValueError(f"{field} must include a timezone")
+    return parsed
 
 
 @dataclass(frozen=True)
@@ -325,6 +338,77 @@ class ValidatedKernelResult:
             raise ValueError("kernel result digest does not match typed content")
 
 
+@dataclass(frozen=True)
+class EpisodeBudget:
+    """Explicit resource envelope recorded for one isolated kernel episode."""
+
+    max_steps: int
+    max_runtime_ms: int
+    max_output_chars: int
+
+    def __post_init__(self) -> None:
+        for field in self.__dataclass_fields__:
+            _positive_int(getattr(self, field), field)
+
+
+@dataclass(frozen=True)
+class EpisodeManifest:
+    """Immutable audit identity for one completed, non-promoting kernel episode."""
+
+    episode_id: str
+    parent_episode_ids: tuple[str, ...]
+    chart_id: str
+    context_id: str
+    evidence_snapshot_id: str
+    compiled_program_cid: str
+    stamp_map_cid: str
+    kernel_name: str
+    kernel_version: str
+    kernel_capabilities_cid: str
+    rule_profile_id: str
+    projection_policy_ids: tuple[str, ...]
+    controller_envelope_cid: str
+    seed: int
+    budget: EpisodeBudget
+    started_at: str
+    finished_at: str
+    return_code: int
+    stdout_cid: str
+    stderr_cid: str
+    result_cid: str
+    manifest_digest: str
+
+    def __post_init__(self) -> None:
+        for field in (
+            "episode_id", "chart_id", "context_id", "evidence_snapshot_id", "kernel_name",
+            "kernel_version", "rule_profile_id",
+        ):
+            _nonempty(getattr(self, field), field)
+        if tuple(sorted(set(self.parent_episode_ids))) != self.parent_episode_ids:
+            raise ValueError("parent_episode_ids must be unique and sorted")
+        if self.episode_id in self.parent_episode_ids:
+            raise ValueError("an episode cannot be its own parent")
+        if not self.projection_policy_ids or tuple(sorted(set(self.projection_policy_ids))) != self.projection_policy_ids:
+            raise ValueError("projection_policy_ids must be non-empty, unique, and sorted")
+        for value in self.parent_episode_ids + self.projection_policy_ids:
+            _nonempty(value, "manifest identity")
+        for field in (
+            "compiled_program_cid", "stamp_map_cid", "kernel_capabilities_cid",
+            "controller_envelope_cid", "stdout_cid", "stderr_cid", "result_cid",
+            "manifest_digest",
+        ):
+            _sha256_digest(getattr(self, field), field)
+        if isinstance(self.seed, bool) or not isinstance(self.seed, int) or self.seed < 0:
+            raise ValueError("seed must be a non-negative integer")
+        if isinstance(self.return_code, bool) or not isinstance(self.return_code, int):
+            raise ValueError("return_code must be an integer")
+        if _timestamp(self.finished_at, "finished_at") < _timestamp(self.started_at, "started_at"):
+            raise ValueError("finished_at must not precede started_at")
+        expected_digest = _canonical_hash(_episode_manifest_payload(self, include_digest=False))
+        if self.manifest_digest != expected_digest:
+            raise ValueError("manifest digest does not match typed content")
+
+
 def validate_kernel_result(
     result_atom: str,
     *,
@@ -434,6 +518,173 @@ def validate_exact_kernel_replay(
     if replayed.result_digest != expected.result_digest:
         raise ValueError("kernel replay result does not exactly match expected semantic result")
     return replayed
+
+
+def _episode_manifest_payload(
+    manifest: EpisodeManifest, *, include_digest: bool = True,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "episode_id": manifest.episode_id,
+        "parent_episode_ids": list(manifest.parent_episode_ids),
+        "chart_id": manifest.chart_id,
+        "context_id": manifest.context_id,
+        "evidence_snapshot_id": manifest.evidence_snapshot_id,
+        "compiled_program_cid": manifest.compiled_program_cid,
+        "stamp_map_cid": manifest.stamp_map_cid,
+        "kernel_name": manifest.kernel_name,
+        "kernel_version": manifest.kernel_version,
+        "kernel_capabilities_cid": manifest.kernel_capabilities_cid,
+        "rule_profile_id": manifest.rule_profile_id,
+        "projection_policy_ids": list(manifest.projection_policy_ids),
+        "controller_envelope_cid": manifest.controller_envelope_cid,
+        "seed": manifest.seed,
+        "budget": {
+            "max_steps": manifest.budget.max_steps,
+            "max_runtime_ms": manifest.budget.max_runtime_ms,
+            "max_output_chars": manifest.budget.max_output_chars,
+        },
+        "started_at": manifest.started_at,
+        "finished_at": manifest.finished_at,
+        "return_code": manifest.return_code,
+        "stdout_cid": manifest.stdout_cid,
+        "stderr_cid": manifest.stderr_cid,
+        "result_cid": manifest.result_cid,
+    }
+    if include_digest:
+        payload["manifest_digest"] = manifest.manifest_digest
+    return payload
+
+
+def build_episode_manifest(
+    *, compiled: CompiledEpisodeInputs, chart: "PiChart", evidence_snapshot: "EvidenceSnapshot",
+    result: ValidatedKernelResult, complete_program: str, kernel_name: str,
+    kernel_capabilities_cid: str, controller_envelope_cid: str, seed: int,
+    budget: EpisodeBudget, started_at: str, finished_at: str, return_code: int,
+    stdout: str, stderr: str, parent_episode_ids: Iterable[str] = (),
+    max_program_chars: int = DEFAULT_MAX_EPISODE_PROGRAM_CHARS,
+) -> EpisodeManifest:
+    """Close a completed episode manifest over immutable inputs and captured output.
+
+    The supplied program is content-addressed and must contain every compiler-emitted
+    sentence exactly once. Runtime invocation and artifact storage remain caller
+    responsibilities; constructing this record grants no promotion authority.
+    """
+    _positive_int(max_program_chars, "max_program_chars")
+    if not isinstance(complete_program, str) or not complete_program or len(complete_program) > max_program_chars:
+        raise ValueError("complete_program must be non-empty and within max_program_chars")
+    if not isinstance(stdout, str) or not isinstance(stderr, str):
+        raise ValueError("stdout and stderr must be strings")
+    if compiled.episode_id != result.episode_id or compiled.chart_fingerprint != result.chart_fingerprint:
+        raise ValueError("kernel result does not match compiled episode")
+    basis_by_stamp = {entry.stamp_int: entry.basis_id for entry in compiled.stamp_map}
+    if (any(stamp not in basis_by_stamp for stamp in result.stamp_ints)
+            or result.evidence_basis_ids != tuple(basis_by_stamp[stamp] for stamp in result.stamp_ints)):
+        raise ValueError("kernel result stamps do not match compiled episode evidence bases")
+    if compiled.chart_fingerprint != chart.chart_fingerprint:
+        raise ValueError("chart does not match compiled episode")
+    if (compiled.evidence_snapshot_fingerprint != evidence_snapshot.snapshot_fingerprint
+            or chart.evidence_snapshot_id != evidence_snapshot.id
+            or chart.evidence_snapshot_fingerprint != evidence_snapshot.snapshot_fingerprint):
+        raise ValueError("evidence snapshot does not match compiled episode chart")
+    if any(sentence.meta.chart_id != chart.id or sentence.meta.context_id != chart.context_id
+           for sentence in compiled.sentences):
+        raise ValueError("compiled sentence chart/context identity mismatch")
+    missing_or_duplicate = tuple(
+        sentence.meta.sentence_digest for sentence in compiled.sentences
+        if complete_program.count(sentence.atom) != 1
+    )
+    if missing_or_duplicate:
+        raise ValueError("complete_program must contain every compiled sentence exactly once")
+    if result.query_term not in complete_program:
+        raise ValueError("complete_program must contain the validated result query term")
+
+    parents = tuple(sorted(tuple(parent_episode_ids)))
+    projection_ids = tuple(sorted({
+        chart.policy.projection_policy_id,
+        chart.policy.kernel_projection_policy_id,
+    }))
+    stamp_payload = [
+        {
+            "episode_id": entry.episode_id,
+            "stamp_int": entry.stamp_int,
+            "basis_id": entry.basis_id,
+            "member_token_digest": entry.member_token_digest,
+        }
+        for entry in compiled.stamp_map
+    ]
+    values = dict(
+        episode_id=compiled.episode_id, parent_episode_ids=parents, chart_id=chart.id,
+        context_id=chart.context_id, evidence_snapshot_id=evidence_snapshot.id,
+        compiled_program_cid=_canonical_hash({"complete_program": complete_program}),
+        stamp_map_cid=_canonical_hash(stamp_payload), kernel_name=kernel_name,
+        kernel_version=chart.policy.kernel_version,
+        kernel_capabilities_cid=kernel_capabilities_cid,
+        rule_profile_id=chart.policy.rule_profile_id,
+        projection_policy_ids=projection_ids,
+        controller_envelope_cid=controller_envelope_cid, seed=seed, budget=budget,
+        started_at=started_at, finished_at=finished_at, return_code=return_code,
+        stdout_cid=_canonical_hash({"stdout": stdout}),
+        stderr_cid=_canonical_hash({"stderr": stderr}), result_cid=result.result_digest,
+    )
+    digest_payload = dict(values)
+    digest_payload["parent_episode_ids"] = list(parents)
+    digest_payload["projection_policy_ids"] = list(projection_ids)
+    digest_payload["budget"] = {
+        "max_steps": budget.max_steps,
+        "max_runtime_ms": budget.max_runtime_ms,
+        "max_output_chars": budget.max_output_chars,
+    }
+    return EpisodeManifest(**values, manifest_digest=_canonical_hash(digest_payload))
+
+
+def episode_manifest_document(manifest: EpisodeManifest) -> dict[str, object]:
+    payload = _episode_manifest_payload(manifest)
+    return {
+        "schema": "petta-memory-pipln-episode-manifest-v1",
+        "payload": payload,
+        "document_digest": _canonical_hash(payload),
+    }
+
+
+def write_episode_manifest(path: str | Path, manifest: EpisodeManifest) -> None:
+    """Create one immutable episode-manifest artifact; never replace a path."""
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    data = json.dumps(episode_manifest_document(manifest), sort_keys=True, indent=2) + "\n"
+    descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        destination.unlink(missing_ok=True)
+        raise
+
+
+def read_episode_manifest(path: str | Path) -> EpisodeManifest:
+    """Load a checksummed manifest and reconstruct all typed invariants."""
+    document = json.loads(Path(path).read_text(encoding="utf-8"))
+    if (not isinstance(document, dict)
+            or set(document) != {"schema", "payload", "document_digest"}
+            or document.get("schema") != "petta-memory-pipln-episode-manifest-v1"):
+        raise ValueError("invalid episode manifest document schema")
+    payload = document.get("payload")
+    if not isinstance(payload, dict) or document.get("document_digest") != _canonical_hash(payload):
+        raise ValueError("episode manifest document checksum mismatch")
+    expected_fields = set(EpisodeManifest.__dataclass_fields__) - {"budget"}
+    expected_fields.add("budget")
+    if (set(payload) != expected_fields
+            or not isinstance(payload["parent_episode_ids"], list)
+            or not isinstance(payload["projection_policy_ids"], list)
+            or not isinstance(payload["budget"], dict)
+            or set(payload["budget"]) != set(EpisodeBudget.__dataclass_fields__)):
+        raise ValueError("invalid episode manifest payload")
+    values = dict(payload)
+    values["parent_episode_ids"] = tuple(payload["parent_episode_ids"])
+    values["projection_policy_ids"] = tuple(payload["projection_policy_ids"])
+    values["budget"] = EpisodeBudget(**payload["budget"])
+    return EpisodeManifest(**values)
 
 
 def validated_kernel_result_document(result: ValidatedKernelResult) -> dict[str, object]:

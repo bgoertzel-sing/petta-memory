@@ -14,10 +14,12 @@ from petta_memory.pipln_models import (
     EvidenceSnapshot,
     EvidenceSnapshotRepository,
     EvidenceToken,
+    EpisodeBudget,
     ChartPolicy,
     PiContext,
     build_pi_chart,
     build_evidence_snapshot,
+    build_episode_manifest,
     canonical_local_chart_projection,
     canonical_projection_from_beta,
     compile_episode_inputs,
@@ -26,15 +28,18 @@ from petta_memory.pipln_models import (
     deterministic_stamp_map,
     evidence_basis_from_packet,
     evidence_snapshot_document,
+    episode_manifest_document,
     merge_evidence_capsules,
     read_compiled_episode_inputs,
     read_evidence_snapshot,
+    read_episode_manifest,
     read_validated_kernel_result,
     validate_exact_kernel_replay,
     validate_kernel_result,
     validated_kernel_result_document,
     write_compiled_episode_inputs,
     write_evidence_snapshot,
+    write_episode_manifest,
     write_validated_kernel_result,
 )
 
@@ -653,6 +658,83 @@ class PiPlnModelTests(unittest.TestCase):
                                                 packets=packets, bases=bases)
         with self.assertRaisesRegex(ValueError, "compiled episode"):
             validate_exact_kernel_replay("((stv 0.5 0.75) (0 1))", expected=expected, compiled=other_compiled)
+
+    def test_episode_manifest_closes_program_result_and_runtime_audit_identity(self):
+        packet = EvidencePacket("p1", "(S a)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")
+        token = EvidenceToken("t1", "sensor", "s1", "ctx", "observed", "minted")
+        snapshot = build_evidence_snapshot(snapshot_id="snapshot", packets=[packet], context_id="ctx",
+                                           assumption_fingerprint="a1", ontology_fingerprint="o1", created_at="now")
+        context = PiContext("ctx", "lang", "world", "guard", "guard-v1", "query", "assumptions",
+                            "ontology", "ontology-v1", "weak-v1", "relevance-v1")
+        chart = build_pi_chart(
+            chart_id="chart", context=context, prior_strength_p0=0.5, prior_weight_k=2,
+            prior_provenance="review", policy=ChartPolicy("factor", "projection", "kernel-projection", "rules", "kernel-v1", "translator-v1"),
+            selected_packet_ids=["p1"], evidence_snapshot=snapshot, adequacy_certificate_id="adequacy",
+        )
+        basis = evidence_basis_from_packet(packet, [token], independence_status="PROVEN_DISJOINT",
+                                           justification_cid="review:basis")
+        compiled = compile_episode_inputs(episode_id="episode", chart=chart, evidence_snapshot=snapshot,
+                                          packets=[packet], bases=[basis])
+        result = validate_kernel_result("((stv 0.75 0.5) (0))", query_term="(Q a)", compiled=compiled)
+        program = "\n".join(("!(import! &self pln:core)", compiled.sentences[0].atom, "!(PLN.Derive (Q a))"))
+        digest = sha256(b"audit object").hexdigest()
+        manifest = build_episode_manifest(
+            compiled=compiled, chart=chart, evidence_snapshot=snapshot, result=result,
+            complete_program=program, kernel_name="patham9-pln", kernel_capabilities_cid=digest,
+            controller_envelope_cid=digest, seed=7,
+            budget=EpisodeBudget(max_steps=3, max_runtime_ms=1000, max_output_chars=4096),
+            started_at="2026-07-14T12:00:00Z", finished_at="2026-07-14T12:00:01Z",
+            return_code=0, stdout="result", stderr="", parent_episode_ids=("parent",),
+        )
+        self.assertEqual(manifest.result_cid, result.result_digest)
+        self.assertEqual(manifest.projection_policy_ids, ("kernel-projection", "projection"))
+        self.assertEqual(episode_manifest_document(manifest)["schema"], "petta-memory-pipln-episode-manifest-v1")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "manifest.json"
+            write_episode_manifest(path, manifest)
+            self.assertEqual(read_episode_manifest(path), manifest)
+            with self.assertRaises(FileExistsError):
+                write_episode_manifest(path, manifest)
+
+    def test_episode_manifest_rejects_incomplete_program_and_tampered_artifact(self):
+        packet = EvidencePacket("p1", "(S a)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")
+        token = EvidenceToken("t1", "sensor", "s1", "ctx", "observed", "minted")
+        snapshot = build_evidence_snapshot(snapshot_id="snapshot", packets=[packet], context_id="ctx",
+                                           assumption_fingerprint="a1", ontology_fingerprint="o1", created_at="now")
+        context = PiContext("ctx", "lang", "world", "guard", "guard-v1", "query", "assumptions",
+                            "ontology", "ontology-v1", "weak-v1", "relevance-v1")
+        chart = build_pi_chart(
+            chart_id="chart", context=context, prior_strength_p0=0.5, prior_weight_k=2,
+            prior_provenance="review", policy=ChartPolicy("factor", "projection", "kernel", "rules", "v1", "v1"),
+            selected_packet_ids=["p1"], evidence_snapshot=snapshot, adequacy_certificate_id="adequacy",
+        )
+        basis = evidence_basis_from_packet(packet, [token], independence_status="PROVEN_DISJOINT", justification_cid="review")
+        compiled = compile_episode_inputs(episode_id="episode", chart=chart, evidence_snapshot=snapshot,
+                                          packets=[packet], bases=[basis])
+        result = validate_kernel_result("((stv 0.5 0.5) (0))", query_term="(Q a)", compiled=compiled)
+        digest = sha256(b"audit object").hexdigest()
+        kwargs = dict(
+            compiled=compiled, chart=chart, evidence_snapshot=snapshot, result=result,
+            kernel_name="patham9", kernel_capabilities_cid=digest, controller_envelope_cid=digest,
+            seed=0, budget=EpisodeBudget(1, 100, 100), started_at="2026-07-14T12:00:00Z",
+            finished_at="2026-07-14T12:00:01Z", return_code=0, stdout="", stderr="",
+        )
+        with self.assertRaisesRegex(ValueError, "every compiled sentence"):
+            build_episode_manifest(complete_program="(unrelated)", **kwargs)
+        manifest = build_episode_manifest(complete_program=compiled.sentences[0].atom + "\n(Q a)", **kwargs)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "manifest.json"
+            document = episode_manifest_document(manifest)
+            document["payload"]["return_code"] = 1
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "checksum"):
+                read_episode_manifest(path)
+            document["document_digest"] = sha256(json.dumps(
+                document["payload"], sort_keys=True, separators=(",", ":"), ensure_ascii=False
+            ).encode("utf-8")).hexdigest()
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "manifest digest"):
+                read_episode_manifest(path)
 
     def test_compiled_episode_inputs_loader_rejects_checksum_and_semantic_drift(self):
         packet = EvidencePacket("p1", "(S a)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")
