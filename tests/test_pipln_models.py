@@ -20,6 +20,7 @@ from petta_memory.pipln_models import (
     build_pi_chart,
     build_evidence_snapshot,
     build_episode_manifest,
+    assemble_legacy_kernel_query_program,
     canonical_local_chart_projection,
     canonical_projection_from_beta,
     compile_episode_inputs,
@@ -695,6 +696,51 @@ class PiPlnModelTests(unittest.TestCase):
             self.assertEqual(read_episode_manifest(path), manifest)
             with self.assertRaises(FileExistsError):
                 write_episode_manifest(path, manifest)
+
+    def test_legacy_kernel_program_assembly_is_fixed_bounded_and_deterministic(self):
+        packets = [
+            EvidencePacket("p1", "(S a)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION"),
+            EvidencePacket("p2", "(S b)", "ctx", 1, 0, ("t2",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION"),
+        ]
+        tokens = [
+            EvidenceToken("t1", "sensor", "s1", "ctx", "observed", "minted"),
+            EvidenceToken("t2", "sensor", "s2", "ctx", "observed", "minted"),
+        ]
+        snapshot = build_evidence_snapshot(snapshot_id="snapshot", packets=packets, context_id="ctx",
+                                           assumption_fingerprint="a1", ontology_fingerprint="o1", created_at="now")
+        context = PiContext("ctx", "lang", "world", "guard", "guard-v1", "query", "assumptions",
+                            "ontology", "ontology-v1", "weak-v1", "relevance-v1")
+        chart = build_pi_chart(
+            chart_id="chart", context=context, prior_strength_p0=0.5, prior_weight_k=2,
+            prior_provenance="review", policy=ChartPolicy("factor", "projection", "kernel", "rules", "v1", "v1"),
+            selected_packet_ids=["p1", "p2"], evidence_snapshot=snapshot, adequacy_certificate_id="adequacy",
+        )
+        bases = [
+            evidence_basis_from_packet(packet, [token], independence_status="PROVEN_DISJOINT",
+                                       justification_cid=f"review:{packet.id}")
+            for packet, token in zip(packets, tokens)
+        ]
+        compiled = compile_episode_inputs(episode_id="episode", chart=chart, evidence_snapshot=snapshot,
+                                          packets=packets, bases=bases)
+        kwargs = dict(compiled=compiled, query_term="(Q a)", max_steps=3,
+                      task_queue_size=5, belief_queue_size=8)
+        program = assemble_legacy_kernel_query_program(**kwargs)
+        self.assertEqual(program, assemble_legacy_kernel_query_program(**kwargs))
+        self.assertTrue(program.startswith("!(import! &self PLN)\n!(PLN.Init ())\n"))
+        self.assertTrue(program.endswith("    (Q a)\n    3 5 8)\n"))
+        for sentence in compiled.sentences:
+            self.assertEqual(program.count(sentence.atom), 1)
+
+        invalid = (
+            ({**kwargs, "query_term": "(eval dangerous)"}, "executable/control"),
+            ({**kwargs, "query_term": "(Q   a)"}, "already be canonical"),
+            ({**kwargs, "max_steps": 0}, "positive integer"),
+            ({**kwargs, "max_steps": 10_001}, "bounded limit"),
+            ({**kwargs, "max_program_chars": 5}, "exceeds max_program_chars"),
+        )
+        for arguments, message in invalid:
+            with self.subTest(arguments=arguments), self.assertRaisesRegex(ValueError, message):
+                assemble_legacy_kernel_query_program(**arguments)
 
     def test_episode_manifest_rejects_incomplete_program_and_tampered_artifact(self):
         packet = EvidencePacket("p1", "(S a)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")

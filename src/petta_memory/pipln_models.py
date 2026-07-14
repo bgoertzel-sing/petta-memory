@@ -27,6 +27,7 @@ DEFAULT_MAX_COMPILED_SENTENCES = 256
 DEFAULT_MAX_COMPILED_ATOM_CHARS = 1_000_000
 DEFAULT_MAX_KERNEL_RESULT_CHARS = 65_536
 DEFAULT_MAX_EPISODE_PROGRAM_CHARS = 2_000_000
+DEFAULT_MAX_EPISODE_QUERY_STEPS = 10_000
 _EXECUTABLE_TERM_HEADS = frozenset({
     "!", "bind!", "case", "collapse", "eval", "if", "import!", "include", "let", "let*",
     "match", "pragma!", "superpose",
@@ -407,6 +408,56 @@ class EpisodeManifest:
         expected_digest = _canonical_hash(_episode_manifest_payload(self, include_digest=False))
         if self.manifest_digest != expected_digest:
             raise ValueError("manifest digest does not match typed content")
+
+
+def assemble_legacy_kernel_query_program(
+    *,
+    compiled: CompiledEpisodeInputs,
+    query_term: str,
+    max_steps: int,
+    task_queue_size: int,
+    belief_queue_size: int,
+    max_program_chars: int = DEFAULT_MAX_EPISODE_PROGRAM_CHARS,
+) -> str:
+    """Assemble the only admitted stock patham9 query-program template.
+
+    Compiler-emitted sentences and a declarative query are inserted into fixed
+    ``PLN.Init``/``PLN.Query`` control forms.  Callers cannot supply imports,
+    rules, or arbitrary executable text through this boundary.  The returned
+    program is an inert string; this function neither invokes the kernel nor
+    grants promotion authority.
+    """
+    for value, field in (
+        (max_steps, "max_steps"),
+        (task_queue_size, "task_queue_size"),
+        (belief_queue_size, "belief_queue_size"),
+        (max_program_chars, "max_program_chars"),
+    ):
+        _positive_int(value, field)
+    if max_steps > DEFAULT_MAX_EPISODE_QUERY_STEPS:
+        raise ValueError(
+            f"max_steps exceeds bounded limit {DEFAULT_MAX_EPISODE_QUERY_STEPS}"
+        )
+    if not compiled.sentences:
+        raise ValueError("compiled episode must contain at least one sentence")
+
+    canonical_query = _canonical_kernel_term(query_term)
+    if canonical_query != query_term:
+        raise ValueError("query_term must already be canonical")
+    beliefs = "\n    ".join(sentence.atom for sentence in compiled.sentences)
+    program = "\n".join((
+        "!(import! &self PLN)",
+        "!(PLN.Init ())",
+        "!(PLN.Query (",
+        f"    {beliefs}",
+        ")",
+        f"    {canonical_query}",
+        f"    {max_steps} {task_queue_size} {belief_queue_size})",
+        "",
+    ))
+    if len(program) > max_program_chars:
+        raise ValueError("assembled kernel program exceeds max_program_chars")
+    return program
 
 
 def validate_kernel_result(
