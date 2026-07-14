@@ -14,7 +14,7 @@ import json
 import math
 import os
 from pathlib import Path
-from typing import Iterable, Literal
+from typing import Callable, Iterable, Literal
 
 from .sexpr import SExpr, SExpressionSyntaxError, parse_one_list, symbol_text, to_source
 
@@ -419,6 +419,7 @@ def assemble_legacy_kernel_query_program(
     task_queue_size: int,
     belief_queue_size: int,
     max_program_chars: int = DEFAULT_MAX_EPISODE_PROGRAM_CHARS,
+    parse_check: Callable[[str], None] | None = None,
 ) -> str:
     """Assemble the only admitted stock patham9 query-program template.
 
@@ -426,7 +427,9 @@ def assemble_legacy_kernel_query_program(
     ``PLN.Init``/``PLN.Query`` control forms.  Callers cannot supply imports,
     rules, or arbitrary executable text through this boundary.  The returned
     program is an inert string; this function neither invokes the kernel nor
-    grants promotion authority.
+    grants promotion authority.  Callers may explicitly supply a local
+    ``parse_check`` hook to fail closed on final-program syntax before a
+    separately reviewed runner receives it.
     """
     for value, field in (
         (max_steps, "max_steps"),
@@ -466,6 +469,10 @@ def assemble_legacy_kernel_query_program(
     ))
     if len(program) > max_program_chars:
         raise ValueError("assembled kernel program exceeds max_program_chars")
+    if parse_check is not None:
+        if not callable(parse_check):
+            raise ValueError("parse_check must be callable")
+        parse_check(program)
     return program
 
 

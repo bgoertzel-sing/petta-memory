@@ -731,6 +731,18 @@ class PiPlnModelTests(unittest.TestCase):
         for sentence in compiled.sentences:
             self.assertEqual(program.count(sentence.atom), 1)
 
+        checked_programs = []
+        checked = assemble_legacy_kernel_query_program(
+            **kwargs, parse_check=checked_programs.append
+        )
+        self.assertEqual(checked_programs, [checked])
+
+        def reject_program(_: str) -> None:
+            raise ValueError("local parser rejected assembled program")
+
+        with self.assertRaisesRegex(ValueError, "local parser rejected"):
+            assemble_legacy_kernel_query_program(**kwargs, parse_check=reject_program)
+
         invalid = (
             ({**kwargs, "query_term": "(eval dangerous)"}, "executable/control"),
             ({**kwargs, "query_term": "(Q   a)"}, "already be canonical"),
@@ -739,6 +751,7 @@ class PiPlnModelTests(unittest.TestCase):
             ({**kwargs, "task_queue_size": 100_001}, "bounded limit"),
             ({**kwargs, "belief_queue_size": 100_001}, "bounded limit"),
             ({**kwargs, "max_program_chars": 5}, "exceeds max_program_chars"),
+            ({**kwargs, "parse_check": "not-callable"}, "must be callable"),
         )
         for arguments, message in invalid:
             with self.subTest(arguments=arguments), self.assertRaisesRegex(ValueError, message):
