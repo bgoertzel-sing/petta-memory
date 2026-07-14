@@ -14,6 +14,7 @@ import json
 import math
 import os
 from pathlib import Path
+import subprocess
 from typing import Callable, Iterable, Literal
 
 from .sexpr import SExpr, SExpressionSyntaxError, parse_one_list, symbol_text, to_source
@@ -29,6 +30,7 @@ DEFAULT_MAX_KERNEL_RESULT_CHARS = 65_536
 DEFAULT_MAX_EPISODE_PROGRAM_CHARS = 2_000_000
 DEFAULT_MAX_EPISODE_QUERY_STEPS = 10_000
 DEFAULT_MAX_EPISODE_QUEUE_SIZE = 100_000
+DEFAULT_MAX_KERNEL_CAPTURE_BYTES = 1_000_000
 _EXECUTABLE_TERM_HEADS = frozenset({
     "!", "bind!", "case", "collapse", "eval", "if", "import!", "include", "let", "let*",
     "match", "pragma!", "superpose",
@@ -590,6 +592,61 @@ def validate_exact_kernel_replay(
     if replayed.result_digest != expected.result_digest:
         raise ValueError("kernel replay result does not exactly match expected semantic result")
     return replayed
+
+
+@dataclass(frozen=True)
+class KernelProcessCapture:
+    """Bounded raw process result; it is not a validated PLN result."""
+
+    argv: tuple[str, ...]
+    return_code: int
+    stdout: str
+    stderr: str
+
+
+def run_kernel_subprocess(
+    program: str,
+    *,
+    argv: Iterable[str],
+    timeout_ms: int,
+    max_capture_bytes: int = DEFAULT_MAX_KERNEL_CAPTURE_BYTES,
+    cwd: str | os.PathLike[str] | None = None,
+) -> KernelProcessCapture:
+    """Run one already-assembled program through a bounded shell-free process.
+
+    The program is supplied on stdin. Timeout, non-UTF-8 output, and output over
+    either per-stream byte ceiling fail closed. A successful capture still needs
+    result parsing, provenance closure, and manifest construction before use.
+    """
+    if not isinstance(program, str) or not program:
+        raise ValueError("program must be a non-empty string")
+    command = tuple(argv)
+    if not command or any(not isinstance(item, str) or not item for item in command):
+        raise ValueError("argv must contain non-empty strings")
+    _positive_int(timeout_ms, "timeout_ms")
+    _positive_int(max_capture_bytes, "max_capture_bytes")
+    try:
+        completed = subprocess.run(
+            command,
+            input=program.encode("utf-8"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=cwd,
+            shell=False,
+            timeout=timeout_ms / 1000,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise ValueError("kernel subprocess exceeded timeout_ms") from error
+    for name, content in (("stdout", completed.stdout), ("stderr", completed.stderr)):
+        if len(content) > max_capture_bytes:
+            raise ValueError(f"kernel subprocess {name} exceeded max_capture_bytes")
+    try:
+        stdout = completed.stdout.decode("utf-8", errors="strict")
+        stderr = completed.stderr.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as error:
+        raise ValueError("kernel subprocess output must be valid UTF-8") from error
+    return KernelProcessCapture(command, completed.returncode, stdout, stderr)
 
 
 def _episode_manifest_payload(

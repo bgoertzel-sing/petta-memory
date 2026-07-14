@@ -1,6 +1,7 @@
 import math
 import json
 import tempfile
+import sys
 import unittest
 from dataclasses import FrozenInstanceError
 from hashlib import sha256
@@ -15,6 +16,7 @@ from petta_memory.pipln_models import (
     EvidenceSnapshotRepository,
     EvidenceToken,
     EpisodeBudget,
+    KernelProcessCapture,
     ChartPolicy,
     PiContext,
     build_pi_chart,
@@ -35,6 +37,7 @@ from petta_memory.pipln_models import (
     read_evidence_snapshot,
     read_episode_manifest,
     read_validated_kernel_result,
+    run_kernel_subprocess,
     validate_exact_kernel_replay,
     validate_kernel_result,
     validated_kernel_result_document,
@@ -66,6 +69,29 @@ class PiPlnModelTests(unittest.TestCase):
         self.assertEqual(len(packet.provenance_digest), 64)
         with self.assertRaises(FrozenInstanceError):
             packet.status = "RETRACTED"
+
+    def test_kernel_subprocess_is_shell_free_and_captures_bounded_output(self):
+        capture = run_kernel_subprocess(
+            "(PLN.Query)",
+            argv=(sys.executable, "-c", "import sys; data=sys.stdin.read(); print(data); print('audit', file=sys.stderr)"),
+            timeout_ms=1000,
+            max_capture_bytes=100,
+        )
+        self.assertIsInstance(capture, KernelProcessCapture)
+        self.assertEqual(capture.return_code, 0)
+        self.assertEqual(capture.stdout, "(PLN.Query)\n")
+        self.assertEqual(capture.stderr, "audit\n")
+
+    def test_kernel_subprocess_fails_closed_on_timeout_or_capture_overflow(self):
+        with self.assertRaisesRegex(ValueError, "timeout"):
+            run_kernel_subprocess(
+                "program", argv=(sys.executable, "-c", "import time; time.sleep(1)"), timeout_ms=10,
+            )
+        with self.assertRaisesRegex(ValueError, "stdout"):
+            run_kernel_subprocess(
+                "program", argv=(sys.executable, "-c", "print('x' * 20)"),
+                timeout_ms=1000, max_capture_bytes=10,
+            )
 
     def test_packet_rejects_unsorted_duplicate_tokens_and_nonfinite_counts(self):
         common = dict(id="p", statement="(S x)", context_id="c", negative_delta=0, source_reliability=1,
