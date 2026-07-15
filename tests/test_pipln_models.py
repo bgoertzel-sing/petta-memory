@@ -2,6 +2,7 @@ import math
 import json
 import tempfile
 import sys
+import time
 import unittest
 from dataclasses import FrozenInstanceError
 from hashlib import sha256
@@ -112,6 +113,19 @@ class PiPlnModelTests(unittest.TestCase):
                 timeout_ms=1000, max_capture_bytes=10,
             )
         self.assertFalse(marker.exists())
+
+    def test_kernel_subprocess_closes_inherited_descendant_pipes(self):
+        script = (
+            "import subprocess, sys; "
+            "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(5)']); "
+            "print('parent complete')"
+        )
+        started = time.monotonic()
+        capture = run_kernel_subprocess(
+            "program", argv=(sys.executable, "-c", script), timeout_ms=1000,
+        )
+        self.assertLess(time.monotonic() - started, 2)
+        self.assertEqual(capture.stdout, "parent complete\n")
 
     def test_kernel_subprocess_bounds_program_by_encoded_bytes_before_launch(self):
         marker = Path(tempfile.gettempdir()) / "petta-memory-runner-must-not-launch"

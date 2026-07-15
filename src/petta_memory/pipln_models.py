@@ -14,6 +14,7 @@ import json
 import math
 import os
 from pathlib import Path
+import signal
 import subprocess
 import threading
 from typing import Callable, Iterable, Literal, Mapping
@@ -700,9 +701,16 @@ def run_kernel_subprocess(
         cwd=normalized_cwd,
         env=normalized_env,
         shell=False,
+        start_new_session=True,
     )
     captures: dict[str, bytes] = {}
     overflow: list[str] = []
+
+    def kill_process_tree() -> None:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
     def bounded_read(name: str, stream: object) -> None:
         chunks: list[bytes] = []
@@ -715,7 +723,7 @@ def run_kernel_subprocess(
             size += len(chunk)
             if size > max_capture_bytes:
                 overflow.append(name)
-                process.kill()
+                kill_process_tree()
                 break
         captures[name] = b"".join(chunks)
 
@@ -740,10 +748,13 @@ def run_kernel_subprocess(
     try:
         process.wait(timeout=timeout_ms / 1000)
     except subprocess.TimeoutExpired as error:
-        process.kill()
+        kill_process_tree()
         process.wait()
         raise ValueError("kernel subprocess exceeded timeout_ms") from error
     finally:
+        # A kernel must not extend the capture lifetime by leaving descendants
+        # holding inherited stdout/stderr pipes after its direct process exits.
+        kill_process_tree()
         writer.join()
         for reader in readers:
             reader.join()
