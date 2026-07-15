@@ -114,6 +114,19 @@ class PiPlnModelTests(unittest.TestCase):
             )
         self.assertFalse(marker.exists())
 
+    def test_kernel_subprocess_requires_complete_program_delivery(self):
+        with self.assertRaisesRegex(ValueError, "complete program delivery"):
+            run_kernel_subprocess(
+                "x" * 1_000_000,
+                argv=(
+                    sys.executable,
+                    "-c",
+                    "import os, sys; os.close(0); print('not-admitted'); sys.stdout.flush()",
+                ),
+                timeout_ms=1000,
+                max_program_bytes=1_000_000,
+            )
+
     def test_kernel_subprocess_closes_inherited_descendant_pipes(self):
         script = (
             "import subprocess, sys; "

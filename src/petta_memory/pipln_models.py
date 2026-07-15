@@ -705,6 +705,7 @@ def run_kernel_subprocess(
     )
     captures: dict[str, bytes] = {}
     overflow: list[str] = []
+    stdin_errors: list[BaseException] = []
 
     def kill_process_tree() -> None:
         try:
@@ -736,10 +737,14 @@ def run_kernel_subprocess(
         assert process.stdin is not None
         try:
             process.stdin.write(encoded_program)
-        except BrokenPipeError:
-            pass
+            process.stdin.flush()
+        except (BrokenPipeError, OSError) as error:
+            stdin_errors.append(error)
         finally:
-            process.stdin.close()
+            try:
+                process.stdin.close()
+            except (BrokenPipeError, OSError) as error:
+                stdin_errors.append(error)
 
     writer = threading.Thread(target=write_program, daemon=True)
     for reader in readers:
@@ -763,6 +768,8 @@ def run_kernel_subprocess(
         process.stderr.close()
     if overflow:
         raise ValueError(f"kernel subprocess {overflow[0]} exceeded max_capture_bytes")
+    if stdin_errors:
+        raise ValueError("kernel subprocess closed stdin before complete program delivery") from stdin_errors[0]
     stdout_bytes = captures["stdout"]
     stderr_bytes = captures["stderr"]
     try:
