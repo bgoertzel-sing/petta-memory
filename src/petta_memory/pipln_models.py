@@ -611,6 +611,7 @@ def run_kernel_subprocess(
     timeout_ms: int,
     max_program_bytes: int = DEFAULT_MAX_EPISODE_PROGRAM_CHARS,
     max_argv_bytes: int = 16_384,
+    max_cwd_bytes: int = 4_096,
     max_capture_bytes: int = DEFAULT_MAX_KERNEL_CAPTURE_BYTES,
     cwd: str | os.PathLike[str] | None = None,
 ) -> KernelProcessCapture:
@@ -634,6 +635,19 @@ def run_kernel_subprocess(
         raise ValueError("argv must not contain NUL bytes")
     if sum(len(item.encode("utf-8")) for item in command) > max_argv_bytes:
         raise ValueError("argv exceeds max_argv_bytes")
+    _positive_int(max_cwd_bytes, "max_cwd_bytes")
+    normalized_cwd: str | None = None
+    if cwd is not None:
+        try:
+            normalized_cwd = os.fspath(cwd)
+        except TypeError as error:
+            raise ValueError("cwd must be a string or path-like value") from error
+        if not isinstance(normalized_cwd, str) or not normalized_cwd:
+            raise ValueError("cwd must be a non-empty string or path-like value")
+        if "\0" in normalized_cwd:
+            raise ValueError("cwd must not contain NUL bytes")
+        if len(normalized_cwd.encode("utf-8")) > max_cwd_bytes:
+            raise ValueError("cwd exceeds max_cwd_bytes")
     _positive_int(timeout_ms, "timeout_ms")
     _positive_int(max_capture_bytes, "max_capture_bytes")
     try:
@@ -642,7 +656,7 @@ def run_kernel_subprocess(
             input=encoded_program,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            cwd=cwd,
+            cwd=normalized_cwd,
             shell=False,
             timeout=timeout_ms / 1000,
             check=False,

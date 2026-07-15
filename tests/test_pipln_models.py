@@ -131,6 +131,28 @@ class PiPlnModelTests(unittest.TestCase):
                 timeout_ms=1000, max_argv_bytes=0,
             )
 
+    def test_kernel_subprocess_bounds_cwd_by_encoded_bytes_before_launch(self):
+        marker = Path(tempfile.gettempdir()) / "petta-memory-cwd-must-not-launch"
+        marker.unlink(missing_ok=True)
+        launch = f"from pathlib import Path; Path({str(marker)!r}).touch()"
+        with self.assertRaisesRegex(ValueError, "max_cwd_bytes"):
+            run_kernel_subprocess(
+                "program", argv=(sys.executable, "-c", launch), timeout_ms=1000,
+                cwd="é", max_cwd_bytes=1,
+            )
+        self.assertFalse(marker.exists())
+        with self.assertRaisesRegex(ValueError, "NUL"):
+            run_kernel_subprocess(
+                "program", argv=(sys.executable, "-c", launch), timeout_ms=1000,
+                cwd="bad\0cwd",
+            )
+        self.assertFalse(marker.exists())
+        with self.assertRaisesRegex(ValueError, "positive integer"):
+            run_kernel_subprocess(
+                "program", argv=(sys.executable, "-c", "pass"), timeout_ms=1000,
+                max_cwd_bytes=0,
+            )
+
     def test_packet_rejects_unsorted_duplicate_tokens_and_nonfinite_counts(self):
         common = dict(id="p", statement="(S x)", context_id="c", negative_delta=0, source_reliability=1,
                       temporal_relevance=1, status="ACTIVE", assumption_fingerprint="a",
