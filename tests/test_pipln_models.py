@@ -181,6 +181,36 @@ class PiPlnModelTests(unittest.TestCase):
         )
         self.assertEqual(capture.stdout, "isolated\n")
 
+    def test_kernel_subprocess_can_pin_executable_digest_before_launch(self):
+        executable_digest = sha256(Path(sys.executable).read_bytes()).hexdigest()
+        capture = run_kernel_subprocess(
+            "program", argv=(sys.executable, "-c", "print('pinned')"), timeout_ms=1000,
+            expected_executable_sha256=executable_digest,
+        )
+        self.assertEqual(capture.stdout, "pinned\n")
+
+        marker = Path(tempfile.gettempdir()) / "petta-memory-digest-must-not-launch"
+        marker.unlink(missing_ok=True)
+        launch = f"from pathlib import Path; Path({str(marker)!r}).touch()"
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            run_kernel_subprocess(
+                "program", argv=(sys.executable, "-c", launch), timeout_ms=1000,
+                expected_executable_sha256="0" * 64,
+            )
+        self.assertFalse(marker.exists())
+        for digest in ("A" * 64, "0" * 63, True):
+            with self.subTest(digest=digest), self.assertRaisesRegex(ValueError, "lowercase SHA-256"):
+                run_kernel_subprocess(
+                    "program", argv=(sys.executable, "-c", launch), timeout_ms=1000,
+                    expected_executable_sha256=digest,
+                )
+        with self.assertRaisesRegex(ValueError, "absolute regular file"):
+            run_kernel_subprocess(
+                "program", argv=("python3", "-c", launch), timeout_ms=1000,
+                expected_executable_sha256="0" * 64,
+            )
+        self.assertFalse(marker.exists())
+
     def test_packet_rejects_unsorted_duplicate_tokens_and_nonfinite_counts(self):
         common = dict(id="p", statement="(S x)", context_id="c", negative_delta=0, source_reliability=1,
                       temporal_relevance=1, status="ACTIVE", assumption_fingerprint="a",

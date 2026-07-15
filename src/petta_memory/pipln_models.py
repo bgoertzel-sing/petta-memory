@@ -616,6 +616,7 @@ def run_kernel_subprocess(
     max_capture_bytes: int = DEFAULT_MAX_KERNEL_CAPTURE_BYTES,
     cwd: str | os.PathLike[str] | None = None,
     env: Mapping[str, str] | None = None,
+    expected_executable_sha256: str | None = None,
 ) -> KernelProcessCapture:
     """Run one already-assembled program through a bounded shell-free process.
 
@@ -637,6 +638,23 @@ def run_kernel_subprocess(
         raise ValueError("argv must not contain NUL bytes")
     if sum(len(item.encode("utf-8")) for item in command) > max_argv_bytes:
         raise ValueError("argv exceeds max_argv_bytes")
+    if expected_executable_sha256 is not None:
+        if (not isinstance(expected_executable_sha256, str)
+                or len(expected_executable_sha256) != 64
+                or any(character not in "0123456789abcdef" for character in expected_executable_sha256)):
+            raise ValueError("expected_executable_sha256 must be a lowercase SHA-256 digest")
+        executable = Path(command[0])
+        if not executable.is_absolute() or not executable.is_file():
+            raise ValueError("pinned executable must name an absolute regular file")
+        digest = sha256()
+        try:
+            with executable.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        except OSError as error:
+            raise ValueError("pinned executable could not be read") from error
+        if digest.hexdigest() != expected_executable_sha256:
+            raise ValueError("kernel executable SHA-256 does not match expected_executable_sha256")
     _positive_int(max_cwd_bytes, "max_cwd_bytes")
     normalized_cwd: str | None = None
     if cwd is not None:
