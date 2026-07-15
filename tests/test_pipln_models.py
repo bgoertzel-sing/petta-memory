@@ -188,6 +188,7 @@ class PiPlnModelTests(unittest.TestCase):
             expected_executable_sha256=executable_digest,
         )
         self.assertEqual(capture.stdout, "pinned\n")
+        self.assertEqual(capture.argv[0], str(Path(sys.executable).resolve(strict=True)))
 
         marker = Path(tempfile.gettempdir()) / "petta-memory-digest-must-not-launch"
         marker.unlink(missing_ok=True)

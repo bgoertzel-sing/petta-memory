@@ -646,6 +646,11 @@ def run_kernel_subprocess(
         executable = Path(command[0])
         if not executable.is_absolute() or not executable.is_file():
             raise ValueError("pinned executable must name an absolute regular file")
+        try:
+            executable = executable.resolve(strict=True)
+        except OSError as error:
+            raise ValueError("pinned executable could not be resolved") from error
+        command = (str(executable), *command[1:])
         digest = sha256()
         try:
             with executable.open("rb") as stream:
