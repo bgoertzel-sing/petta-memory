@@ -638,7 +638,12 @@ def run_kernel_subprocess(
     _positive_int(max_argv_bytes, "max_argv_bytes")
     if any("\0" in item for item in command):
         raise ValueError("argv must not contain NUL bytes")
-    if sum(len(item.encode("utf-8")) for item in command) > max_argv_bytes:
+    # Account for the terminating NUL carried by each OS argv entry as well as
+    # the caller-visible UTF-8 payload.
+    def argv_size_bytes(items: tuple[str, ...]) -> int:
+        return sum(len(item.encode("utf-8")) + 1 for item in items)
+
+    if argv_size_bytes(command) > max_argv_bytes:
         raise ValueError("argv exceeds max_argv_bytes")
     if expected_executable_sha256 is not None:
         if (not isinstance(expected_executable_sha256, str)
@@ -653,6 +658,8 @@ def run_kernel_subprocess(
         except OSError as error:
             raise ValueError("pinned executable could not be resolved") from error
         command = (str(executable), *command[1:])
+        if argv_size_bytes(command) > max_argv_bytes:
+            raise ValueError("resolved argv exceeds max_argv_bytes")
         digest = sha256()
         try:
             with executable.open("rb") as stream:
@@ -673,7 +680,7 @@ def run_kernel_subprocess(
             raise ValueError("cwd must be a non-empty string or path-like value")
         if "\0" in normalized_cwd:
             raise ValueError("cwd must not contain NUL bytes")
-        if len(normalized_cwd.encode("utf-8")) > max_cwd_bytes:
+        if len(normalized_cwd.encode("utf-8")) + 1 > max_cwd_bytes:
             raise ValueError("cwd exceeds max_cwd_bytes")
     _positive_int(max_env_bytes, "max_env_bytes")
     normalized_env: dict[str, str] | None = None
@@ -687,7 +694,8 @@ def run_kernel_subprocess(
                 raise ValueError("env must map non-empty string keys to string values")
             if "\0" in key or "\0" in value or "=" in key:
                 raise ValueError("env keys and values must be valid process environment strings")
-            env_bytes += len(key.encode("utf-8")) + len(value.encode("utf-8"))
+            # The process environment serializes each entry as KEY=VALUE\0.
+            env_bytes += len(key.encode("utf-8")) + len(value.encode("utf-8")) + 2
             if env_bytes > max_env_bytes:
                 raise ValueError("env exceeds max_env_bytes")
             normalized_env[key] = value

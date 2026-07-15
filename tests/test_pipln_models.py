@@ -178,6 +178,17 @@ class PiPlnModelTests(unittest.TestCase):
                 timeout_ms=1000, max_argv_bytes=0,
             )
 
+        framing_marker = Path(tempfile.gettempdir()) / "petta-memory-argv-framing-must-not-launch"
+        framing_marker.unlink(missing_ok=True)
+        framing_launch = f"from pathlib import Path; Path({str(framing_marker)!r}).touch()"
+        payload_bytes = sum(len(item.encode("utf-8")) for item in (sys.executable, "-c", framing_launch))
+        with self.assertRaisesRegex(ValueError, "max_argv_bytes"):
+            run_kernel_subprocess(
+                "program", argv=(sys.executable, "-c", framing_launch), timeout_ms=1000,
+                max_argv_bytes=payload_bytes,
+            )
+        self.assertFalse(framing_marker.exists())
+
     def test_kernel_subprocess_bounds_cwd_by_encoded_bytes_before_launch(self):
         marker = Path(tempfile.gettempdir()) / "petta-memory-cwd-must-not-launch"
         marker.unlink(missing_ok=True)
@@ -199,6 +210,12 @@ class PiPlnModelTests(unittest.TestCase):
                 "program", argv=(sys.executable, "-c", "pass"), timeout_ms=1000,
                 max_cwd_bytes=0,
             )
+        with self.assertRaisesRegex(ValueError, "max_cwd_bytes"):
+            run_kernel_subprocess(
+                "program", argv=(sys.executable, "-c", launch), timeout_ms=1000,
+                cwd=".", max_cwd_bytes=1,
+            )
+        self.assertFalse(marker.exists())
 
     def test_kernel_subprocess_bounds_explicit_env_before_launch(self):
         marker = Path(tempfile.gettempdir()) / "petta-memory-env-must-not-launch"
@@ -221,6 +238,12 @@ class PiPlnModelTests(unittest.TestCase):
                 "program", argv=(sys.executable, "-c", "pass"), timeout_ms=1000,
                 max_env_bytes=0,
             )
+        with self.assertRaisesRegex(ValueError, "max_env_bytes"):
+            run_kernel_subprocess(
+                "program", argv=(sys.executable, "-c", launch), timeout_ms=1000,
+                env={"A": ""}, max_env_bytes=1,
+            )
+        self.assertFalse(marker.exists())
         capture = run_kernel_subprocess(
             "program",
             argv=(sys.executable, "-c", "import os; print(os.environ['KERNEL_MODE'])"),
@@ -257,6 +280,26 @@ class PiPlnModelTests(unittest.TestCase):
                 "program", argv=("python3", "-c", launch), timeout_ms=1000,
                 expected_executable_sha256="0" * 64,
             )
+        self.assertFalse(marker.exists())
+
+        with tempfile.TemporaryDirectory() as directory:
+            resolved_executable = Path(directory) / "a-deliberately-long-resolved-kernel-executable"
+            resolved_executable.write_bytes(b"not launched")
+            short_link = Path(directory) / "p"
+            short_link.symlink_to(resolved_executable)
+            unresolved_argv_bytes = sum(
+                len(item.encode("utf-8")) + 1 for item in (str(short_link), "-c", launch)
+            )
+            self.assertGreater(
+                len(str(resolved_executable).encode("utf-8")),
+                len(str(short_link).encode("utf-8")),
+            )
+            with self.assertRaisesRegex(ValueError, "resolved argv"):
+                run_kernel_subprocess(
+                    "program", argv=(str(short_link), "-c", launch), timeout_ms=1000,
+                    max_argv_bytes=unresolved_argv_bytes,
+                    expected_executable_sha256=sha256(b"not launched").hexdigest(),
+                )
         self.assertFalse(marker.exists())
 
     def test_packet_rejects_unsorted_duplicate_tokens_and_nonfinite_counts(self):
