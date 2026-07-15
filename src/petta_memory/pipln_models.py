@@ -610,6 +610,7 @@ def run_kernel_subprocess(
     argv: Iterable[str],
     timeout_ms: int,
     max_program_bytes: int = DEFAULT_MAX_EPISODE_PROGRAM_CHARS,
+    max_argv_bytes: int = 16_384,
     max_capture_bytes: int = DEFAULT_MAX_KERNEL_CAPTURE_BYTES,
     cwd: str | os.PathLike[str] | None = None,
 ) -> KernelProcessCapture:
@@ -628,6 +629,11 @@ def run_kernel_subprocess(
     command = tuple(argv)
     if not command or any(not isinstance(item, str) or not item for item in command):
         raise ValueError("argv must contain non-empty strings")
+    _positive_int(max_argv_bytes, "max_argv_bytes")
+    if any("\0" in item for item in command):
+        raise ValueError("argv must not contain NUL bytes")
+    if sum(len(item.encode("utf-8")) for item in command) > max_argv_bytes:
+        raise ValueError("argv exceeds max_argv_bytes")
     _positive_int(timeout_ms, "timeout_ms")
     _positive_int(max_capture_bytes, "max_capture_bytes")
     try:
