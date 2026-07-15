@@ -41,6 +41,7 @@ from petta_memory.pipln_models import (
     read_validated_kernel_result,
     run_kernel_subprocess,
     validate_exact_kernel_replay,
+    validate_kernel_capture_result,
     validate_kernel_result,
     validate_phase0_reference_artifact,
     validate_phase0_reference_replay,
@@ -979,6 +980,41 @@ class PiPlnModelTests(unittest.TestCase):
                                                 packets=packets, bases=bases)
         with self.assertRaisesRegex(ValueError, "compiled episode"):
             validate_exact_kernel_replay("((stv 0.5 0.75) (0 1))", expected=expected, compiled=other_compiled)
+
+    def test_kernel_capture_result_closes_process_output_and_episode_provenance(self):
+        packet = EvidencePacket("p1", "(S a)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")
+        token = EvidenceToken("t1", "sensor", "s1", "ctx", "observed", "minted")
+        snapshot = build_evidence_snapshot(snapshot_id="snapshot", packets=[packet], context_id="ctx",
+                                           assumption_fingerprint="a1", ontology_fingerprint="o1", created_at="now")
+        context = PiContext("ctx", "lang", "world", "guard", "guard-v1", "query", "assumptions",
+                            "ontology", "ontology-v1", "weak-v1", "relevance-v1")
+        chart = build_pi_chart(
+            chart_id="chart", context=context, prior_strength_p0=0.5, prior_weight_k=2,
+            prior_provenance="review", policy=ChartPolicy("factor", "projection", "kernel", "rules", "v1", "v1"),
+            selected_packet_ids=["p1"], evidence_snapshot=snapshot, adequacy_certificate_id="adequacy",
+        )
+        basis = evidence_basis_from_packet(packet, [token], independence_status="PROVEN_DISJOINT",
+                                           justification_cid="review:basis")
+        compiled = compile_episode_inputs(episode_id="episode", chart=chart, evidence_snapshot=snapshot,
+                                          packets=[packet], bases=[basis])
+        result_atom = "((stv 0.75 0.5) (0))"
+        capture = KernelProcessCapture(("/kernel",), 0, f"trace\n{result_atom}\n", "")
+        result = validate_kernel_capture_result(
+            capture, result_atom=result_atom, query_term="(Q a)", compiled=compiled,
+        )
+        self.assertEqual(result.stamp_ints, (0,))
+        self.assertEqual(result.evidence_basis_ids, (basis.basis_id,))
+
+        invalid = (
+            (KernelProcessCapture(("/kernel",), 1, result_atom, ""), result_atom, "exit successfully"),
+            (KernelProcessCapture(("/kernel",), 0, result_atom, "warning"), result_atom, "unexpected stderr"),
+            (KernelProcessCapture(("/kernel",), 0, "other output", ""), result_atom, "not present verbatim"),
+        )
+        for bad_capture, bad_atom, message in invalid:
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
+                validate_kernel_capture_result(
+                    bad_capture, result_atom=bad_atom, query_term="(Q a)", compiled=compiled,
+                )
 
     def test_episode_manifest_closes_program_result_and_runtime_audit_identity(self):
         packet = EvidencePacket("p1", "(S a)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")

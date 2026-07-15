@@ -726,6 +726,39 @@ class KernelProcessCapture:
     stderr: str
 
 
+def validate_kernel_capture_result(
+    capture: KernelProcessCapture,
+    *,
+    result_atom: str,
+    query_term: str,
+    compiled: CompiledEpisodeInputs,
+    max_result_chars: int = DEFAULT_MAX_KERNEL_RESULT_CHARS,
+) -> ValidatedKernelResult:
+    """Admit one result atom as originating in a successful raw capture.
+
+    The result atom must occur verbatim in bounded stdout, after which the
+    normal typed result validator closes its stamps against the immutable
+    episode inputs.  This is a non-promoting process/result boundary; callers
+    must still construct and persist an ``EpisodeManifest`` separately.
+    """
+    if not isinstance(capture, KernelProcessCapture):
+        raise ValueError("capture must be a bounded kernel process capture")
+    if capture.return_code != 0:
+        raise ValueError("kernel process did not exit successfully")
+    if capture.stderr:
+        raise ValueError("kernel process emitted unexpected stderr")
+    if not isinstance(result_atom, str) or not result_atom:
+        raise ValueError("result_atom must be a non-empty string")
+    if result_atom not in capture.stdout:
+        raise ValueError("kernel result atom is not present verbatim in captured stdout")
+    return validate_kernel_result(
+        result_atom,
+        query_term=query_term,
+        compiled=compiled,
+        max_result_chars=max_result_chars,
+    )
+
+
 def validate_phase0_reference_replay(
     reference: Phase0ReferenceArtifact,
     capture: KernelProcessCapture,
