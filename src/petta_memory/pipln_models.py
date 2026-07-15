@@ -116,6 +116,126 @@ def _timestamp(value: str, field: str) -> datetime:
 
 
 @dataclass(frozen=True)
+class Phase0ReferenceArtifact:
+    """Validated identity of one frozen stock-kernel reference episode."""
+
+    example_name: str
+    source_sha256: str
+    runtime_executable_sha256: str
+    kernel_commit: str
+    semantic_result: str
+    query_target: str
+    output_sha256: str
+    output_bytes: int
+
+
+def validate_phase0_reference_artifact(
+    manifest_path: str | Path, *, source_path: str | Path,
+) -> Phase0ReferenceArtifact:
+    """Admit a frozen reference only after its local content closes exactly.
+
+    This validates a replay anchor; it does not launch the recorded runtime or
+    imply that the semantic result may be promoted into memory.
+    """
+    path = Path(manifest_path)
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError("invalid Phase-0 reference manifest") from error
+    if not isinstance(document, dict) or document.get("schema") != "petta-memory-phase0-reference-artifact-v1":
+        raise ValueError("invalid Phase-0 reference manifest schema")
+
+    def record(name: str) -> dict[str, object]:
+        value = document.get(name)
+        if not isinstance(value, dict):
+            raise ValueError(f"Phase-0 reference {name} must be an object")
+        return value
+
+    determinism = record("determinism")
+    example = record("example")
+    runtime = record("runtime")
+    repositories = record("repositories")
+    result = record("result")
+    boundaries = record("boundaries")
+    patham9 = repositories.get("patham9-pln")
+    if not isinstance(patham9, dict):
+        raise ValueError("Phase-0 reference must identify patham9-pln")
+
+    digest_fields = {
+        "source_sha256": example.get("source_sha256"),
+        "runtime_executable_sha256": runtime.get("metta_binary_sha256"),
+        "run1_sha256": determinism.get("run1_sha256"),
+        "run2_sha256": determinism.get("run2_sha256"),
+        "output_sha256": result.get("output_sha256"),
+    }
+    for field, value in digest_fields.items():
+        _sha256_digest(value, f"Phase-0 reference {field}")
+    output_digest = digest_fields["output_sha256"]
+    if determinism.get("identical") is not True or {
+        digest_fields["run1_sha256"], digest_fields["run2_sha256"], output_digest,
+    } != {output_digest}:
+        raise ValueError("Phase-0 reference determinism hashes do not close")
+
+    output_name = result.get("output_file")
+    if not isinstance(output_name, str) or not output_name or Path(output_name).name != output_name:
+        raise ValueError("Phase-0 reference output_file must be one local filename")
+    try:
+        output = (path.parent / output_name).read_bytes()
+        source = Path(source_path).read_bytes()
+    except OSError as error:
+        raise ValueError("Phase-0 reference content file is unavailable") from error
+    if sha256(output).hexdigest() != output_digest:
+        raise ValueError("Phase-0 reference output checksum mismatch")
+    output_bytes = result.get("output_bytes")
+    if isinstance(output_bytes, bool) or not isinstance(output_bytes, int) or output_bytes < 1:
+        raise ValueError("Phase-0 reference output_bytes must be a positive integer")
+    if len(output) != output_bytes:
+        raise ValueError("Phase-0 reference output byte count mismatch")
+    if sha256(source).hexdigest() != digest_fields["source_sha256"]:
+        raise ValueError("Phase-0 reference source checksum mismatch")
+
+    semantic_result = result.get("semantic_result")
+    query_target = result.get("query_target")
+    if not isinstance(semantic_result, str) or not semantic_result:
+        raise ValueError("Phase-0 reference semantic_result must be non-empty")
+    if not isinstance(query_target, str) or _canonical_kernel_term(query_target) != query_target:
+        raise ValueError("Phase-0 reference query_target must be canonical declarative data")
+    try:
+        output_text = output.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError("Phase-0 reference output must be valid UTF-8") from error
+    if result.get("passed") is not True or result.get("passed_marker") != "#t":
+        raise ValueError("Phase-0 reference must record one passing semantic marker")
+    if semantic_result not in output_text or "(Passed: #t)" not in output_text:
+        raise ValueError("Phase-0 reference semantic result is not present in output")
+    for field in (
+        "no_memory_write", "no_inferred_belief_promotion",
+        "no_live_omegaclaw_goalchainer_integration", "no_pettachainer_compileadd",
+    ):
+        if boundaries.get(field) is not True:
+            raise ValueError(f"Phase-0 reference boundary {field} must be true")
+
+    kernel_commit = patham9.get("commit")
+    if not isinstance(kernel_commit, str) or len(kernel_commit) != 40 or any(
+        character not in "0123456789abcdef" for character in kernel_commit
+    ):
+        raise ValueError("Phase-0 reference patham9 commit must be a full lowercase Git commit")
+    example_name = example.get("name")
+    if not isinstance(example_name, str) or not example_name:
+        raise ValueError("Phase-0 reference example name must be non-empty")
+    return Phase0ReferenceArtifact(
+        example_name=example_name,
+        source_sha256=digest_fields["source_sha256"],
+        runtime_executable_sha256=digest_fields["runtime_executable_sha256"],
+        kernel_commit=kernel_commit,
+        semantic_result=semantic_result,
+        query_target=query_target,
+        output_sha256=output_digest,
+        output_bytes=output_bytes,
+    )
+
+
+@dataclass(frozen=True)
 class EvidenceToken:
     id: str
     namespace: str

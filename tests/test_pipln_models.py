@@ -41,6 +41,7 @@ from petta_memory.pipln_models import (
     run_kernel_subprocess,
     validate_exact_kernel_replay,
     validate_kernel_result,
+    validate_phase0_reference_artifact,
     validated_kernel_result_document,
     write_compiled_episode_inputs,
     write_evidence_snapshot,
@@ -63,6 +64,60 @@ class PiPlnModelTests(unittest.TestCase):
             snapshot_id=snapshot_id, packets=packets, context_id=context_id,
             assumption_fingerprint="a1", ontology_fingerprint="o1", created_at="now",
         )
+
+    def test_phase0_reference_artifact_closes_frozen_content_and_boundaries(self):
+        source = b"(Sentence (Reference fact) (stv 1 1) (0))\n"
+        semantic_result = "((stv 0.5 0.75) (0))"
+        output = f"[{semantic_result}]\n[((Passed: #t))]\n".encode()
+        source_digest = sha256(source).hexdigest()
+        output_digest = sha256(output).hexdigest()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_path = root / "Smokes.metta"
+            output_path = root / "smokes_output.txt"
+            manifest_path = root / "reference_manifest.json"
+            source_path.write_bytes(source)
+            output_path.write_bytes(output)
+            manifest = {
+                "schema": "petta-memory-phase0-reference-artifact-v1",
+                "determinism": {
+                    "run1_sha256": output_digest,
+                    "run2_sha256": output_digest,
+                    "identical": True,
+                },
+                "example": {"name": "Smokes", "source_sha256": source_digest},
+                "runtime": {"metta_binary_sha256": "a" * 64},
+                "repositories": {"patham9-pln": {"commit": "b" * 40}},
+                "result": {
+                    "passed": True,
+                    "semantic_result": semantic_result,
+                    "query_target": "(Evaluation (Predicate cancerous) (List (Concept Edward)))",
+                    "passed_marker": "#t",
+                    "output_sha256": output_digest,
+                    "output_bytes": len(output),
+                    "output_file": output_path.name,
+                },
+                "boundaries": {
+                    "no_memory_write": True,
+                    "no_inferred_belief_promotion": True,
+                    "no_live_omegaclaw_goalchainer_integration": True,
+                    "no_pettachainer_compileadd": True,
+                },
+            }
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            admitted = validate_phase0_reference_artifact(manifest_path, source_path=source_path)
+            self.assertEqual(admitted.semantic_result, semantic_result)
+            self.assertEqual(admitted.output_sha256, output_digest)
+            self.assertEqual(admitted.runtime_executable_sha256, "a" * 64)
+
+            output_path.write_bytes(output + b"tampered")
+            with self.assertRaisesRegex(ValueError, "output checksum"):
+                validate_phase0_reference_artifact(manifest_path, source_path=source_path)
+            output_path.write_bytes(output)
+            manifest["boundaries"]["no_memory_write"] = False
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "no_memory_write"):
+                validate_phase0_reference_artifact(manifest_path, source_path=source_path)
 
     def test_token_and_packet_are_immutable_and_packet_digest_is_stable(self):
         token = EvidenceToken("t1", "sensor", "s1", "c1", "2026-07-11T00:00:00Z", "2026-07-11T00:00:01Z")
