@@ -726,6 +726,34 @@ class KernelProcessCapture:
     stderr: str
 
 
+def validate_phase0_reference_replay(
+    reference: Phase0ReferenceArtifact,
+    capture: KernelProcessCapture,
+) -> KernelProcessCapture:
+    """Close one fresh bounded capture against an admitted Phase-0 anchor.
+
+    This gate requires successful execution and byte-exact stdout replay.  It
+    does not construct a Phase-2 episode, infer rule identity, or authorize a
+    belief promotion or memory write.
+    """
+    if not isinstance(reference, Phase0ReferenceArtifact):
+        raise ValueError("reference must be an admitted Phase-0 artifact")
+    if not isinstance(capture, KernelProcessCapture):
+        raise ValueError("capture must be a bounded kernel process capture")
+    if capture.return_code != 0:
+        raise ValueError("Phase-0 reference replay process did not exit successfully")
+    if capture.stderr:
+        raise ValueError("Phase-0 reference replay emitted unexpected stderr")
+    stdout = capture.stdout.encode("utf-8")
+    if len(stdout) != reference.output_bytes:
+        raise ValueError("Phase-0 reference replay output byte count mismatch")
+    if sha256(stdout).hexdigest() != reference.output_sha256:
+        raise ValueError("Phase-0 reference replay output checksum mismatch")
+    if reference.semantic_result not in capture.stdout or "(Passed: #t)" not in capture.stdout:
+        raise ValueError("Phase-0 reference replay semantic markers are missing")
+    return capture
+
+
 def run_kernel_subprocess(
     program: str,
     *,

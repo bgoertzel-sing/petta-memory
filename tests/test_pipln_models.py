@@ -18,6 +18,7 @@ from petta_memory.pipln_models import (
     EvidenceToken,
     EpisodeBudget,
     KernelProcessCapture,
+    Phase0ReferenceArtifact,
     ChartPolicy,
     PiContext,
     build_pi_chart,
@@ -42,6 +43,7 @@ from petta_memory.pipln_models import (
     validate_exact_kernel_replay,
     validate_kernel_result,
     validate_phase0_reference_artifact,
+    validate_phase0_reference_replay,
     validated_kernel_result_document,
     write_compiled_episode_inputs,
     write_evidence_snapshot,
@@ -118,6 +120,30 @@ class PiPlnModelTests(unittest.TestCase):
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "no_memory_write"):
                 validate_phase0_reference_artifact(manifest_path, source_path=source_path)
+
+    def test_phase0_reference_replay_requires_exact_successful_capture(self):
+        semantic_result = "((stv 0.5 0.75) (0))"
+        stdout = f"[{semantic_result}]\n[((Passed: #t))]\n"
+        reference = Phase0ReferenceArtifact(
+            example_name="Reference",
+            source_sha256="a" * 64,
+            runtime_executable_sha256="b" * 64,
+            kernel_commit="c" * 40,
+            semantic_result=semantic_result,
+            query_target="(Reference fact)",
+            output_sha256=sha256(stdout.encode()).hexdigest(),
+            output_bytes=len(stdout.encode()),
+        )
+        capture = KernelProcessCapture(("/runtime", "Reference.metta"), 0, stdout, "")
+        self.assertIs(validate_phase0_reference_replay(reference, capture), capture)
+
+        for bad_capture, message in (
+            (KernelProcessCapture(capture.argv, 1, stdout, ""), "exit successfully"),
+            (KernelProcessCapture(capture.argv, 0, stdout, "warning"), "stderr"),
+            (KernelProcessCapture(capture.argv, 0, stdout + "x", ""), "byte count"),
+        ):
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
+                validate_phase0_reference_replay(reference, bad_capture)
 
     def test_token_and_packet_are_immutable_and_packet_digest_is_stable(self):
         token = EvidenceToken("t1", "sensor", "s1", "c1", "2026-07-11T00:00:00Z", "2026-07-11T00:00:01Z")
