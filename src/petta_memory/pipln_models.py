@@ -15,7 +15,7 @@ import math
 import os
 from pathlib import Path
 import subprocess
-from typing import Callable, Iterable, Literal
+from typing import Callable, Iterable, Literal, Mapping
 
 from .sexpr import SExpr, SExpressionSyntaxError, parse_one_list, symbol_text, to_source
 
@@ -612,8 +612,10 @@ def run_kernel_subprocess(
     max_program_bytes: int = DEFAULT_MAX_EPISODE_PROGRAM_CHARS,
     max_argv_bytes: int = 16_384,
     max_cwd_bytes: int = 4_096,
+    max_env_bytes: int = 65_536,
     max_capture_bytes: int = DEFAULT_MAX_KERNEL_CAPTURE_BYTES,
     cwd: str | os.PathLike[str] | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> KernelProcessCapture:
     """Run one already-assembled program through a bounded shell-free process.
 
@@ -648,6 +650,22 @@ def run_kernel_subprocess(
             raise ValueError("cwd must not contain NUL bytes")
         if len(normalized_cwd.encode("utf-8")) > max_cwd_bytes:
             raise ValueError("cwd exceeds max_cwd_bytes")
+    _positive_int(max_env_bytes, "max_env_bytes")
+    normalized_env: dict[str, str] | None = None
+    if env is not None:
+        if not isinstance(env, Mapping):
+            raise ValueError("env must be a mapping of strings")
+        normalized_env = {}
+        env_bytes = 0
+        for key, value in env.items():
+            if not isinstance(key, str) or not key or not isinstance(value, str):
+                raise ValueError("env must map non-empty string keys to string values")
+            if "\0" in key or "\0" in value or "=" in key:
+                raise ValueError("env keys and values must be valid process environment strings")
+            env_bytes += len(key.encode("utf-8")) + len(value.encode("utf-8"))
+            if env_bytes > max_env_bytes:
+                raise ValueError("env exceeds max_env_bytes")
+            normalized_env[key] = value
     _positive_int(timeout_ms, "timeout_ms")
     _positive_int(max_capture_bytes, "max_capture_bytes")
     try:
@@ -657,6 +675,7 @@ def run_kernel_subprocess(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             cwd=normalized_cwd,
+            env=normalized_env,
             shell=False,
             timeout=timeout_ms / 1000,
             check=False,

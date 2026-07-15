@@ -153,6 +153,34 @@ class PiPlnModelTests(unittest.TestCase):
                 max_cwd_bytes=0,
             )
 
+    def test_kernel_subprocess_bounds_explicit_env_before_launch(self):
+        marker = Path(tempfile.gettempdir()) / "petta-memory-env-must-not-launch"
+        marker.unlink(missing_ok=True)
+        launch = f"from pathlib import Path; Path({str(marker)!r}).touch()"
+        with self.assertRaisesRegex(ValueError, "max_env_bytes"):
+            run_kernel_subprocess(
+                "program", argv=(sys.executable, "-c", launch), timeout_ms=1000,
+                env={"MODE": "é"}, max_env_bytes=5,
+            )
+        self.assertFalse(marker.exists())
+        for env in ({"BAD\0KEY": "x"}, {"BAD=KEY": "x"}, {"KEY": "bad\0value"}):
+            with self.subTest(env=env), self.assertRaisesRegex(ValueError, "environment strings"):
+                run_kernel_subprocess(
+                    "program", argv=(sys.executable, "-c", launch), timeout_ms=1000, env=env,
+                )
+        self.assertFalse(marker.exists())
+        with self.assertRaisesRegex(ValueError, "positive integer"):
+            run_kernel_subprocess(
+                "program", argv=(sys.executable, "-c", "pass"), timeout_ms=1000,
+                max_env_bytes=0,
+            )
+        capture = run_kernel_subprocess(
+            "program",
+            argv=(sys.executable, "-c", "import os; print(os.environ['KERNEL_MODE'])"),
+            timeout_ms=1000, env={"KERNEL_MODE": "isolated"},
+        )
+        self.assertEqual(capture.stdout, "isolated\n")
+
     def test_packet_rejects_unsorted_duplicate_tokens_and_nonfinite_counts(self):
         common = dict(id="p", statement="(S x)", context_id="c", negative_delta=0, source_reliability=1,
                       temporal_relevance=1, status="ACTIVE", assumption_fingerprint="a",
