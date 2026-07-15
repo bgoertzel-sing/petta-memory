@@ -15,6 +15,7 @@ import math
 import os
 from pathlib import Path
 import subprocess
+import threading
 from typing import Callable, Iterable, Literal, Mapping
 
 from .sexpr import SExpr, SExpressionSyntaxError, parse_one_list, symbol_text, to_source
@@ -691,29 +692,74 @@ def run_kernel_subprocess(
             normalized_env[key] = value
     _positive_int(timeout_ms, "timeout_ms")
     _positive_int(max_capture_bytes, "max_capture_bytes")
+    process = subprocess.Popen(
+        command,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        cwd=normalized_cwd,
+        env=normalized_env,
+        shell=False,
+    )
+    captures: dict[str, bytes] = {}
+    overflow: list[str] = []
+
+    def bounded_read(name: str, stream: object) -> None:
+        chunks: list[bytes] = []
+        size = 0
+        while True:
+            chunk = stream.read(min(65_536, max_capture_bytes + 1 - size))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            size += len(chunk)
+            if size > max_capture_bytes:
+                overflow.append(name)
+                process.kill()
+                break
+        captures[name] = b"".join(chunks)
+
+    readers = [
+        threading.Thread(target=bounded_read, args=("stdout", process.stdout), daemon=True),
+        threading.Thread(target=bounded_read, args=("stderr", process.stderr), daemon=True),
+    ]
+
+    def write_program() -> None:
+        assert process.stdin is not None
+        try:
+            process.stdin.write(encoded_program)
+        except BrokenPipeError:
+            pass
+        finally:
+            process.stdin.close()
+
+    writer = threading.Thread(target=write_program, daemon=True)
+    for reader in readers:
+        reader.start()
+    writer.start()
     try:
-        completed = subprocess.run(
-            command,
-            input=encoded_program,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            cwd=normalized_cwd,
-            env=normalized_env,
-            shell=False,
-            timeout=timeout_ms / 1000,
-            check=False,
-        )
+        process.wait(timeout=timeout_ms / 1000)
     except subprocess.TimeoutExpired as error:
+        process.kill()
+        process.wait()
         raise ValueError("kernel subprocess exceeded timeout_ms") from error
-    for name, content in (("stdout", completed.stdout), ("stderr", completed.stderr)):
-        if len(content) > max_capture_bytes:
-            raise ValueError(f"kernel subprocess {name} exceeded max_capture_bytes")
+    finally:
+        writer.join()
+        for reader in readers:
+            reader.join()
+        assert process.stdout is not None and process.stderr is not None
+        process.stdout.close()
+        process.stderr.close()
+    if overflow:
+        raise ValueError(f"kernel subprocess {overflow[0]} exceeded max_capture_bytes")
+    stdout_bytes = captures["stdout"]
+    stderr_bytes = captures["stderr"]
     try:
-        stdout = completed.stdout.decode("utf-8", errors="strict")
-        stderr = completed.stderr.decode("utf-8", errors="strict")
+        stdout = stdout_bytes.decode("utf-8", errors="strict")
+        stderr = stderr_bytes.decode("utf-8", errors="strict")
     except UnicodeDecodeError as error:
         raise ValueError("kernel subprocess output must be valid UTF-8") from error
-    return KernelProcessCapture(command, completed.returncode, stdout, stderr)
+    return KernelProcessCapture(command, process.returncode, stdout, stderr)
 
 
 def _episode_manifest_payload(

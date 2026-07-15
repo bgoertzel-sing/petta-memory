@@ -87,11 +87,31 @@ class PiPlnModelTests(unittest.TestCase):
             run_kernel_subprocess(
                 "program", argv=(sys.executable, "-c", "import time; time.sleep(1)"), timeout_ms=10,
             )
+        with self.assertRaisesRegex(ValueError, "timeout"):
+            run_kernel_subprocess(
+                "x" * 200_000,
+                argv=(sys.executable, "-c", "import time; time.sleep(1)"),
+                timeout_ms=10,
+            )
         with self.assertRaisesRegex(ValueError, "stdout"):
             run_kernel_subprocess(
                 "program", argv=(sys.executable, "-c", "print('x' * 20)"),
                 timeout_ms=1000, max_capture_bytes=10,
             )
+
+        marker = Path(tempfile.gettempdir()) / "petta-memory-overflow-child-finished"
+        marker.unlink(missing_ok=True)
+        script = (
+            "import sys, time; from pathlib import Path; "
+            "sys.stdout.write('x' * 100000); sys.stdout.flush(); "
+            "time.sleep(0.2); Path(sys.argv[1]).touch()"
+        )
+        with self.assertRaisesRegex(ValueError, "stdout"):
+            run_kernel_subprocess(
+                "program", argv=(sys.executable, "-c", script, str(marker)),
+                timeout_ms=1000, max_capture_bytes=10,
+            )
+        self.assertFalse(marker.exists())
 
     def test_kernel_subprocess_bounds_program_by_encoded_bytes_before_launch(self):
         marker = Path(tempfile.gettempdir()) / "petta-memory-runner-must-not-launch"
