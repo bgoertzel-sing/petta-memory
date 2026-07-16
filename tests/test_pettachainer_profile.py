@@ -895,6 +895,62 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 profile.inspect_compile_dispatch_for_statement(repo, "(Requires MemoryTarget0 PLNReadyViews)")
 
+    def test_run_compile_dispatch_gate_isolates_fact_branch(self):
+        statement = "(: p (Requires MemoryTarget0 PLNReadyViews) (STV 1 0.9))"
+        captured = {}
+
+        def fake_stage(label, target, args, *, stage_timeout_sec):
+            captured.update(
+                label=label, target=target, args=args, stage_timeout_sec=stage_timeout_sec,
+            )
+            return {"label": label, "status": "ok", "output_count": 1, "unique_output_count": 1}
+
+        with (
+            patch.object(
+                profile,
+                "inspect_compile_dispatch_for_statement",
+                return_value={"selected_compile_branch": "fact-assertion"},
+            ),
+            patch.object(profile, "_configure_local_runtime", return_value=None),
+            patch.object(profile, "_run_isolated_stage", side_effect=fake_stage),
+        ):
+            result = profile.run_compile_dispatch_gate(
+                statement,
+                project_root=Path("/project"),
+                stage_timeout_sec=3.0,
+                max_output_items=4,
+            )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(captured["label"], "compile_fact_dispatch")
+        self.assertEqual(captured["target"], profile._compile_dispatch_stage)
+        self.assertEqual(captured["args"], (statement, 4))
+        self.assertEqual(captured["stage_timeout_sec"], 3.0)
+        self.assertTrue(result["boundaries"]["no_mm2compile_or_compileadd"])
+
+    def test_run_compile_dispatch_gate_skips_non_fact_branch(self):
+        with (
+            patch.object(
+                profile,
+                "inspect_compile_dispatch_for_statement",
+                return_value={"selected_compile_branch": "implication-rule"},
+            ),
+            patch.object(profile, "_configure_local_runtime") as configure,
+        ):
+            result = profile.run_compile_dispatch_gate(
+                "(: p (Implication (cons Premises ()) (cons Conclusions ())) (STV 1 0.9))",
+                project_root=Path("/project"),
+            )
+
+        self.assertEqual(result["status"], "skipped")
+        configure.assert_not_called()
+
+    def test_run_compile_dispatch_gate_rejects_nonpositive_bounds(self):
+        with self.assertRaises(ValueError):
+            profile.run_compile_dispatch_gate(
+                "(: p (S x) (STV 1 0.9))", project_root=Path("/project"), max_output_items=0,
+            )
+
     def test_inspect_petta_static_import_source_flags_current_export_as_unsafe(self):
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)

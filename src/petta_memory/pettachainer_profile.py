@@ -1680,6 +1680,95 @@ def inspect_compile_dispatch_for_statement(repo_path: str | Path, statement: str
     }
 
 
+def _compile_dispatch_stage(statement: str, max_output_items: int = 16) -> dict[str, object]:
+    """Run only PeTTaChainer's ``compile`` dispatcher for one statement.
+
+    This deliberately stops before ``mm2compile`` converts compiled clauses and
+    collects the temporary ``ctx`` space.  Keeping the returned samples bounded
+    lets the diagnostic distinguish dispatcher fan-out from later collapse/context
+    work without moving any compiled atoms into the live knowledge base.
+    """
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    from pettachainer import PeTTaChainer
+
+    handler = PeTTaChainer()
+    call_text = f"!(compile {handler.kb} {statement})"
+
+    def run() -> dict[str, object]:
+        result = handler.handler.process_metta_string(call_text)
+        items = result if isinstance(result, list) else [result]
+        rendered = [str(item) for item in items]
+        unique = list(dict.fromkeys(rendered))
+        return {
+            "output_count": len(rendered),
+            "unique_output_count": len(unique),
+            "output_items": rendered[:max_output_items],
+            "output_truncated": len(rendered) > max_output_items,
+        }
+
+    event = _time_call("compile_dispatch", run)
+    summary = event.pop("result")
+    event.update({key: value for key, value in summary.items() if key != "output_items"})
+    return {"call_text": call_text, **summary, "stages": [event]}
+
+
+def run_compile_dispatch_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 5.0,
+    max_output_items: int = 16,
+) -> dict[str, object]:
+    """Bound the ``compile_`` fact branch independently of ``mm2compile``.
+
+    Source inspection must first map the statement to the fact-assertion branch.
+    The runtime event is diagnostic only: even a non-empty completion is not a
+    checked add, query answer, inferred belief, or permission to write memory.
+    """
+    if stage_timeout_sec <= 0:
+        raise ValueError("stage_timeout_sec must be positive")
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    inspection = inspect_compile_dispatch_for_statement(
+        project_root / "repos" / "PeTTaChainer", statement,
+    )
+    if inspection["selected_compile_branch"] != "fact-assertion":
+        return {
+            "source": "non-live PeTTaChainer compile dispatch gate",
+            "status": "skipped",
+            "reason": "statement does not select the bounded fact-assertion branch",
+            "inspection": inspection,
+            "runtime_event": None,
+        }
+    _configure_local_runtime(project_root)
+    event = _run_isolated_stage(
+        "compile_fact_dispatch",
+        _compile_dispatch_stage,
+        (statement, max_output_items),
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    output_count = event.get("output_count")
+    completed = (
+        event.get("status") == "ok"
+        and isinstance(output_count, int)
+        and not isinstance(output_count, bool)
+        and output_count > 0
+    )
+    return {
+        "source": "non-live PeTTaChainer compile dispatch gate",
+        "status": "completed" if completed else "blocked",
+        "inspection": inspection,
+        "runtime_event": event,
+        "boundaries": {
+            "diagnostic_only": True,
+            "no_mm2compile_or_compileadd": True,
+            "no_query_or_result_admission": True,
+            "no_memory_write_or_live_integration": True,
+        },
+    }
+
+
 def _static_import_safe_symbol(text: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9_]", "_", text).strip("_").lower()
     if not safe:
