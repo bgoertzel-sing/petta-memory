@@ -22,6 +22,7 @@ from petta_memory.pipln_models import (
     ChartPolicy,
     PiContext,
     build_pi_chart,
+    build_captured_episode_manifest,
     build_evidence_snapshot,
     build_episode_manifest,
     assemble_legacy_kernel_query_program,
@@ -1015,6 +1016,56 @@ class PiPlnModelTests(unittest.TestCase):
                 validate_kernel_capture_result(
                     bad_capture, result_atom=bad_atom, query_term="(Q a)", compiled=compiled,
                 )
+
+    def test_captured_episode_manifest_binds_one_successful_capture_end_to_end(self):
+        packet = EvidencePacket("p1", "(S a)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")
+        token = EvidenceToken("t1", "sensor", "s1", "ctx", "observed", "minted")
+        snapshot = build_evidence_snapshot(snapshot_id="snapshot", packets=[packet], context_id="ctx",
+                                           assumption_fingerprint="a1", ontology_fingerprint="o1", created_at="now")
+        context = PiContext("ctx", "lang", "world", "guard", "guard-v1", "query", "assumptions",
+                            "ontology", "ontology-v1", "weak-v1", "relevance-v1")
+        chart = build_pi_chart(
+            chart_id="chart", context=context, prior_strength_p0=0.5, prior_weight_k=2,
+            prior_provenance="review", policy=ChartPolicy("factor", "projection", "kernel", "rules", "v1", "v1"),
+            selected_packet_ids=["p1"], evidence_snapshot=snapshot, adequacy_certificate_id="adequacy",
+        )
+        basis = evidence_basis_from_packet(packet, [token], independence_status="PROVEN_DISJOINT",
+                                           justification_cid="review:basis")
+        compiled = compile_episode_inputs(episode_id="episode", chart=chart, evidence_snapshot=snapshot,
+                                          packets=[packet], bases=[basis])
+        query = "(Q a)"
+        result_atom = "((stv 0.75 0.5) (0))"
+        program = assemble_legacy_kernel_query_program(
+            compiled=compiled, query_term=query, max_steps=3,
+            task_queue_size=5, belief_queue_size=8,
+        )
+        capture = KernelProcessCapture(("/kernel",), 0, f"trace\n{result_atom}\n", "")
+        digest = sha256(b"audit object").hexdigest()
+        kwargs = dict(
+            result_atom=result_atom, query_term=query, compiled=compiled, chart=chart,
+            evidence_snapshot=snapshot, complete_program=program, kernel_name="patham9",
+            kernel_capabilities_cid=digest, controller_envelope_cid=digest, seed=0,
+            budget=EpisodeBudget(3, 1000, 4096), started_at="2026-07-15T23:00:00Z",
+            finished_at="2026-07-15T23:00:01Z",
+        )
+
+        manifest = build_captured_episode_manifest(capture=capture, **kwargs)
+        self.assertEqual(manifest.return_code, capture.return_code)
+        self.assertEqual(manifest.stdout_cid, sha256(json.dumps(
+            {"stdout": capture.stdout}, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")).hexdigest())
+        self.assertEqual(manifest.stderr_cid, sha256(json.dumps(
+            {"stderr": capture.stderr}, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")).hexdigest())
+
+        invalid = (
+            (KernelProcessCapture(("/kernel",), 1, capture.stdout, ""), "exit successfully"),
+            (KernelProcessCapture(("/kernel",), 0, capture.stdout, "warning"), "unexpected stderr"),
+            (KernelProcessCapture(("/kernel",), 0, "unrelated", ""), "not present verbatim"),
+        )
+        for bad_capture, message in invalid:
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
+                build_captured_episode_manifest(capture=bad_capture, **kwargs)
 
     def test_episode_manifest_closes_program_result_and_runtime_audit_identity(self):
         packet = EvidencePacket("p1", "(S a)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")

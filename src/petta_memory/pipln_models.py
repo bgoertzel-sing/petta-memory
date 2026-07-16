@@ -759,6 +759,52 @@ def validate_kernel_capture_result(
     )
 
 
+def build_captured_episode_manifest(
+    *, capture: KernelProcessCapture, result_atom: str, query_term: str,
+    compiled: CompiledEpisodeInputs, chart: "PiChart",
+    evidence_snapshot: "EvidenceSnapshot", complete_program: str,
+    kernel_name: str, kernel_capabilities_cid: str,
+    controller_envelope_cid: str, seed: int, budget: EpisodeBudget,
+    started_at: str, finished_at: str,
+    parent_episode_ids: Iterable[str] = (),
+    max_result_chars: int = DEFAULT_MAX_KERNEL_RESULT_CHARS,
+    max_program_chars: int = DEFAULT_MAX_EPISODE_PROGRAM_CHARS,
+) -> EpisodeManifest:
+    """Close one successful process capture directly into an episode manifest.
+
+    Result admission and manifest construction consume the same immutable
+    capture, preventing callers from validating one process result while
+    accidentally recording another process's return code or output.  This is
+    still a non-promoting audit boundary and grants no memory-write authority.
+    """
+    result = validate_kernel_capture_result(
+        capture,
+        result_atom=result_atom,
+        query_term=query_term,
+        compiled=compiled,
+        max_result_chars=max_result_chars,
+    )
+    return build_episode_manifest(
+        compiled=compiled,
+        chart=chart,
+        evidence_snapshot=evidence_snapshot,
+        result=result,
+        complete_program=complete_program,
+        kernel_name=kernel_name,
+        kernel_capabilities_cid=kernel_capabilities_cid,
+        controller_envelope_cid=controller_envelope_cid,
+        seed=seed,
+        budget=budget,
+        started_at=started_at,
+        finished_at=finished_at,
+        return_code=capture.return_code,
+        stdout=capture.stdout,
+        stderr=capture.stderr,
+        parent_episode_ids=parent_episode_ids,
+        max_program_chars=max_program_chars,
+    )
+
+
 def validate_phase0_reference_replay(
     reference: Phase0ReferenceArtifact,
     capture: KernelProcessCapture,
