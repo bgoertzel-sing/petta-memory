@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 from typing import Callable, Iterable
 
+from .pipln_models import PeTTaChainerEpisodeContract
 from .sexpr import parse_one_list, symbol_text, to_source
 from .store import MediumMemoryStore
 
@@ -305,6 +306,114 @@ def _proof_runtime_stage(statements: list[str], steps: int, timeout_sec: float) 
     query = "(: $proof (Requires MemoryTarget0 PLNReadyViews) $tv)"
     stages.append(_time_call("query_first_target", lambda: handler.query(query, steps=steps, timeout_sec=timeout_sec)))
     return {"stages": stages}
+
+
+def _check_episode_contract_stage(statements: list[str], query: str) -> dict[str, object]:
+    """Validate exact episode-contract atoms without adding them to a KB."""
+    from pettachainer import check_query, check_stmt
+
+    return {
+        "statement_results": [check_stmt(statement) for statement in statements],
+        "query_result": check_query(query),
+    }
+
+
+def _episode_contract_runtime_stage(
+    statements: list[str], query: str, steps: int, timeout_sec: float,
+) -> dict[str, object]:
+    """Add and query one checked contract inside a single isolated runtime."""
+    from pettachainer import PeTTaChainer
+
+    handler = PeTTaChainer()
+    stages = [_time_call("compileadd_checked_statements", lambda: handler.add_atoms_no_check(statements))]
+    stages.append(
+        _time_call(
+            "query_checked_contract",
+            lambda: handler.query(query, steps=steps, timeout_sec=timeout_sec),
+        )
+    )
+    return {"stages": stages}
+
+
+def probe_pettachainer_episode_contract(
+    contract: PeTTaChainerEpisodeContract,
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 30.0,
+    steps: int = 5,
+    query_timeout_sec: float = 5.0,
+) -> dict[str, object]:
+    """Run a bounded, fail-closed validation/add/query probe for one contract.
+
+    Runtime add/query is attempted only after PeTTaChainer's public statement and
+    query validators return the exact numeric admission value ``1.0``.  A timeout
+    or error is retained as evidence and confers no result, promotion, write, or
+    live-integration authority.
+    """
+    if not isinstance(contract, PeTTaChainerEpisodeContract):
+        raise ValueError("contract must be an immutable PeTTaChainer episode contract")
+    if steps <= 0:
+        raise ValueError("steps must be positive")
+    if query_timeout_sec <= 0:
+        raise ValueError("query_timeout_sec must be positive")
+    _configure_local_runtime(project_root)
+    statements = [statement.atom for statement in contract.statements]
+    validation = _run_isolated_stage(
+        "validate_episode_contract",
+        _check_episode_contract_stage,
+        (statements, contract.query_atom),
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    statement_results = validation.get("statement_results")
+    query_result = validation.get("query_result")
+    validators_admitted = (
+        validation.get("status") == "ok"
+        and isinstance(statement_results, list)
+        and len(statement_results) == len(statements)
+        and all(not isinstance(value, bool) and value == 1.0 for value in statement_results)
+        and not isinstance(query_result, bool)
+        and query_result == 1.0
+    )
+    events = [validation]
+    if validators_admitted:
+        events.append(_run_isolated_stage(
+            "compileadd_and_query_episode_contract",
+            _episode_contract_runtime_stage,
+            (statements, contract.query_atom, steps, query_timeout_sec),
+            stage_timeout_sec=stage_timeout_sec,
+        ))
+    runtime_stages = events[1].get("stages") if len(events) == 2 else None
+    query_answers = (
+        runtime_stages[1].get("result")
+        if isinstance(runtime_stages, list) and len(runtime_stages) == 2
+        and isinstance(runtime_stages[1], dict)
+        else None
+    )
+    runtime_admitted = (
+        len(events) == 2
+        and events[1].get("status") == "ok"
+        and isinstance(runtime_stages, list)
+        and len(runtime_stages) == 2
+        and all(isinstance(stage, dict) and stage.get("status") == "ok" for stage in runtime_stages)
+        and isinstance(query_answers, list)
+        and bool(query_answers)
+    )
+    return {
+        "schema": "petta-memory-pettachainer-contract-runtime-probe-v1",
+        "episode_id": contract.episode_id,
+        "chart_fingerprint": contract.chart_fingerprint,
+        "statement_count": len(statements),
+        "query_atom": contract.query_atom,
+        "validators_admitted": validators_admitted,
+        "runtime_admitted": runtime_admitted,
+        "events": events,
+        "boundaries": {
+            "no_result_claim_unless_runtime_admitted": True,
+            "no_inferred_belief_promotion": True,
+            "no_memory_write": True,
+            "no_live_integration": True,
+        },
+    }
 
 
 def _contextual_add_stage(packets: list[str]) -> dict[str, object]:

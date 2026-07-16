@@ -8,6 +8,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import petta_memory.pettachainer_profile as profile
+from petta_memory.pipln_models import PeTTaChainerEpisodeContract, PeTTaChainerInputStatement
 from petta_memory.pettachainer_profile import _run_isolated_stage, build_profile_store, build_promoted_cluster
 
 
@@ -22,6 +23,84 @@ def _echo_profile_stage(value: str) -> dict[str, object]:
 
 
 class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
+    @staticmethod
+    def episode_contract():
+        digest = "a" * 64
+        statement = PeTTaChainerInputStatement(
+            atom=f"(: pm-{digest} (S a) (STV 0.75 0.8))",
+            proof_id=f"pm-{digest}",
+            sentence_digest=digest,
+            canonical_term="(S a)",
+            strength=0.75,
+            confidence=0.8,
+            stamp_ints=(0,),
+            evidence_basis_ids=("basis-1",),
+        )
+        return PeTTaChainerEpisodeContract(
+            episode_id="episode-probe",
+            chart_fingerprint="b" * 64,
+            statements=(statement,),
+            query_term="(S a)",
+            query_atom="(: $prf (S a) $tv)",
+        )
+
+    def test_episode_contract_probe_runs_runtime_only_after_exact_validation(self):
+        events = [
+            {"label": "validate_episode_contract", "status": "ok", "statement_results": [1.0], "query_result": 1.0},
+            {"label": "compileadd_and_query_episode_contract", "status": "timeout", "timeout_sec": 2.0},
+        ]
+        with (
+            patch.object(profile, "_configure_local_runtime", return_value=None),
+            patch.object(profile, "_run_isolated_stage", side_effect=events) as isolated,
+        ):
+            result = profile.probe_pettachainer_episode_contract(
+                self.episode_contract(), project_root=Path("/unused"), stage_timeout_sec=2.0,
+            )
+
+        self.assertTrue(result["validators_admitted"])
+        self.assertFalse(result["runtime_admitted"])
+        self.assertEqual(isolated.call_count, 2)
+        self.assertTrue(result["boundaries"]["no_result_claim_unless_runtime_admitted"])
+
+    def test_episode_contract_probe_fails_closed_before_runtime_on_validator_drift(self):
+        validation = {
+            "label": "validate_episode_contract", "status": "ok",
+            "statement_results": [True], "query_result": 1.0,
+        }
+        with (
+            patch.object(profile, "_configure_local_runtime", return_value=None),
+            patch.object(profile, "_run_isolated_stage", return_value=validation) as isolated,
+        ):
+            result = profile.probe_pettachainer_episode_contract(
+                self.episode_contract(), project_root=Path("/unused"),
+            )
+
+        self.assertFalse(result["validators_admitted"])
+        self.assertFalse(result["runtime_admitted"])
+        self.assertEqual(isolated.call_count, 1)
+
+    def test_episode_contract_probe_does_not_admit_empty_query_result(self):
+        events = [
+            {"status": "ok", "statement_results": [1.0], "query_result": 1.0},
+            {
+                "status": "ok",
+                "stages": [
+                    {"status": "ok", "result": "added"},
+                    {"status": "ok", "result": []},
+                ],
+            },
+        ]
+        with (
+            patch.object(profile, "_configure_local_runtime", return_value=None),
+            patch.object(profile, "_run_isolated_stage", side_effect=events),
+        ):
+            result = profile.probe_pettachainer_episode_contract(
+                self.episode_contract(), project_root=Path("/unused"),
+            )
+
+        self.assertTrue(result["validators_admitted"])
+        self.assertFalse(result["runtime_admitted"])
+
     def test_build_promoted_cluster_exports_statement_and_packet(self):
         with tempfile.TemporaryDirectory() as td:
             store = build_profile_store(Path(td) / "medium_memory.metta", 2)
