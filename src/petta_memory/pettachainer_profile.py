@@ -1769,6 +1769,105 @@ def run_compile_dispatch_gate(
     }
 
 
+def _fact_compiled_clause(statement: str, kb: str) -> str:
+    """Build the one base-fact clause emitted by the ``compile_`` fact branch."""
+    form = parse_one_list(statement)
+    if len(form) != 4 or symbol_text(form[0]) != ":":
+        raise ValueError("statement must be a PeTTaChainer proof atom: (: proof type tv)")
+    if not kb or any(character.isspace() or character in "()" for character in kb):
+        raise ValueError("kb must be a non-empty atomic symbol")
+    proof_id, statement_type, truth_value = (to_source(part) for part in form[1:])
+    return f"(() |- ((: ({kb} MAIN Nil) {proof_id} {statement_type} {truth_value})))"
+
+
+def _mm2stmt_deduplicated_fact_stage(statement: str, max_output_items: int = 16) -> dict[str, object]:
+    """Convert one canonical fact clause and inspect ``ctx`` independently.
+
+    The upstream ``compile`` probe can return hundreds of identical clauses. This
+    stage deliberately constructs one source-equivalent base-fact clause, passes
+    it through ``mm2stmt`` once, and reads the temporary context after clearing it.
+    It never invokes ``compile``, ``mm2compile``, or an add operation.
+    """
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    from pettachainer import PeTTaChainer
+
+    handler = PeTTaChainer()
+    clause = _fact_compiled_clause(statement, handler.kb)
+    handler.handler.process_metta_string("!(remove-all-atoms ctx)")
+    converted = handler.handler.process_metta_string(f"!(mm2stmt {clause})")
+    context_atoms = handler.handler.process_metta_string("!(get-atoms ctx)")
+
+    converted_items = converted if isinstance(converted, list) else [converted]
+    context_items = context_atoms if isinstance(context_atoms, list) else [context_atoms]
+    converted_rendered = [str(item) for item in converted_items]
+    context_rendered = [str(item) for item in context_items]
+    expected_fact = to_source(parse_one_list(clause)[2][0])
+    return {
+        "compiled_clause": clause,
+        "expected_fact": expected_fact,
+        "converted_count": len(converted_rendered),
+        "converted_unique_count": len(set(converted_rendered)),
+        "converted_items": converted_rendered[:max_output_items],
+        "converted_truncated": len(converted_rendered) > max_output_items,
+        "expected_fact_present": _materialize_identity_matches(expected_fact, converted_rendered),
+        "ctx_atom_count": len(context_rendered),
+        "ctx_unique_atom_count": len(set(context_rendered)),
+        "ctx_atoms": context_rendered[:max_output_items],
+        "ctx_truncated": len(context_rendered) > max_output_items,
+    }
+
+
+def run_mm2stmt_deduplicated_fact_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 5.0,
+    max_output_items: int = 16,
+) -> dict[str, object]:
+    """Bound ``mm2stmt`` and ``ctx`` inspection after deduplicating compile output."""
+    if stage_timeout_sec <= 0:
+        raise ValueError("stage_timeout_sec must be positive")
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    inspection = inspect_compile_dispatch_for_statement(
+        project_root / "repos" / "PeTTaChainer", statement,
+    )
+    if inspection["selected_compile_branch"] != "fact-assertion":
+        return {
+            "source": "non-live PeTTaChainer deduplicated fact mm2stmt gate",
+            "status": "skipped",
+            "reason": "statement does not select the fact-assertion branch",
+            "inspection": inspection,
+            "runtime_event": None,
+        }
+    _configure_local_runtime(project_root)
+    event = _run_isolated_stage(
+        "mm2stmt_deduplicated_fact",
+        _mm2stmt_deduplicated_fact_stage,
+        (statement, max_output_items),
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    completed = (
+        event.get("status") == "ok"
+        and event.get("expected_fact_present") is True
+        and isinstance(event.get("ctx_atom_count"), int)
+        and not isinstance(event.get("ctx_atom_count"), bool)
+    )
+    return {
+        "source": "non-live PeTTaChainer deduplicated fact mm2stmt gate",
+        "status": "completed" if completed else "blocked",
+        "inspection": inspection,
+        "runtime_event": event,
+        "boundaries": {
+            "one_source_equivalent_compiled_clause": True,
+            "no_compile_or_mm2compile_or_compileadd": True,
+            "no_query_or_result_admission": True,
+            "no_memory_write_or_live_integration": True,
+        },
+    }
+
+
 def _static_import_safe_symbol(text: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9_]", "_", text).strip("_").lower()
     if not safe:
