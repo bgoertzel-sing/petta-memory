@@ -247,6 +247,27 @@ def _materialize_identity_matches(statement: str, outputs: object) -> bool:
     return False
 
 
+def _summarize_materialize_outputs(
+    statement: str,
+    outputs: object,
+    *,
+    max_output_items: int = 16,
+) -> dict[str, object]:
+    """Bound a noisy materializer result while retaining fan-out evidence."""
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    output_items = outputs if isinstance(outputs, list) else [outputs]
+    rendered = [str(item) for item in output_items]
+    unique_rendered = list(dict.fromkeys(rendered))
+    return {
+        "identity_output_present": _materialize_identity_matches(statement, rendered),
+        "output_count": len(rendered),
+        "unique_output_count": len(unique_rendered),
+        "output_items": rendered[:max_output_items],
+        "output_truncated": len(rendered) > max_output_items,
+    }
+
+
 def _materialize_identity_stage(statement: str) -> dict[str, object]:
     """Run only ``materialize-stmt-lambdas`` and compare output structurally.
 
@@ -269,11 +290,14 @@ def _materialize_identity_stage(statement: str) -> dict[str, object]:
         return [str(result)]
 
     event = _time_call("materialize_stmt_lambdas_identity", run)
-    outputs = event.get("result", [])
+    summary = _summarize_materialize_outputs(statement, event.get("result", []))
+    event["result"] = summary["output_items"]
+    event["result_count"] = summary["output_count"]
+    event["result_truncated"] = summary["output_truncated"]
     return {
         "call_text": call_text,
         "expected_statement": statement,
-        "identity_output_present": _materialize_identity_matches(statement, outputs),
+        **summary,
         "stages": [event],
     }
 

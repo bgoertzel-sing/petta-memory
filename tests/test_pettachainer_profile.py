@@ -161,6 +161,26 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         )
         self.assertFalse(profile._materialize_identity_matches("(STV 0.70 0.55)", ["(STV 0.6 0.55)"]))
 
+    def test_materialize_output_summary_bounds_duplicate_fanout(self):
+        statement = "(: p (S x) (STV 1 0.9))"
+        outputs = [statement] * 20
+
+        summary = profile._summarize_materialize_outputs(
+            statement,
+            outputs,
+            max_output_items=3,
+        )
+
+        self.assertTrue(summary["identity_output_present"])
+        self.assertEqual(summary["output_count"], 20)
+        self.assertEqual(summary["unique_output_count"], 1)
+        self.assertEqual(summary["output_items"], [statement] * 3)
+        self.assertTrue(summary["output_truncated"])
+
+    def test_materialize_output_summary_rejects_nonpositive_bound(self):
+        with self.assertRaises(ValueError):
+            profile._summarize_materialize_outputs("(S x)", [], max_output_items=0)
+
     def test_inspect_pettachainer_add_api_reports_no_precompiled_api(self):
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
