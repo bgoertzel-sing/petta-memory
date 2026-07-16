@@ -724,6 +724,7 @@ class KernelProcessCapture:
     return_code: int
     stdout: str
     stderr: str
+    program_cid: str | None = None
 
 
 def validate_kernel_capture_result(
@@ -773,8 +774,9 @@ def build_captured_episode_manifest(
     """Close one successful process capture directly into an episode manifest.
 
     Result admission and manifest construction consume the same immutable
-    capture, preventing callers from validating one process result while
-    accidentally recording another process's return code or output.  This is
+    capture, and the capture must commit to the exact complete program supplied
+    to the manifest.  This prevents callers from validating one process result
+    while accidentally recording another process's inputs or outputs.  This is
     still a non-promoting audit boundary and grants no memory-write authority.
     """
     result = validate_kernel_capture_result(
@@ -784,6 +786,9 @@ def build_captured_episode_manifest(
         compiled=compiled,
         max_result_chars=max_result_chars,
     )
+    expected_program_cid = _canonical_hash({"complete_program": complete_program})
+    if capture.program_cid != expected_program_cid:
+        raise ValueError("kernel capture program does not match complete_program")
     return build_episode_manifest(
         compiled=compiled,
         chart=chart,
@@ -1012,7 +1017,13 @@ def run_kernel_subprocess(
         stderr = stderr_bytes.decode("utf-8", errors="strict")
     except UnicodeDecodeError as error:
         raise ValueError("kernel subprocess output must be valid UTF-8") from error
-    return KernelProcessCapture(command, process.returncode, stdout, stderr)
+    return KernelProcessCapture(
+        command,
+        process.returncode,
+        stdout,
+        stderr,
+        _canonical_hash({"complete_program": program}),
+    )
 
 
 def _episode_manifest_payload(

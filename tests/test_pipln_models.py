@@ -165,6 +165,10 @@ class PiPlnModelTests(unittest.TestCase):
         self.assertEqual(capture.return_code, 0)
         self.assertEqual(capture.stdout, "(PLN.Query)\n")
         self.assertEqual(capture.stderr, "audit\n")
+        self.assertEqual(capture.program_cid, sha256(json.dumps(
+            {"complete_program": "(PLN.Query)"}, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")).hexdigest())
 
     def test_kernel_subprocess_fails_closed_on_timeout_or_capture_overflow(self):
         with self.assertRaisesRegex(ValueError, "timeout"):
@@ -1039,7 +1043,13 @@ class PiPlnModelTests(unittest.TestCase):
             compiled=compiled, query_term=query, max_steps=3,
             task_queue_size=5, belief_queue_size=8,
         )
-        capture = KernelProcessCapture(("/kernel",), 0, f"trace\n{result_atom}\n", "")
+        capture = KernelProcessCapture(
+            ("/kernel",), 0, f"trace\n{result_atom}\n", "",
+            sha256(json.dumps(
+                {"complete_program": program}, sort_keys=True, separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode("utf-8")).hexdigest(),
+        )
         digest = sha256(b"audit object").hexdigest()
         kwargs = dict(
             result_atom=result_atom, query_term=query, compiled=compiled, chart=chart,
@@ -1062,6 +1072,7 @@ class PiPlnModelTests(unittest.TestCase):
             (KernelProcessCapture(("/kernel",), 1, capture.stdout, ""), "exit successfully"),
             (KernelProcessCapture(("/kernel",), 0, capture.stdout, "warning"), "unexpected stderr"),
             (KernelProcessCapture(("/kernel",), 0, "unrelated", ""), "not present verbatim"),
+            (KernelProcessCapture(("/kernel",), 0, capture.stdout, "", "0" * 64), "program does not match"),
         )
         for bad_capture, message in invalid:
             with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
