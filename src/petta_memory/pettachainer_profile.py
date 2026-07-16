@@ -1780,6 +1780,50 @@ def _fact_compiled_clause(statement: str, kb: str) -> str:
     return f"(() |- ((: ({kb} MAIN Nil) {proof_id} {statement_type} {truth_value})))"
 
 
+def inspect_mm2stmt_fact_case_overlap(repo_path: str | Path) -> dict[str, object]:
+    """Identify the source-level overlap that duplicates zero-premise facts.
+
+    In the pinned compiler, ``mm2stmt`` has a specialized zero-premise case and
+    a general premise-list case.  A fact clause with ``()`` premises unifies with
+    both patterns, so MeTTa ``case`` emits the direct fact and the general
+    ``rules`` conversion.  This inspection is deliberately exact and fail-closed:
+    source drift is reported rather than silently attributing runtime fan-out to
+    the current two-arm definition.
+    """
+    compile_path = Path(repo_path) / "pettachainer" / "metta" / "chainer" / "compile.metta"
+    if not compile_path.exists():
+        raise FileNotFoundError(f"missing PeTTaChainer compile source: {compile_path}")
+    source = compile_path.read_text(encoding="utf-8")
+    definition = _extract_metta_definition(source, "mm2stmt")
+    if definition is None:
+        raise ValueError("PeTTaChainer compile source has no mm2stmt definition")
+    normalized = " ".join(str(definition["snippet"]).split())
+    fact_arm = "((() |- ($ccl)) $ccl)"
+    general_arm = "(($prms |- ($ccl)) (rules ($prms |- $ccl)))"
+    fact_arm_present = fact_arm in normalized
+    general_arm_present = general_arm in normalized
+    return {
+        "source": "pettachainer mm2stmt case-overlap inspection",
+        "repo_path": str(Path(repo_path)),
+        "definition": definition,
+        "fact_arm_present": fact_arm_present,
+        "general_arm_present": general_arm_present,
+        "zero_premises_match_fact_arm": fact_arm_present,
+        "zero_premises_match_general_arm": general_arm_present,
+        "overlap_confirmed": fact_arm_present and general_arm_present,
+        "interpretation": (
+            "A (() |- ($ccl)) fact matches both mm2stmt case arms; the two identical runtime outputs are source-explained."
+            if fact_arm_present and general_arm_present
+            else "The pinned two-arm mm2stmt overlap was not found; do not attribute duplicate output to it."
+        ),
+        "boundaries": {
+            "source_inspection_only": True,
+            "no_upstream_semantic_change": True,
+            "no_compileadd_or_query": True,
+        },
+    }
+
+
 def _mm2stmt_deduplicated_fact_stage(statement: str, max_output_items: int = 16) -> dict[str, object]:
     """Convert one canonical fact clause and inspect ``ctx`` independently.
 
@@ -1833,12 +1877,16 @@ def run_mm2stmt_deduplicated_fact_gate(
     inspection = inspect_compile_dispatch_for_statement(
         project_root / "repos" / "PeTTaChainer", statement,
     )
+    mm2stmt_inspection = inspect_mm2stmt_fact_case_overlap(
+        project_root / "repos" / "PeTTaChainer",
+    )
     if inspection["selected_compile_branch"] != "fact-assertion":
         return {
             "source": "non-live PeTTaChainer deduplicated fact mm2stmt gate",
             "status": "skipped",
             "reason": "statement does not select the fact-assertion branch",
             "inspection": inspection,
+            "mm2stmt_inspection": mm2stmt_inspection,
             "runtime_event": None,
         }
     _configure_local_runtime(project_root)
@@ -1858,6 +1906,7 @@ def run_mm2stmt_deduplicated_fact_gate(
         "source": "non-live PeTTaChainer deduplicated fact mm2stmt gate",
         "status": "completed" if completed else "blocked",
         "inspection": inspection,
+        "mm2stmt_inspection": mm2stmt_inspection,
         "runtime_event": event,
         "boundaries": {
             "one_source_equivalent_compiled_clause": True,

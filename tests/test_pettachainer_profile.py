@@ -965,6 +965,42 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             profile._fact_compiled_clause("(: p (S x) (STV 1 0.9))", "bad kb")
 
+    def test_inspect_mm2stmt_fact_case_overlap_closes_exact_source_cause(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            compile_path = repo / "pettachainer" / "metta" / "chainer" / "compile.metta"
+            compile_path.parent.mkdir(parents=True)
+            compile_path.write_text(
+                "(= (mm2stmt $stmt) (case $stmt (((() |- ($ccl)) $ccl) "
+                "(($prms |- ($ccl)) (rules ($prms |- $ccl))))))\n",
+                encoding="utf-8",
+            )
+
+            result = profile.inspect_mm2stmt_fact_case_overlap(repo)
+
+        self.assertTrue(result["fact_arm_present"])
+        self.assertTrue(result["general_arm_present"])
+        self.assertTrue(result["overlap_confirmed"])
+        self.assertIn("matches both", result["interpretation"])
+        self.assertTrue(result["boundaries"]["source_inspection_only"])
+
+    def test_inspect_mm2stmt_fact_case_overlap_fails_closed_on_source_drift(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            compile_path = repo / "pettachainer" / "metta" / "chainer" / "compile.metta"
+            compile_path.parent.mkdir(parents=True)
+            compile_path.write_text(
+                "(= (mm2stmt $stmt) (case $stmt (((() |- ($ccl)) $ccl))))\n",
+                encoding="utf-8",
+            )
+
+            result = profile.inspect_mm2stmt_fact_case_overlap(repo)
+
+        self.assertTrue(result["fact_arm_present"])
+        self.assertFalse(result["general_arm_present"])
+        self.assertFalse(result["overlap_confirmed"])
+        self.assertIn("do not attribute", result["interpretation"])
+
     def test_run_mm2stmt_deduplicated_fact_gate_isolates_one_clause(self):
         statement = "(: p (Requires MemoryTarget0 PLNReadyViews) (STV 1 0.9))"
         captured = {}
@@ -986,6 +1022,11 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
                 "inspect_compile_dispatch_for_statement",
                 return_value={"selected_compile_branch": "fact-assertion"},
             ),
+            patch.object(
+                profile,
+                "inspect_mm2stmt_fact_case_overlap",
+                return_value={"overlap_confirmed": True},
+            ),
             patch.object(profile, "_configure_local_runtime", return_value=None),
             patch.object(profile, "_run_isolated_stage", side_effect=fake_stage),
         ):
@@ -1001,6 +1042,7 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         self.assertEqual(captured["target"], profile._mm2stmt_deduplicated_fact_stage)
         self.assertEqual(captured["args"], (statement, 4))
         self.assertEqual(captured["stage_timeout_sec"], 3.0)
+        self.assertTrue(result["mm2stmt_inspection"]["overlap_confirmed"])
         self.assertTrue(result["boundaries"]["no_compile_or_mm2compile_or_compileadd"])
 
     def test_run_mm2stmt_deduplicated_fact_gate_skips_non_fact_branch(self):
@@ -1009,6 +1051,11 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
                 profile,
                 "inspect_compile_dispatch_for_statement",
                 return_value={"selected_compile_branch": "implication-rule"},
+            ),
+            patch.object(
+                profile,
+                "inspect_mm2stmt_fact_case_overlap",
+                return_value={"overlap_confirmed": True},
             ),
             patch.object(profile, "_configure_local_runtime") as configure,
         ):
