@@ -1001,6 +1001,39 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         self.assertFalse(result["overlap_confirmed"])
         self.assertIn("do not attribute", result["interpretation"])
 
+    def test_inspect_mm2compile_collection_shape_closes_copied_source(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            compile_path = repo / "pettachainer" / "metta" / "chainer" / "compile.metta"
+            compile_path.parent.mkdir(parents=True)
+            compile_path.write_text(
+                "(= (mm2compile $kb $stmt)\n"
+                "   (progn (remove-all-atoms ctx) "
+                "(superpose ((mm2stmt (compile $kb $stmt)) (get-atoms ctx)))))\n",
+                encoding="utf-8",
+            )
+
+            result = profile.inspect_mm2compile_collection_shape(repo)
+
+        self.assertTrue(result["shape_confirmed"])
+        self.assertIn("superposes", result["interpretation"])
+        self.assertTrue(result["boundaries"]["source_inspection_only"])
+
+    def test_inspect_mm2compile_collection_shape_fails_closed_on_drift(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            compile_path = repo / "pettachainer" / "metta" / "chainer" / "compile.metta"
+            compile_path.parent.mkdir(parents=True)
+            compile_path.write_text(
+                "(= (mm2compile $kb $stmt) (mm2stmt (compile $kb $stmt)))\n",
+                encoding="utf-8",
+            )
+
+            result = profile.inspect_mm2compile_collection_shape(repo)
+
+        self.assertFalse(result["shape_confirmed"])
+        self.assertIn("do not run", result["interpretation"])
+
     def test_run_mm2stmt_deduplicated_fact_gate_isolates_one_clause(self):
         statement = "(: p (Requires MemoryTarget0 PLNReadyViews) (STV 1 0.9))"
         captured = {}
@@ -1071,6 +1104,76 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             profile.run_mm2stmt_deduplicated_fact_gate(
                 "(: p (S x) (STV 1 0.9))", project_root=Path("/project"), stage_timeout_sec=0,
+            )
+
+    def test_run_mm2compile_deduplicated_fact_gate_isolates_collection(self):
+        statement = "(: p (Requires MemoryTarget0 PLNReadyViews) (STV 1 0.9))"
+        captured = {}
+
+        def fake_stage(label, target, args, *, stage_timeout_sec):
+            captured.update(label=label, target=target, args=args, stage_timeout_sec=stage_timeout_sec)
+            return {
+                "label": label,
+                "status": "ok",
+                "expected_fact_present": True,
+                "output_count": 2,
+                "unique_output_count": 1,
+            }
+
+        with (
+            patch.object(
+                profile,
+                "inspect_compile_dispatch_for_statement",
+                return_value={"selected_compile_branch": "fact-assertion"},
+            ),
+            patch.object(
+                profile,
+                "inspect_mm2compile_collection_shape",
+                return_value={"shape_confirmed": True},
+            ),
+            patch.object(profile, "_configure_local_runtime", return_value=None),
+            patch.object(profile, "_run_isolated_stage", side_effect=fake_stage),
+        ):
+            result = profile.run_mm2compile_deduplicated_fact_gate(
+                statement,
+                project_root=Path("/project"),
+                stage_timeout_sec=3.0,
+                max_output_items=4,
+            )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(captured["label"], "mm2compile_deduplicated_fact_collection")
+        self.assertEqual(captured["target"], profile._mm2compile_deduplicated_fact_stage)
+        self.assertEqual(captured["args"], (statement, 4))
+        self.assertEqual(captured["stage_timeout_sec"], 3.0)
+        self.assertTrue(result["boundaries"]["no_compile_or_compileadd"])
+
+    def test_run_mm2compile_deduplicated_fact_gate_skips_source_drift(self):
+        with (
+            patch.object(
+                profile,
+                "inspect_compile_dispatch_for_statement",
+                return_value={"selected_compile_branch": "fact-assertion"},
+            ),
+            patch.object(
+                profile,
+                "inspect_mm2compile_collection_shape",
+                return_value={"shape_confirmed": False},
+            ),
+            patch.object(profile, "_configure_local_runtime") as configure,
+        ):
+            result = profile.run_mm2compile_deduplicated_fact_gate(
+                "(: p (S x) (STV 1 0.9))", project_root=Path("/project"),
+            )
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertIn("source shape", result["reason"])
+        configure.assert_not_called()
+
+    def test_run_mm2compile_deduplicated_fact_gate_rejects_nonpositive_bounds(self):
+        with self.assertRaises(ValueError):
+            profile.run_mm2compile_deduplicated_fact_gate(
+                "(: p (S x) (STV 1 0.9))", project_root=Path("/project"), max_output_items=0,
             )
 
     def test_inspect_petta_static_import_source_flags_current_export_as_unsafe(self):

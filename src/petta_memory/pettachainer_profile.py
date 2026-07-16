@@ -1824,6 +1824,39 @@ def inspect_mm2stmt_fact_case_overlap(repo_path: str | Path) -> dict[str, object
     }
 
 
+def inspect_mm2compile_collection_shape(repo_path: str | Path) -> dict[str, object]:
+    """Close the source shape copied by the deduplicated collection probe."""
+    compile_path = Path(repo_path) / "pettachainer" / "metta" / "chainer" / "compile.metta"
+    if not compile_path.exists():
+        raise FileNotFoundError(f"missing PeTTaChainer compile source: {compile_path}")
+    source = compile_path.read_text(encoding="utf-8")
+    definition = _extract_metta_definition(source, "mm2compile")
+    if definition is None:
+        raise ValueError("PeTTaChainer compile source has no mm2compile definition")
+    normalized = " ".join(str(definition["snippet"]).split())
+    expected_body = (
+        "(progn (remove-all-atoms ctx) "
+        "(superpose ((mm2stmt (compile $kb $stmt)) (get-atoms ctx))))"
+    )
+    shape_confirmed = expected_body in normalized
+    return {
+        "source": "pettachainer mm2compile collection-shape inspection",
+        "repo_path": str(Path(repo_path)),
+        "definition": definition,
+        "shape_confirmed": shape_confirmed,
+        "interpretation": (
+            "The pinned mm2compile collector clears ctx and superposes mm2stmt output with ctx atoms."
+            if shape_confirmed
+            else "The pinned mm2compile collection shape was not found; do not run the copied collector probe."
+        ),
+        "boundaries": {
+            "source_inspection_only": True,
+            "no_upstream_semantic_change": True,
+            "no_compileadd_or_query": True,
+        },
+    }
+
+
 def _mm2stmt_deduplicated_fact_stage(statement: str, max_output_items: int = 16) -> dict[str, object]:
     """Convert one canonical fact clause and inspect ``ctx`` independently.
 
@@ -1859,6 +1892,104 @@ def _mm2stmt_deduplicated_fact_stage(statement: str, max_output_items: int = 16)
         "ctx_unique_atom_count": len(set(context_rendered)),
         "ctx_atoms": context_rendered[:max_output_items],
         "ctx_truncated": len(context_rendered) > max_output_items,
+    }
+
+
+def _mm2compile_deduplicated_fact_stage(
+    statement: str, max_output_items: int = 16,
+) -> dict[str, object]:
+    """Run the pinned mm2compile collector over one canonical fact clause.
+
+    The expression copies mm2compile's clear/convert/collect structure while
+    replacing only ``(compile $kb $stmt)`` with one source-equivalent clause.
+    Thus it measures collection semantics without reintroducing compiler fan-out.
+    """
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    from pettachainer import PeTTaChainer
+
+    handler = PeTTaChainer()
+    clause = _fact_compiled_clause(statement, handler.kb)
+    call_text = (
+        "!(progn (remove-all-atoms ctx) "
+        f"(superpose ((mm2stmt {clause}) (get-atoms ctx))))"
+    )
+    result = handler.handler.process_metta_string(call_text)
+    items = result if isinstance(result, list) else [result]
+    rendered = [str(item) for item in items]
+    unique = list(dict.fromkeys(rendered))
+    expected_fact = to_source(parse_one_list(clause)[2][0])
+    return {
+        "call_text": call_text,
+        "compiled_clause": clause,
+        "expected_fact": expected_fact,
+        "output_count": len(rendered),
+        "unique_output_count": len(unique),
+        "output_items": rendered[:max_output_items],
+        "output_truncated": len(rendered) > max_output_items,
+        "expected_fact_present": _materialize_identity_matches(expected_fact, rendered),
+    }
+
+
+def run_mm2compile_deduplicated_fact_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 5.0,
+    max_output_items: int = 16,
+) -> dict[str, object]:
+    """Measure mm2compile-equivalent collection after compiler deduplication."""
+    if stage_timeout_sec <= 0:
+        raise ValueError("stage_timeout_sec must be positive")
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    repo = project_root / "repos" / "PeTTaChainer"
+    inspection = inspect_compile_dispatch_for_statement(repo, statement)
+    mm2compile_inspection = inspect_mm2compile_collection_shape(repo)
+    if inspection["selected_compile_branch"] != "fact-assertion":
+        return {
+            "source": "non-live PeTTaChainer deduplicated fact mm2compile collection gate",
+            "status": "skipped",
+            "reason": "statement does not select the fact-assertion branch",
+            "inspection": inspection,
+            "mm2compile_inspection": mm2compile_inspection,
+            "runtime_event": None,
+        }
+    if mm2compile_inspection["shape_confirmed"] is not True:
+        return {
+            "source": "non-live PeTTaChainer deduplicated fact mm2compile collection gate",
+            "status": "skipped",
+            "reason": "pinned mm2compile collection source shape was not confirmed",
+            "inspection": inspection,
+            "mm2compile_inspection": mm2compile_inspection,
+            "runtime_event": None,
+        }
+    _configure_local_runtime(project_root)
+    event = _run_isolated_stage(
+        "mm2compile_deduplicated_fact_collection",
+        _mm2compile_deduplicated_fact_stage,
+        (statement, max_output_items),
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    completed = (
+        event.get("status") == "ok"
+        and event.get("expected_fact_present") is True
+        and isinstance(event.get("output_count"), int)
+        and not isinstance(event.get("output_count"), bool)
+        and event.get("output_count") > 0
+    )
+    return {
+        "source": "non-live PeTTaChainer deduplicated fact mm2compile collection gate",
+        "status": "completed" if completed else "blocked",
+        "inspection": inspection,
+        "mm2compile_inspection": mm2compile_inspection,
+        "runtime_event": event,
+        "boundaries": {
+            "one_source_equivalent_compiled_clause": True,
+            "no_compile_or_compileadd": True,
+            "no_query_or_result_admission": True,
+            "no_memory_write_or_live_integration": True,
+        },
     }
 
 
