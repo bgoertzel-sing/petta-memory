@@ -4,7 +4,7 @@ import tempfile
 import sys
 import time
 import unittest
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from hashlib import sha256
 from pathlib import Path
 
@@ -23,6 +23,7 @@ from petta_memory.pipln_models import (
     PiContext,
     build_pi_chart,
     build_captured_episode_manifest,
+    build_pettachainer_episode_contract,
     build_evidence_snapshot,
     build_episode_manifest,
     assemble_legacy_kernel_query_program,
@@ -651,6 +652,35 @@ class PiPlnModelTests(unittest.TestCase):
         self.assertIn("(Sentence ((S a) (stv", compiled.sentences[0].atom)
         self.assertEqual(compiled.sentences[0].meta.context_id, chart.context_id)
         self.assertEqual(compiled.evidence_snapshot_fingerprint, snapshot.snapshot_fingerprint)
+
+        contract = build_pettachainer_episode_contract(compiled=compiled, query_term="(S a)")
+        self.assertEqual(contract.query_atom, "(: $prf (S a) $tv)")
+        self.assertEqual(len(contract.statements), 2)
+        first = contract.statements[0]
+        self.assertEqual(first.proof_id, f"pm-{compiled.sentences[0].meta.sentence_digest}")
+        self.assertEqual(first.stamp_ints, compiled.sentences[0].meta.stamp_ints)
+        self.assertEqual(first.evidence_basis_ids, compiled.sentences[0].meta.evidence_basis_ids)
+        self.assertEqual(
+            first.atom,
+            f"(: {first.proof_id} (S a) (STV {compiled.sentences[0].projection.strength} "
+            f"{compiled.sentences[0].projection.confidence}))",
+        )
+        self.assertNotIn("Sentence", first.atom)
+        self.assertNotIn("compileadd", first.atom)
+        with self.assertRaisesRegex(ValueError, "does not match typed content"):
+            replace(first, atom="(: forged (S a) (STV 1.0 1.0))")
+        with self.assertRaisesRegex(ValueError, "does not match typed content"):
+            replace(contract, query_atom="(: fixed-proof (S a) (STV 1.0 1.0))")
+
+        repeated_contract = build_pettachainer_episode_contract(compiled=repeated, query_term="(S a)")
+        self.assertEqual(contract, repeated_contract)
+
+        with self.assertRaisesRegex(ValueError, "already be canonical"):
+            build_pettachainer_episode_contract(compiled=compiled, query_term="(S   a)")
+        with self.assertRaisesRegex(ValueError, "executable/control form"):
+            build_pettachainer_episode_contract(compiled=compiled, query_term="(PLN.Query (S a))")
+        with self.assertRaisesRegex(ValueError, "max_atom_chars"):
+            build_pettachainer_episode_contract(compiled=compiled, query_term="(S a)", max_atom_chars=10)
 
     def test_episode_input_compiler_fails_closed_on_snapshot_packet_or_basis_drift(self):
         packet = EvidencePacket("p1", "(S a)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")

@@ -424,6 +424,70 @@ class CompiledEpisodeInputs:
 
 
 @dataclass(frozen=True)
+class PeTTaChainerInputStatement:
+    """One compiler sentence adapted to PeTTaChainer's checked add shape."""
+
+    atom: str
+    proof_id: str
+    sentence_digest: str
+    canonical_term: str
+    strength: float
+    confidence: float
+    stamp_ints: tuple[int, ...]
+    evidence_basis_ids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        _sha256_digest(self.sentence_digest, "sentence_digest")
+        if self.proof_id != f"pm-{self.sentence_digest}":
+            raise ValueError("PeTTaChainer proof id must derive from the complete sentence digest")
+        canonical_term = _canonical_kernel_term(self.canonical_term)
+        if canonical_term != self.canonical_term:
+            raise ValueError("PeTTaChainer statement term is not canonical")
+        for value, field in ((self.strength, "strength"), (self.confidence, "confidence")):
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 <= value <= 1:
+                raise ValueError(f"PeTTaChainer statement {field} must be finite and in [0, 1]")
+        expected_atom = f"(: {self.proof_id} {canonical_term} (STV {self.strength} {self.confidence}))"
+        if self.atom != expected_atom:
+            raise ValueError("PeTTaChainer statement atom does not match typed content")
+        if tuple(sorted(set(self.stamp_ints))) != self.stamp_ints or not self.stamp_ints:
+            raise ValueError("PeTTaChainer statement stamps must be non-empty, unique, and sorted")
+        if tuple(sorted(set(self.evidence_basis_ids))) != self.evidence_basis_ids or not self.evidence_basis_ids:
+            raise ValueError("PeTTaChainer statement evidence bases must be non-empty, unique, and sorted")
+
+
+@dataclass(frozen=True)
+class PeTTaChainerEpisodeContract:
+    """Inert checked-add/query contract for one immutable compiled episode.
+
+    PeTTaChainer is not the stock patham9 ``Sentence`` evaluator: it accepts
+    ``(: proof term (STV s c))`` through ``compileadd`` and queries with a
+    variable proof/truth-value pair.  This record makes that schema boundary
+    explicit while retaining patham9 stamps and evidence bases as audit-only
+    sidecars.  It does not invoke ``compileadd`` or authorize promotion.
+    """
+
+    episode_id: str
+    chart_fingerprint: str
+    statements: tuple[PeTTaChainerInputStatement, ...]
+    query_term: str
+    query_atom: str
+
+    def __post_init__(self) -> None:
+        _nonempty(self.episode_id, "episode_id")
+        _sha256_digest(self.chart_fingerprint, "chart_fingerprint")
+        if not self.statements:
+            raise ValueError("PeTTaChainer contract must contain at least one statement")
+        proof_ids = tuple(statement.proof_id for statement in self.statements)
+        if len(set(proof_ids)) != len(proof_ids):
+            raise ValueError("PeTTaChainer contract proof ids must be unique")
+        canonical_query = _canonical_kernel_term(self.query_term)
+        if canonical_query != self.query_term:
+            raise ValueError("PeTTaChainer query term is not canonical")
+        if self.query_atom != f"(: $prf {canonical_query} $tv)":
+            raise ValueError("PeTTaChainer query atom does not match typed content")
+
+
+@dataclass(frozen=True)
 class ValidatedKernelResult:
     """One structurally validated, provenance-closed patham9 result atom."""
 
@@ -1953,6 +2017,57 @@ def compile_episode_inputs(
     return CompiledEpisodeInputs(
         episode_id, chart.chart_fingerprint, evidence_snapshot.snapshot_fingerprint,
         stamp_map, tuple(sentences),
+    )
+
+
+def build_pettachainer_episode_contract(
+    *, compiled: CompiledEpisodeInputs, query_term: str,
+    max_atom_chars: int = DEFAULT_MAX_COMPILED_ATOM_CHARS,
+) -> PeTTaChainerEpisodeContract:
+    """Adapt immutable compiler output to PeTTaChainer add/query syntax.
+
+    Truth values are copied from the chart projection.  Stamp and evidence-basis
+    provenance remain in the typed sidecar because PeTTaChainer's public
+    statement shape has no patham9 stamp field.  The returned atoms are inert;
+    a separately bounded runtime gate must validate/add/query them.
+    """
+    if not isinstance(compiled, CompiledEpisodeInputs):
+        raise ValueError("compiled must be immutable compiled episode inputs")
+    _positive_int(max_atom_chars, "max_atom_chars")
+    canonical_query = _canonical_kernel_term(query_term)
+    if canonical_query != query_term:
+        raise ValueError("query_term must already be canonical")
+
+    statements: list[PeTTaChainerInputStatement] = []
+    emitted_chars = 0
+    for sentence in compiled.sentences:
+        proof_id = f"pm-{sentence.meta.sentence_digest}"
+        atom = (
+            f"(: {proof_id} {sentence.meta.canonical_term} "
+            f"(STV {sentence.projection.strength} {sentence.projection.confidence}))"
+        )
+        emitted_chars += len(atom)
+        if emitted_chars > max_atom_chars:
+            raise ValueError("PeTTaChainer contract atoms exceed max_atom_chars")
+        statements.append(PeTTaChainerInputStatement(
+            atom=atom,
+            proof_id=proof_id,
+            sentence_digest=sentence.meta.sentence_digest,
+            canonical_term=sentence.meta.canonical_term,
+            strength=sentence.projection.strength,
+            confidence=sentence.projection.confidence,
+            stamp_ints=sentence.meta.stamp_ints,
+            evidence_basis_ids=sentence.meta.evidence_basis_ids,
+        ))
+    query_atom = f"(: $prf {canonical_query} $tv)"
+    if emitted_chars + len(query_atom) > max_atom_chars:
+        raise ValueError("PeTTaChainer contract atoms exceed max_atom_chars")
+    return PeTTaChainerEpisodeContract(
+        episode_id=compiled.episode_id,
+        chart_fingerprint=compiled.chart_fingerprint,
+        statements=tuple(statements),
+        query_term=canonical_query,
+        query_atom=query_atom,
     )
 
 
