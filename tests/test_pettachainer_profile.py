@@ -1021,6 +1021,56 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         self.assertEqual(result["status"], "skipped")
         configure.assert_not_called()
 
+    def test_run_compile_fact_literal_kb_gate_measures_three_rungs(self):
+        statement = "(: p (Requires MemoryTarget0 PLNReadyViews) (STV 1 0.9))"
+        captured = {}
+
+        def fake_stage(label, target, args, *, stage_timeout_sec):
+            captured.update(label=label, target=target, args=args, stage_timeout_sec=stage_timeout_sec)
+            rung = {"output_count": 32, "unique_output_count": 1}
+            return {
+                "status": "ok",
+                "base_clause_superpose": rung,
+                "literal_kb_with_empty_arm": rung,
+                "literal_kb_fact_branch": rung,
+            }
+
+        with (
+            patch.object(profile, "inspect_compile_dispatch_for_statement", return_value={"selected_compile_branch": "fact-assertion"}),
+            patch.object(profile, "inspect_compile_fact_branch_shape", return_value={"shape_confirmed": True}),
+            patch.object(profile, "_configure_local_runtime", return_value=None),
+            patch.object(profile, "_run_isolated_stage", side_effect=fake_stage),
+        ):
+            result = profile.run_compile_fact_literal_kb_gate(
+                statement, project_root=Path("/project"), stage_timeout_sec=3.0, max_output_items=4,
+            )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(captured["label"], "compile_fact_literal_kb_ladder")
+        self.assertEqual(captured["target"], profile._compile_fact_literal_kb_stage)
+        self.assertEqual(captured["args"], (statement, 4))
+        self.assertTrue(result["boundaries"]["literal_kb_substitution_only"])
+        self.assertTrue(result["boundaries"]["no_compile_or_mm2compile_or_compileadd"])
+
+    def test_run_compile_fact_literal_kb_gate_skips_source_drift(self):
+        with (
+            patch.object(profile, "inspect_compile_dispatch_for_statement", return_value={"selected_compile_branch": "fact-assertion"}),
+            patch.object(profile, "inspect_compile_fact_branch_shape", return_value={"shape_confirmed": False}),
+            patch.object(profile, "_configure_local_runtime") as configure,
+        ):
+            result = profile.run_compile_fact_literal_kb_gate(
+                "(: p (S x) (STV 1 0.9))", project_root=Path("/project"),
+            )
+
+        self.assertEqual(result["status"], "skipped")
+        configure.assert_not_called()
+
+    def test_run_compile_fact_literal_kb_gate_rejects_nonpositive_bounds(self):
+        with self.assertRaises(ValueError):
+            profile.run_compile_fact_literal_kb_gate(
+                "(: p (S x) (STV 1 0.9))", project_root=Path("/project"), stage_timeout_sec=0,
+            )
+
     def test_fact_compiled_clause_builds_one_canonical_base_fact(self):
         clause = profile._fact_compiled_clause(
             "(: p (Requires MemoryTarget0 PLNReadyViews) (STV 1 0.9))", "kb-test",
