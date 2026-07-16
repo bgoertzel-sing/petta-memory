@@ -1769,6 +1769,136 @@ def run_compile_dispatch_gate(
     }
 
 
+def inspect_compile_fact_branch_shape(repo_path: str | Path) -> dict[str, object]:
+    """Close the exact fact branch copied by the bounded component probe."""
+    compile_path = Path(repo_path) / "pettachainer" / "metta" / "chainer" / "compile.metta"
+    if not compile_path.exists():
+        raise FileNotFoundError(f"missing PeTTaChainer compile source: {compile_path}")
+    source = compile_path.read_text(encoding="utf-8")
+    definition = _extract_metta_definition(source, "compile_")
+    if definition is None:
+        raise ValueError("PeTTaChainer compile source has no compile_ definition")
+    normalized = " ".join(str(definition["snippet"]).split())
+    expected_branch = (
+        "(let $fact-kb (compile-fact-kb $kb) "
+        "(superpose ((() |- ((: $fact-kb $prf $Type $tv))) "
+        "(compile-outputs (: $fact-kb $prf $Type $tv)))))"
+    )
+    shape_confirmed = expected_branch in normalized
+    return {
+        "source": "pettachainer compile_ fact-branch shape inspection",
+        "repo_path": str(Path(repo_path)),
+        "definition": definition,
+        "shape_confirmed": shape_confirmed,
+        "interpretation": (
+            "The pinned fact branch binds compile-fact-kb, then superposes one base clause with compile-outputs."
+            if shape_confirmed
+            else "The pinned compile_ fact branch was not found; do not run the copied component probe."
+        ),
+        "boundaries": {
+            "source_inspection_only": True,
+            "no_upstream_semantic_change": True,
+            "no_mm2compile_or_compileadd_or_query": True,
+        },
+    }
+
+
+def _compile_fact_branch_component_stage(
+    statement: str, max_output_items: int = 16,
+) -> dict[str, object]:
+    """Measure fact-kb and output-adapter components without ``compile``."""
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    from pettachainer import PeTTaChainer
+
+    handler = PeTTaChainer()
+    form = parse_one_list(statement)
+    if len(form) != 4 or symbol_text(form[0]) != ":":
+        raise ValueError("statement must be a PeTTaChainer proof atom: (: proof type tv)")
+    proof_id, statement_type, truth_value = (to_source(part) for part in form[1:])
+
+    def summarize(result: object) -> dict[str, object]:
+        items = result if isinstance(result, list) else [result]
+        rendered = [str(item) for item in items]
+        unique = list(dict.fromkeys(rendered))
+        return {
+            "output_count": len(rendered),
+            "unique_output_count": len(unique),
+            "output_items": rendered[:max_output_items],
+            "output_truncated": len(rendered) > max_output_items,
+        }
+
+    fact_kb_call = f"!(compile-fact-kb {handler.kb})"
+    fact_kb_summary = summarize(handler.handler.process_metta_string(fact_kb_call))
+    fact_kb_items = fact_kb_summary["output_items"]
+    if fact_kb_summary["unique_output_count"] != 1 or not fact_kb_items:
+        return {
+            "fact_kb_call": fact_kb_call,
+            "fact_kb": fact_kb_summary,
+            "components_admitted": False,
+            "reason": "compile-fact-kb did not return exactly one unique rendered knowledge-base term",
+        }
+    fact_kb = fact_kb_items[0]
+    fact = f"(: {fact_kb} {proof_id} {statement_type} {truth_value})"
+    output_call = f"!(compile-outputs {fact})"
+    output_summary = summarize(handler.handler.process_metta_string(output_call))
+    return {
+        "fact_kb_call": fact_kb_call,
+        "fact_kb": fact_kb_summary,
+        "fact": fact,
+        "compile_outputs_call": output_call,
+        "compile_outputs": output_summary,
+        "components_admitted": True,
+    }
+
+
+def run_compile_fact_branch_component_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 5.0,
+    max_output_items: int = 16,
+) -> dict[str, object]:
+    """Isolate fact-branch components beneath the 256-copy dispatcher."""
+    if stage_timeout_sec <= 0:
+        raise ValueError("stage_timeout_sec must be positive")
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    repo = project_root / "repos" / "PeTTaChainer"
+    dispatch = inspect_compile_dispatch_for_statement(repo, statement)
+    branch = inspect_compile_fact_branch_shape(repo)
+    if dispatch["selected_compile_branch"] != "fact-assertion" or branch["shape_confirmed"] is not True:
+        return {
+            "source": "non-live PeTTaChainer compile fact-branch component gate",
+            "status": "skipped",
+            "reason": "fact dispatch or pinned fact-branch source shape was not confirmed",
+            "inspection": dispatch,
+            "branch_inspection": branch,
+            "runtime_event": None,
+        }
+    _configure_local_runtime(project_root)
+    event = _run_isolated_stage(
+        "compile_fact_branch_components",
+        _compile_fact_branch_component_stage,
+        (statement, max_output_items),
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    completed = event.get("status") == "ok" and event.get("components_admitted") is True
+    return {
+        "source": "non-live PeTTaChainer compile fact-branch component gate",
+        "status": "completed" if completed else "blocked",
+        "inspection": dispatch,
+        "branch_inspection": branch,
+        "runtime_event": event,
+        "boundaries": {
+            "diagnostic_only": True,
+            "no_compile_or_mm2compile_or_compileadd": True,
+            "no_query_or_result_admission": True,
+            "no_memory_write_or_live_integration": True,
+        },
+    }
+
+
 def _fact_compiled_clause(statement: str, kb: str) -> str:
     """Build the one base-fact clause emitted by the ``compile_`` fact branch."""
     form = parse_one_list(statement)
