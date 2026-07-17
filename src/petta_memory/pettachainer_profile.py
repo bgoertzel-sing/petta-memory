@@ -2376,6 +2376,116 @@ def run_compile_single_registration_gate(
     }
 
 
+def _compile_annotation_dispatch_stage(
+    statement: str, max_output_items: int = 16,
+) -> dict[str, object]:
+    """Compare annotated and structural heads for one copied fact dispatcher."""
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    from pettachainer import PeTTaChainer
+
+    handler = PeTTaChainer()
+    annotated = "pm-profile-annotated-compile-fact"
+    structural = "pm-profile-structural-compile-fact"
+    body = (
+        "(if (is-var $Type) (empty) "
+        "(if (= $Type (Implication (cons Premises $premises) (cons Conclusions $conclusions))) (empty) "
+        "(if (bidirectional-implication-type? $Type) (empty) "
+        "(let $fact-kb (compile-fact-kb $kb) "
+        "(superpose ((() |- ((: $fact-kb $prf $Type $tv))) "
+        "(compile-outputs (: $fact-kb $prf $Type $tv))))))))"
+    )
+    definitions = (
+        f"(= ({annotated} $kb (@ $stmt (: $prf $Type $tv))) {body})",
+        f"(= ({structural} $kb (: $prf $Type $tv)) {body})",
+    )
+    for definition in definitions:
+        handler.handler.process_metta_string(definition)
+
+    def summarize(call_text: str) -> dict[str, object]:
+        result = handler.handler.process_metta_string(call_text)
+        items = result if isinstance(result, list) else [result]
+        rendered = [str(item) for item in items]
+        unique = list(dict.fromkeys(rendered))
+        return {
+            "call_text": call_text,
+            "output_count": len(rendered),
+            "unique_output_count": len(unique),
+            "output_items": rendered[:max_output_items],
+            "output_truncated": len(rendered) > max_output_items,
+        }
+
+    return {
+        "annotated_head": summarize(f"!({annotated} {handler.kb} {statement})"),
+        "structural_head": summarize(f"!({structural} {handler.kb} {statement})"),
+    }
+
+
+def run_compile_annotation_dispatch_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 5.0,
+    max_output_items: int = 16,
+) -> dict[str, object]:
+    """Measure the ``@`` annotated-head boundary without calling ``compile``."""
+    if stage_timeout_sec <= 0:
+        raise ValueError("stage_timeout_sec must be positive")
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    repo = project_root / "repos" / "PeTTaChainer"
+    dispatch = inspect_compile_dispatch_for_statement(repo, statement)
+    ladder = inspect_compile_fact_dispatch_ladder_shape(repo)
+    definition = ladder.get("definition")
+    snippet = str(definition.get("snippet", "")) if isinstance(definition, dict) else ""
+    annotated_head_confirmed = "(@ $stmt (: $prf $Type $tv))" in " ".join(snippet.split())
+    confirmed = (
+        dispatch["selected_compile_branch"] == "fact-assertion"
+        and ladder["shape_confirmed"] is True
+        and annotated_head_confirmed
+    )
+    if not confirmed:
+        return {
+            "source": "non-live PeTTaChainer annotated-dispatch compile gate",
+            "status": "skipped",
+            "reason": "fact dispatch, nested ladder, or annotated source head was not confirmed",
+            "inspection": dispatch,
+            "ladder_inspection": ladder,
+            "annotated_head_confirmed": annotated_head_confirmed,
+            "runtime_event": None,
+        }
+    _configure_local_runtime(project_root)
+    event = _run_isolated_stage(
+        "compile_annotation_dispatch",
+        _compile_annotation_dispatch_stage,
+        (statement, max_output_items),
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    rungs = (event.get("annotated_head"), event.get("structural_head"))
+    completed = event.get("status") == "ok" and all(
+        isinstance(rung, dict)
+        and isinstance(rung.get("output_count"), int)
+        and not isinstance(rung.get("output_count"), bool)
+        and rung["output_count"] > 0
+        for rung in rungs
+    )
+    return {
+        "source": "non-live PeTTaChainer annotated-dispatch compile gate",
+        "status": "completed" if completed else "blocked",
+        "inspection": dispatch,
+        "ladder_inspection": ladder,
+        "annotated_head_confirmed": annotated_head_confirmed,
+        "runtime_event": event,
+        "boundaries": {
+            "diagnostic_only": True,
+            "source_equivalent_local_definitions_only": True,
+            "no_upstream_semantic_change": True,
+            "no_compile_or_mm2compile_or_compileadd_or_query": True,
+            "no_memory_write_or_live_integration": True,
+        },
+    }
+
+
 def _fact_compiled_clause(statement: str, kb: str) -> str:
     """Build the one base-fact clause emitted by the ``compile_`` fact branch."""
     form = parse_one_list(statement)
