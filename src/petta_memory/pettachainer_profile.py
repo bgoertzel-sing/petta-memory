@@ -2103,6 +2103,140 @@ def run_compile_fact_literal_kb_gate(
     }
 
 
+def inspect_compile_fact_dispatch_ladder_shape(repo_path: str | Path) -> dict[str, object]:
+    """Confirm the pinned nested predicates above ``compile_``'s fact branch."""
+    compile_path = Path(repo_path) / "pettachainer" / "metta" / "chainer" / "compile.metta"
+    if not compile_path.exists():
+        raise FileNotFoundError(f"missing PeTTaChainer compile source: {compile_path}")
+    definition = _extract_metta_definition(compile_path.read_text(encoding="utf-8"), "compile_")
+    normalized = " ".join(str(definition["snippet"]).split()) if definition is not None else ""
+    required_shapes = {
+        "variable_type_gate": "(if (is-var $Type) (empty)",
+        "implication_gate": "(if (= $Type (Implication (cons Premises $premises) (cons Conclusions $conclusions)))",
+        "bidirectional_gate": "(if (bidirectional-implication-type? $Type)",
+        "fact_branch": (
+            "(let $fact-kb (compile-fact-kb $kb) "
+            "(superpose ((() |- ((: $fact-kb $prf $Type $tv))) "
+            "(compile-outputs (: $fact-kb $prf $Type $tv)))))"
+        ),
+    }
+    matched = {name: shape in normalized for name, shape in required_shapes.items()}
+    return {
+        "source": "pettachainer compile_ fact-dispatch ladder inspection",
+        "repo_path": str(Path(repo_path)),
+        "definition": definition,
+        "matched_shapes": matched,
+        "shape_confirmed": all(matched.values()),
+        "boundaries": {
+            "source_inspection_only": True,
+            "no_upstream_semantic_change": True,
+            "no_compile_or_mm2compile_or_compileadd_or_query": True,
+        },
+    }
+
+
+def _compile_fact_dispatch_ladder_stage(
+    statement: str, max_output_items: int = 16,
+) -> dict[str, object]:
+    """Rebuild the fact-selected predicate ladder over a literal KB clause."""
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    from pettachainer import PeTTaChainer
+
+    handler = PeTTaChainer()
+    form = parse_one_list(statement)
+    if len(form) != 4 or symbol_text(form[0]) != ":":
+        raise ValueError("statement must be a PeTTaChainer proof atom: (: proof type tv)")
+    proof_id, statement_type, truth_value = (to_source(part) for part in form[1:])
+    fact = f"(: ({handler.kb} MAIN Nil) {proof_id} {statement_type} {truth_value})"
+    fact_branch = f"(superpose ((() |- ({fact})) (compile-outputs {fact})))"
+    bidirectional = f"(if (bidirectional-implication-type? {statement_type}) (empty) {fact_branch})"
+    implication = (
+        f"(if (= {statement_type} (Implication (cons Premises $premises) "
+        f"(cons Conclusions $conclusions))) (empty) {bidirectional})"
+    )
+    variable_type = f"(if (is-var {statement_type}) (empty) {implication})"
+    calls = (
+        ("literal_fact_branch", f"!{fact_branch}"),
+        ("with_bidirectional_gate", f"!{bidirectional}"),
+        ("with_implication_gate", f"!{implication}"),
+        ("with_variable_type_gate", f"!{variable_type}"),
+    )
+
+    def summarize(call_text: str) -> dict[str, object]:
+        result = handler.handler.process_metta_string(call_text)
+        items = result if isinstance(result, list) else [result]
+        rendered = [str(item) for item in items]
+        unique = list(dict.fromkeys(rendered))
+        return {
+            "call_text": call_text,
+            "output_count": len(rendered),
+            "unique_output_count": len(unique),
+            "output_items": rendered[:max_output_items],
+            "output_truncated": len(rendered) > max_output_items,
+        }
+
+    return {label: summarize(call_text) for label, call_text in calls}
+
+
+def run_compile_fact_dispatch_ladder_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 5.0,
+    max_output_items: int = 16,
+) -> dict[str, object]:
+    """Measure each nested fact-selection predicate without calling ``compile``."""
+    if stage_timeout_sec <= 0:
+        raise ValueError("stage_timeout_sec must be positive")
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    repo = project_root / "repos" / "PeTTaChainer"
+    dispatch = inspect_compile_dispatch_for_statement(repo, statement)
+    ladder = inspect_compile_fact_dispatch_ladder_shape(repo)
+    if dispatch["selected_compile_branch"] != "fact-assertion" or ladder["shape_confirmed"] is not True:
+        return {
+            "source": "non-live PeTTaChainer compile_ fact-dispatch ladder gate",
+            "status": "skipped",
+            "reason": "fact dispatch or pinned nested predicate ladder was not confirmed",
+            "inspection": dispatch,
+            "ladder_inspection": ladder,
+            "runtime_event": None,
+        }
+    _configure_local_runtime(project_root)
+    event = _run_isolated_stage(
+        "compile_fact_dispatch_ladder",
+        _compile_fact_dispatch_ladder_stage,
+        (statement, max_output_items),
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    labels = (
+        "literal_fact_branch", "with_bidirectional_gate",
+        "with_implication_gate", "with_variable_type_gate",
+    )
+    completed = event.get("status") == "ok" and all(
+        isinstance(event.get(label), dict)
+        and isinstance(event[label].get("output_count"), int)
+        and not isinstance(event[label].get("output_count"), bool)
+        and event[label]["output_count"] > 0
+        for label in labels
+    )
+    return {
+        "source": "non-live PeTTaChainer compile_ fact-dispatch ladder gate",
+        "status": "completed" if completed else "blocked",
+        "inspection": dispatch,
+        "ladder_inspection": ladder,
+        "runtime_event": event,
+        "boundaries": {
+            "diagnostic_only": True,
+            "literal_kb_substitution_only": True,
+            "no_compile_or_mm2compile_or_compileadd": True,
+            "no_query_or_result_admission": True,
+            "no_memory_write_or_live_integration": True,
+        },
+    }
+
+
 def _fact_compiled_clause(statement: str, kb: str) -> str:
     """Build the one base-fact clause emitted by the ``compile_`` fact branch."""
     form = parse_one_list(statement)
