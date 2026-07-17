@@ -3020,6 +3020,96 @@ def _mm2compile_deduplicated_fact_from_repo_stage(
     return _mm2compile_deduplicated_fact_stage(statement, max_output_items)
 
 
+def _full_mm2compile_from_repo_stage(
+    statement: str, repo_path: str, max_output_items: int = 16,
+) -> dict[str, object]:
+    """Run the real ``mm2compile`` entry point from one selected checkout."""
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    sys.path.insert(0, repo_path)
+    from pettachainer import PeTTaChainer
+
+    handler = PeTTaChainer()
+    call_text = f"!(mm2compile {handler.kb} {statement})"
+    result = handler.handler.process_metta_string(call_text)
+    items = result if isinstance(result, list) else [result]
+    rendered = [str(item) for item in items]
+    unique = list(dict.fromkeys(rendered))
+    expected_fact = to_source(parse_one_list(statement)[2])
+    return {
+        "call_text": call_text,
+        "expected_fact": expected_fact,
+        "output_count": len(rendered),
+        "unique_output_count": len(unique),
+        "output_items": rendered[:max_output_items],
+        "output_truncated": len(rendered) > max_output_items,
+        "expected_fact_present": _materialize_identity_matches(expected_fact, rendered),
+    }
+
+
+def run_repaired_full_mm2compile_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    candidate_repo_path: str | Path,
+    stage_timeout_sec: float = 5.0,
+    max_output_items: int = 16,
+) -> dict[str, object]:
+    """Run full ``compile`` -> conversion -> collection after the exact repair."""
+    if stage_timeout_sec <= 0:
+        raise ValueError("stage_timeout_sec must be positive")
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    baseline_repo = project_root / "repos" / "PeTTaChainer"
+    candidate_repo = Path(candidate_repo_path)
+    repair = inspect_duplicate_compile_import_repair(baseline_repo, candidate_repo)
+    dispatch = inspect_compile_dispatch_for_statement(candidate_repo, statement)
+    collection = inspect_mm2compile_collection_shape(candidate_repo)
+    source_admitted = (
+        repair["exact_targeted_import_removal"] is True
+        and dispatch["selected_compile_branch"] == "fact-assertion"
+        and collection["shape_confirmed"] is True
+    )
+    if not source_admitted:
+        return {
+            "source": "non-live repaired PeTTaChainer full mm2compile gate",
+            "status": "skipped",
+            "reason": "exact repair, fact dispatch, or mm2compile source gate failed",
+            "repair_inspection": repair,
+            "inspection": dispatch,
+            "mm2compile_inspection": collection,
+            "runtime_event": None,
+        }
+    _configure_local_runtime(project_root)
+    event = _run_isolated_stage(
+        "repaired_full_mm2compile",
+        _full_mm2compile_from_repo_stage,
+        (statement, str(candidate_repo), max_output_items),
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    completed = (
+        event.get("status") == "ok"
+        and event.get("expected_fact_present") is True
+        and isinstance(event.get("output_count"), int)
+        and not isinstance(event.get("output_count"), bool)
+        and event["output_count"] > 0
+    )
+    return {
+        "source": "non-live repaired PeTTaChainer full mm2compile gate",
+        "status": "completed" if completed else "blocked",
+        "repair_inspection": repair,
+        "inspection": dispatch,
+        "mm2compile_inspection": collection,
+        "runtime_event": event,
+        "boundaries": {
+            "isolated_candidate_only": True,
+            "full_compile_conversion_collection": True,
+            "no_compileadd_or_query_or_result_admission": True,
+            "no_memory_write_or_live_integration": True,
+        },
+    }
+
+
 def run_repaired_fact_conversion_collection_gate(
     statement: str,
     *,

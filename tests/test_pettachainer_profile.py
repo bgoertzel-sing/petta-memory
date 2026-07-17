@@ -1389,6 +1389,55 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         self.assertEqual(run_stage.call_count, 1)
         self.assertEqual(len(result["runtime_events"]), 1)
 
+    def test_run_repaired_full_mm2compile_gate_runs_real_entry_point(self):
+        inspection = {
+            "exact_targeted_import_removal": True,
+        }
+        event = {
+            "status": "ok",
+            "expected_fact_present": True,
+            "output_count": 1,
+        }
+        with (
+            patch.object(profile, "inspect_duplicate_compile_import_repair", return_value=inspection),
+            patch.object(profile, "inspect_compile_dispatch_for_statement", return_value={"selected_compile_branch": "fact-assertion"}),
+            patch.object(profile, "inspect_mm2compile_collection_shape", return_value={"shape_confirmed": True}),
+            patch.object(profile, "_configure_local_runtime", return_value=None),
+            patch.object(profile, "_run_isolated_stage", return_value=event) as run_stage,
+        ):
+            result = profile.run_repaired_full_mm2compile_gate(
+                "(: p (S x) (STV 1 0.9))",
+                project_root=Path("/project"),
+                candidate_repo_path=Path("/candidate"),
+                stage_timeout_sec=3.0,
+                max_output_items=4,
+            )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertIs(run_stage.call_args.args[1], profile._full_mm2compile_from_repo_stage)
+        self.assertEqual(run_stage.call_args.args[2], (
+            "(: p (S x) (STV 1 0.9))", "/candidate", 4,
+        ))
+        self.assertTrue(result["boundaries"]["full_compile_conversion_collection"])
+        self.assertTrue(result["boundaries"]["no_compileadd_or_query_or_result_admission"])
+
+    def test_run_repaired_full_mm2compile_gate_skips_source_drift(self):
+        with (
+            patch.object(profile, "inspect_duplicate_compile_import_repair", return_value={"exact_targeted_import_removal": False}),
+            patch.object(profile, "inspect_compile_dispatch_for_statement", return_value={"selected_compile_branch": "fact-assertion"}),
+            patch.object(profile, "inspect_mm2compile_collection_shape", return_value={"shape_confirmed": True}),
+            patch.object(profile, "_configure_local_runtime") as configure,
+        ):
+            result = profile.run_repaired_full_mm2compile_gate(
+                "(: p (S x) (STV 1 0.9))",
+                project_root=Path("/project"),
+                candidate_repo_path=Path("/candidate"),
+            )
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertIsNone(result["runtime_event"])
+        configure.assert_not_called()
+
     def test_run_compile_single_registration_gate_compares_clone_and_direct(self):
         captured = {}
 
