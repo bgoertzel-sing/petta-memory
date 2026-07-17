@@ -1343,6 +1343,52 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         self.assertIsNone(result["runtime_event"])
         configure.assert_not_called()
 
+    def test_run_repaired_fact_conversion_collection_gate_measures_two_rungs(self):
+        events = (
+            {"status": "ok", "expected_fact_present": True, "converted_count": 1},
+            {"status": "ok", "expected_fact_present": True, "output_count": 1},
+        )
+        with (
+            patch.object(profile, "inspect_duplicate_compile_import_repair", return_value={"exact_targeted_import_removal": True}),
+            patch.object(profile, "inspect_compile_dispatch_for_statement", return_value={"selected_compile_branch": "fact-assertion"}),
+            patch.object(profile, "inspect_mm2stmt_fact_case_overlap", return_value={"overlap_confirmed": True}),
+            patch.object(profile, "inspect_mm2compile_collection_shape", return_value={"shape_confirmed": True}),
+            patch.object(profile, "_configure_local_runtime", return_value=None),
+            patch.object(profile, "_run_isolated_stage", side_effect=events) as run_stage,
+        ):
+            result = profile.run_repaired_fact_conversion_collection_gate(
+                "(: p (S x) (STV 1 0.9))",
+                project_root=Path("/project"),
+                candidate_repo_path=Path("/candidate"),
+                stage_timeout_sec=3.0,
+                max_output_items=4,
+            )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(run_stage.call_count, 2)
+        self.assertIs(run_stage.call_args_list[0].args[1], profile._mm2stmt_deduplicated_fact_from_repo_stage)
+        self.assertIs(run_stage.call_args_list[1].args[1], profile._mm2compile_deduplicated_fact_from_repo_stage)
+        self.assertTrue(result["boundaries"]["no_compile_or_compileadd_or_query"])
+
+    def test_run_repaired_fact_conversion_collection_gate_stops_after_blocked_conversion(self):
+        with (
+            patch.object(profile, "inspect_duplicate_compile_import_repair", return_value={"exact_targeted_import_removal": True}),
+            patch.object(profile, "inspect_compile_dispatch_for_statement", return_value={"selected_compile_branch": "fact-assertion"}),
+            patch.object(profile, "inspect_mm2stmt_fact_case_overlap", return_value={"overlap_confirmed": True}),
+            patch.object(profile, "inspect_mm2compile_collection_shape", return_value={"shape_confirmed": True}),
+            patch.object(profile, "_configure_local_runtime", return_value=None),
+            patch.object(profile, "_run_isolated_stage", return_value={"status": "timeout"}) as run_stage,
+        ):
+            result = profile.run_repaired_fact_conversion_collection_gate(
+                "(: p (S x) (STV 1 0.9))",
+                project_root=Path("/project"),
+                candidate_repo_path=Path("/candidate"),
+            )
+
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(run_stage.call_count, 1)
+        self.assertEqual(len(result["runtime_events"]), 1)
+
     def test_run_compile_single_registration_gate_compares_clone_and_direct(self):
         captured = {}
 

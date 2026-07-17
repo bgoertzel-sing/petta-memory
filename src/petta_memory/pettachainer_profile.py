@@ -3004,6 +3004,113 @@ def _mm2compile_deduplicated_fact_stage(
     }
 
 
+def _mm2stmt_deduplicated_fact_from_repo_stage(
+    statement: str, repo_path: str, max_output_items: int = 16,
+) -> dict[str, object]:
+    """Run the isolated conversion rung from one selected checkout."""
+    sys.path.insert(0, repo_path)
+    return _mm2stmt_deduplicated_fact_stage(statement, max_output_items)
+
+
+def _mm2compile_deduplicated_fact_from_repo_stage(
+    statement: str, repo_path: str, max_output_items: int = 16,
+) -> dict[str, object]:
+    """Run the isolated collector rung from one selected checkout."""
+    sys.path.insert(0, repo_path)
+    return _mm2compile_deduplicated_fact_stage(statement, max_output_items)
+
+
+def run_repaired_fact_conversion_collection_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    candidate_repo_path: str | Path,
+    stage_timeout_sec: float = 5.0,
+    max_output_items: int = 16,
+) -> dict[str, object]:
+    """Remeasure conversion and collection after the exact import repair.
+
+    Both runtime stages receive one source-equivalent compiled fact clause.  The
+    public compiler is deliberately not called, so this gate can determine
+    whether the old two-copy ``mm2stmt`` and four-copy collector behavior also
+    collapsed when duplicate compiler registration was removed.
+    """
+    if stage_timeout_sec <= 0:
+        raise ValueError("stage_timeout_sec must be positive")
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    baseline_repo = project_root / "repos" / "PeTTaChainer"
+    candidate_repo = Path(candidate_repo_path)
+    repair = inspect_duplicate_compile_import_repair(baseline_repo, candidate_repo)
+    dispatch = inspect_compile_dispatch_for_statement(candidate_repo, statement)
+    conversion = inspect_mm2stmt_fact_case_overlap(candidate_repo)
+    collection = inspect_mm2compile_collection_shape(candidate_repo)
+    source_admitted = (
+        repair["exact_targeted_import_removal"] is True
+        and dispatch["selected_compile_branch"] == "fact-assertion"
+        and conversion["overlap_confirmed"] is True
+        and collection["shape_confirmed"] is True
+    )
+    if not source_admitted:
+        return {
+            "source": "non-live repaired PeTTaChainer fact conversion/collection gate",
+            "status": "skipped",
+            "reason": "exact repair, fact dispatch, conversion, or collection source gate failed",
+            "repair_inspection": repair,
+            "inspection": dispatch,
+            "mm2stmt_inspection": conversion,
+            "mm2compile_inspection": collection,
+            "runtime_events": [],
+        }
+    _configure_local_runtime(project_root)
+    stage_args = (statement, str(candidate_repo), max_output_items)
+    conversion_event = _run_isolated_stage(
+        "repaired_mm2stmt_deduplicated_fact",
+        _mm2stmt_deduplicated_fact_from_repo_stage,
+        stage_args,
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    events = [conversion_event]
+    conversion_completed = (
+        conversion_event.get("status") == "ok"
+        and conversion_event.get("expected_fact_present") is True
+        and isinstance(conversion_event.get("converted_count"), int)
+        and not isinstance(conversion_event.get("converted_count"), bool)
+        and conversion_event["converted_count"] > 0
+    )
+    if conversion_completed:
+        events.append(_run_isolated_stage(
+            "repaired_mm2compile_deduplicated_fact_collection",
+            _mm2compile_deduplicated_fact_from_repo_stage,
+            stage_args,
+            stage_timeout_sec=stage_timeout_sec,
+        ))
+    collection_event = events[1] if len(events) == 2 else None
+    collection_completed = (
+        isinstance(collection_event, dict)
+        and collection_event.get("status") == "ok"
+        and collection_event.get("expected_fact_present") is True
+        and isinstance(collection_event.get("output_count"), int)
+        and not isinstance(collection_event.get("output_count"), bool)
+        and collection_event["output_count"] > 0
+    )
+    return {
+        "source": "non-live repaired PeTTaChainer fact conversion/collection gate",
+        "status": "completed" if conversion_completed and collection_completed else "blocked",
+        "repair_inspection": repair,
+        "inspection": dispatch,
+        "mm2stmt_inspection": conversion,
+        "mm2compile_inspection": collection,
+        "runtime_events": events,
+        "boundaries": {
+            "isolated_candidate_only": True,
+            "one_source_equivalent_compiled_clause": True,
+            "no_compile_or_compileadd_or_query": True,
+            "no_memory_write_or_live_integration": True,
+        },
+    }
+
+
 def run_mm2compile_deduplicated_fact_gate(
     statement: str,
     *,
