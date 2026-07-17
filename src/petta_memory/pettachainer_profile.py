@@ -1713,6 +1713,112 @@ def _compile_dispatch_stage(statement: str, max_output_items: int = 16) -> dict[
     return {"call_text": call_text, **summary, "stages": [event]}
 
 
+def inspect_compile_wrapper_shape(repo_path: str | Path) -> dict[str, object]:
+    """Confirm that public ``compile`` is only the pinned ``compile_`` wrapper."""
+    compile_path = Path(repo_path) / "pettachainer" / "metta" / "chainer" / "compile.metta"
+    if not compile_path.exists():
+        raise FileNotFoundError(f"missing PeTTaChainer compile source: {compile_path}")
+    source = compile_path.read_text(encoding="utf-8")
+    definition = _extract_metta_definition(source, "compile")
+    normalized = " ".join(definition["snippet"].split()) if definition is not None else ""
+    shape_confirmed = normalized == "(= (compile $kb $stmt) (compile_ $kb $stmt))"
+    return {
+        "source": "pettachainer compile wrapper-shape inspection",
+        "repo_path": str(Path(repo_path)),
+        "definition": definition,
+        "shape_confirmed": shape_confirmed,
+        "interpretation": (
+            "The pinned public compile definition delegates directly to compile_ without an explicit transform."
+            if shape_confirmed
+            else "The pinned one-step compile wrapper was not found; do not compare wrapper and direct calls."
+        ),
+        "boundaries": {"source_inspection_only": True, "no_compileadd_or_query": True},
+    }
+
+
+def _compile_wrapper_direct_stage(
+    statement: str, max_output_items: int = 16,
+) -> dict[str, object]:
+    """Compare public ``compile`` with a direct ``compile_`` call in one runtime."""
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    from pettachainer import PeTTaChainer
+
+    handler = PeTTaChainer()
+
+    def summarize(call_text: str) -> dict[str, object]:
+        result = handler.handler.process_metta_string(call_text)
+        items = result if isinstance(result, list) else [result]
+        rendered = [str(item) for item in items]
+        unique = list(dict.fromkeys(rendered))
+        return {
+            "call_text": call_text,
+            "output_count": len(rendered),
+            "unique_output_count": len(unique),
+            "output_items": rendered[:max_output_items],
+            "output_truncated": len(rendered) > max_output_items,
+        }
+
+    return {
+        "public_compile": summarize(f"!(compile {handler.kb} {statement})"),
+        "direct_compile_": summarize(f"!(compile_ {handler.kb} {statement})"),
+    }
+
+
+def run_compile_wrapper_direct_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 5.0,
+    max_output_items: int = 16,
+) -> dict[str, object]:
+    """Localize compiler fan-out to public ``compile`` or direct ``compile_``."""
+    if stage_timeout_sec <= 0:
+        raise ValueError("stage_timeout_sec must be positive")
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    repo = project_root / "repos" / "PeTTaChainer"
+    dispatch = inspect_compile_dispatch_for_statement(repo, statement)
+    wrapper = inspect_compile_wrapper_shape(repo)
+    if dispatch["selected_compile_branch"] != "fact-assertion" or wrapper["shape_confirmed"] is not True:
+        return {
+            "source": "non-live PeTTaChainer compile wrapper/direct gate",
+            "status": "skipped",
+            "reason": "fact dispatch or pinned compile wrapper source shape was not confirmed",
+            "inspection": dispatch,
+            "wrapper_inspection": wrapper,
+            "runtime_event": None,
+        }
+    _configure_local_runtime(project_root)
+    event = _run_isolated_stage(
+        "compile_wrapper_direct",
+        _compile_wrapper_direct_stage,
+        (statement, max_output_items),
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    rungs = (event.get("public_compile"), event.get("direct_compile_"))
+    completed = event.get("status") == "ok" and all(
+        isinstance(rung, dict)
+        and isinstance(rung.get("output_count"), int)
+        and not isinstance(rung.get("output_count"), bool)
+        and rung["output_count"] > 0
+        for rung in rungs
+    )
+    return {
+        "source": "non-live PeTTaChainer compile wrapper/direct gate",
+        "status": "completed" if completed else "blocked",
+        "inspection": dispatch,
+        "wrapper_inspection": wrapper,
+        "runtime_event": event,
+        "boundaries": {
+            "diagnostic_only": True,
+            "no_mm2compile_or_compileadd": True,
+            "no_query_or_result_admission": True,
+            "no_memory_write_or_live_integration": True,
+        },
+    }
+
+
 def run_compile_dispatch_gate(
     statement: str,
     *,

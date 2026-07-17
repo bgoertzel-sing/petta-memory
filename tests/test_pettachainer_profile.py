@@ -951,6 +951,68 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
                 "(: p (S x) (STV 1 0.9))", project_root=Path("/project"), max_output_items=0,
             )
 
+    def test_inspect_compile_wrapper_shape_closes_exact_delegation(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            compile_path = repo / "pettachainer" / "metta" / "chainer" / "compile.metta"
+            compile_path.parent.mkdir(parents=True)
+            compile_path.write_text("(= (compile $kb $stmt) (compile_ $kb $stmt))\n", encoding="utf-8")
+
+            result = profile.inspect_compile_wrapper_shape(repo)
+
+        self.assertTrue(result["shape_confirmed"])
+        self.assertIn("delegates directly", result["interpretation"])
+
+    def test_inspect_compile_wrapper_shape_fails_closed_on_drift(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            compile_path = repo / "pettachainer" / "metta" / "chainer" / "compile.metta"
+            compile_path.parent.mkdir(parents=True)
+            compile_path.write_text("(= (compile $kb $stmt) (collapse (compile_ $kb $stmt)))\n", encoding="utf-8")
+
+            result = profile.inspect_compile_wrapper_shape(repo)
+
+        self.assertFalse(result["shape_confirmed"])
+        self.assertIn("do not compare", result["interpretation"])
+
+    def test_run_compile_wrapper_direct_gate_compares_two_rungs(self):
+        statement = "(: p (Requires MemoryTarget0 PLNReadyViews) (STV 1 0.9))"
+        captured = {}
+
+        def fake_stage(label, target, args, *, stage_timeout_sec):
+            captured.update(label=label, target=target, args=args, stage_timeout_sec=stage_timeout_sec)
+            rung = {"output_count": 256, "unique_output_count": 1}
+            return {"status": "ok", "public_compile": rung, "direct_compile_": rung}
+
+        with (
+            patch.object(profile, "inspect_compile_dispatch_for_statement", return_value={"selected_compile_branch": "fact-assertion"}),
+            patch.object(profile, "inspect_compile_wrapper_shape", return_value={"shape_confirmed": True}),
+            patch.object(profile, "_configure_local_runtime", return_value=None),
+            patch.object(profile, "_run_isolated_stage", side_effect=fake_stage),
+        ):
+            result = profile.run_compile_wrapper_direct_gate(
+                statement, project_root=Path("/project"), stage_timeout_sec=3.0, max_output_items=4,
+            )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(captured["label"], "compile_wrapper_direct")
+        self.assertEqual(captured["target"], profile._compile_wrapper_direct_stage)
+        self.assertEqual(captured["args"], (statement, 4))
+        self.assertTrue(result["boundaries"]["no_mm2compile_or_compileadd"])
+
+    def test_run_compile_wrapper_direct_gate_skips_source_drift(self):
+        with (
+            patch.object(profile, "inspect_compile_dispatch_for_statement", return_value={"selected_compile_branch": "fact-assertion"}),
+            patch.object(profile, "inspect_compile_wrapper_shape", return_value={"shape_confirmed": False}),
+            patch.object(profile, "_configure_local_runtime") as configure,
+        ):
+            result = profile.run_compile_wrapper_direct_gate(
+                "(: p (S x) (STV 1 0.9))", project_root=Path("/project"),
+            )
+
+        self.assertEqual(result["status"], "skipped")
+        configure.assert_not_called()
+
     def test_inspect_compile_fact_branch_shape_closes_copied_source(self):
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
