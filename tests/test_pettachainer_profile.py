@@ -1506,6 +1506,75 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         self.assertIsNone(result["runtime_event"])
         configure.assert_not_called()
 
+    def test_run_repaired_compileadd_exact_fact_query_gate_requires_exact_answer(self):
+        event = {
+            "status": "ok",
+            "expected_internal_stored": True,
+            "exact_answer_present": True,
+            "query_answer_count": 1,
+        }
+        with (
+            patch.object(profile, "inspect_duplicate_compile_import_repair", return_value={"exact_targeted_import_removal": True}),
+            patch.object(profile, "inspect_compile_dispatch_for_statement", return_value={"selected_compile_branch": "fact-assertion"}),
+            patch.object(profile, "inspect_mm2compile_collection_shape", return_value={"shape_confirmed": True}),
+            patch.object(profile, "_configure_local_runtime", return_value=None),
+            patch.object(profile, "_run_isolated_stage", return_value=event) as run_stage,
+        ):
+            result = profile.run_repaired_compileadd_exact_fact_query_gate(
+                "(: p (S x) (STV 1 0.9))",
+                project_root=Path("/project"),
+                candidate_repo_path=Path("/candidate"),
+                stage_timeout_sec=3.0,
+                query_steps=2,
+                max_output_items=4,
+            )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertIs(run_stage.call_args.args[1], profile._compileadd_exact_fact_query_from_repo_stage)
+        self.assertEqual(run_stage.call_args.args[2], (
+            "(: p (S x) (STV 1 0.9))", "/candidate", 2, 4,
+        ))
+        self.assertTrue(result["boundaries"]["single_compileadd_then_exact_fact_query"])
+        self.assertTrue(result["boundaries"]["no_inferred_result_promotion_or_memory_write"])
+
+    def test_run_repaired_compileadd_exact_fact_query_gate_blocks_wrong_answer(self):
+        with (
+            patch.object(profile, "inspect_duplicate_compile_import_repair", return_value={"exact_targeted_import_removal": True}),
+            patch.object(profile, "inspect_compile_dispatch_for_statement", return_value={"selected_compile_branch": "fact-assertion"}),
+            patch.object(profile, "inspect_mm2compile_collection_shape", return_value={"shape_confirmed": True}),
+            patch.object(profile, "_configure_local_runtime", return_value=None),
+            patch.object(profile, "_run_isolated_stage", return_value={
+                "status": "ok",
+                "expected_internal_stored": True,
+                "exact_answer_present": False,
+                "query_answer_count": 1,
+            }),
+        ):
+            result = profile.run_repaired_compileadd_exact_fact_query_gate(
+                "(: p (S x) (STV 1 0.9))",
+                project_root=Path("/project"),
+                candidate_repo_path=Path("/candidate"),
+            )
+
+        self.assertEqual(result["status"], "blocked")
+
+    def test_run_repaired_compileadd_exact_fact_query_gate_skips_source_drift(self):
+        with (
+            patch.object(profile, "inspect_duplicate_compile_import_repair", return_value={"exact_targeted_import_removal": False}),
+            patch.object(profile, "inspect_compile_dispatch_for_statement", return_value={"selected_compile_branch": "fact-assertion"}),
+            patch.object(profile, "inspect_mm2compile_collection_shape", return_value={"shape_confirmed": True}),
+            patch.object(profile, "_configure_local_runtime") as configure,
+        ):
+            result = profile.run_repaired_compileadd_exact_fact_query_gate(
+                "(: p (S x) (STV 1 0.9))",
+                project_root=Path("/project"),
+                candidate_repo_path=Path("/candidate"),
+            )
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertIsNone(result["runtime_event"])
+        configure.assert_not_called()
+
     def test_run_compile_single_registration_gate_compares_clone_and_direct(self):
         captured = {}
 

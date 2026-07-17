@@ -3094,6 +3094,130 @@ def _compileadd_add_only_from_repo_stage(
     }
 
 
+def _compileadd_exact_fact_query_from_repo_stage(
+    statement: str,
+    repo_path: str,
+    query_steps: int = 1,
+    max_output_items: int = 16,
+) -> dict[str, object]:
+    """Add one repaired fact and query only that exact fact in one process."""
+    if query_steps <= 0:
+        raise ValueError("query_steps must be positive")
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    sys.path.insert(0, repo_path)
+    from pettachainer import PeTTaChainer
+
+    handler = PeTTaChainer()
+    parsed = parse_one_list(statement)
+    if len(parsed) != 4 or symbol_text(parsed[0]) != ":":
+        raise ValueError("statement must be a four-field PeTTaChainer proof statement")
+    proof, fact_type, truth_value = (to_source(item) for item in parsed[1:])
+    expected_answer = f"(: {proof} {fact_type} {truth_value})"
+    query = f"(: $prf {fact_type} $tv)"
+
+    add_call_text = f"!(compileadd {handler.kb} {statement})"
+    add_result = handler.handler.process_metta_string(add_call_text)
+    add_items = add_result if isinstance(add_result, list) else [add_result]
+    add_rendered = [str(item) for item in add_items]
+
+    kb_context = f"({handler.kb} MAIN Nil)"
+    expected_internal = f"({fact_type} {kb_context} {proof} {truth_value})"
+    stored_call_text = f"!(match &kb {expected_internal} {expected_internal})"
+    stored_result = handler.handler.process_metta_string(stored_call_text)
+    stored_items = stored_result if isinstance(stored_result, list) else [stored_result]
+    stored_rendered = [str(item) for item in stored_items]
+
+    query_call_text = f"!(query {query_steps} {handler.kb} {query})"
+    query_result = handler.handler.process_metta_string(query_call_text)
+    query_items = query_result if isinstance(query_result, list) else [query_result]
+    query_rendered = [str(item) for item in query_items if str(item).strip() != "()"]
+    return {
+        "add_call_text": add_call_text,
+        "stored_check_call_text": stored_call_text,
+        "query_call_text": query_call_text,
+        "query": query,
+        "query_steps": query_steps,
+        "expected_answer": expected_answer,
+        "add_output_count": len(add_rendered),
+        "expected_internal_stored": _materialize_identity_matches(expected_internal, stored_rendered),
+        "query_answer_count": len(query_rendered),
+        "query_unique_answer_count": len(dict.fromkeys(query_rendered)),
+        "query_answer_items": query_rendered[:max_output_items],
+        "query_answer_truncated": len(query_rendered) > max_output_items,
+        "exact_answer_present": _materialize_identity_matches(expected_answer, query_rendered),
+    }
+
+
+def run_repaired_compileadd_exact_fact_query_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    candidate_repo_path: str | Path,
+    stage_timeout_sec: float = 5.0,
+    query_steps: int = 1,
+    max_output_items: int = 16,
+) -> dict[str, object]:
+    """Run the first exact-fact query only after the admitted import repair."""
+    if stage_timeout_sec <= 0:
+        raise ValueError("stage_timeout_sec must be positive")
+    if query_steps <= 0:
+        raise ValueError("query_steps must be positive")
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    baseline_repo = project_root / "repos" / "PeTTaChainer"
+    candidate_repo = Path(candidate_repo_path)
+    repair = inspect_duplicate_compile_import_repair(baseline_repo, candidate_repo)
+    dispatch = inspect_compile_dispatch_for_statement(candidate_repo, statement)
+    collection = inspect_mm2compile_collection_shape(candidate_repo)
+    source_admitted = (
+        repair["exact_targeted_import_removal"] is True
+        and dispatch["selected_compile_branch"] == "fact-assertion"
+        and collection["shape_confirmed"] is True
+    )
+    if not source_admitted:
+        return {
+            "source": "non-live repaired PeTTaChainer exact-fact query gate",
+            "status": "skipped",
+            "reason": "exact repair, fact dispatch, or mm2compile source gate failed",
+            "repair_inspection": repair,
+            "inspection": dispatch,
+            "mm2compile_inspection": collection,
+            "runtime_event": None,
+        }
+    _configure_local_runtime(project_root)
+    event = _run_isolated_stage(
+        "repaired_compileadd_exact_fact_query",
+        _compileadd_exact_fact_query_from_repo_stage,
+        (statement, str(candidate_repo), query_steps, max_output_items),
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    completed = (
+        event.get("status") == "ok"
+        and event.get("expected_internal_stored") is True
+        and event.get("exact_answer_present") is True
+        and isinstance(event.get("query_answer_count"), int)
+        and not isinstance(event.get("query_answer_count"), bool)
+        and event["query_answer_count"] > 0
+    )
+    return {
+        "source": "non-live repaired PeTTaChainer exact-fact query gate",
+        "status": "completed" if completed else "blocked",
+        "repair_inspection": repair,
+        "inspection": dispatch,
+        "mm2compile_inspection": collection,
+        "runtime_event": event,
+        "boundaries": {
+            "isolated_candidate_only": True,
+            "single_compileadd_then_exact_fact_query": True,
+            "bounded_query_steps": query_steps,
+            "exact_answer_only": True,
+            "no_inferred_result_promotion_or_memory_write": True,
+            "no_live_integration": True,
+        },
+    }
+
+
 def run_repaired_compileadd_add_only_gate(
     statement: str,
     *,
