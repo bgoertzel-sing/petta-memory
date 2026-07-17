@@ -248,6 +248,14 @@ def _materialize_identity_matches(statement: str, outputs: object) -> bool:
     return False
 
 
+def _all_materialize_identity_matches(statement: str, outputs: object) -> bool:
+    """Require a non-empty result set containing only structural matches."""
+    output_items = outputs if isinstance(outputs, list) else [outputs]
+    return bool(output_items) and all(
+        _materialize_identity_matches(statement, [item]) for item in output_items
+    )
+
+
 def _summarize_materialize_outputs(
     statement: str,
     outputs: object,
@@ -3132,6 +3140,7 @@ def _compileadd_exact_fact_query_from_repo_stage(
     query_result = handler.handler.process_metta_string(query_call_text)
     query_items = query_result if isinstance(query_result, list) else [query_result]
     query_rendered = [str(item) for item in query_items if str(item).strip() != "()"]
+    exact_answer_only = _all_materialize_identity_matches(expected_answer, query_rendered)
     return {
         "add_call_text": add_call_text,
         "stored_check_call_text": stored_call_text,
@@ -3146,6 +3155,11 @@ def _compileadd_exact_fact_query_from_repo_stage(
         "query_answer_items": query_rendered[:max_output_items],
         "query_answer_truncated": len(query_rendered) > max_output_items,
         "exact_answer_present": _materialize_identity_matches(expected_answer, query_rendered),
+        "exact_answer_only": exact_answer_only,
+        "unexpected_answer_count": sum(
+            not _materialize_identity_matches(expected_answer, [item])
+            for item in query_rendered
+        ),
     }
 
 
@@ -3196,6 +3210,7 @@ def run_repaired_compileadd_exact_fact_query_gate(
         event.get("status") == "ok"
         and event.get("expected_internal_stored") is True
         and event.get("exact_answer_present") is True
+        and event.get("exact_answer_only") is True
         and isinstance(event.get("query_answer_count"), int)
         and not isinstance(event.get("query_answer_count"), bool)
         and event["query_answer_count"] > 0

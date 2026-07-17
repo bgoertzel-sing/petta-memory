@@ -1511,6 +1511,7 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
             "status": "ok",
             "expected_internal_stored": True,
             "exact_answer_present": True,
+            "exact_answer_only": True,
             "query_answer_count": 1,
         }
         with (
@@ -1537,6 +1538,17 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         self.assertTrue(result["boundaries"]["single_compileadd_then_exact_fact_query"])
         self.assertTrue(result["boundaries"]["no_inferred_result_promotion_or_memory_write"])
 
+    def test_all_materialize_identity_matches_rejects_mixed_answers(self):
+        expected = "(: p (S x) (STV 1.0 0.70))"
+        self.assertTrue(profile._all_materialize_identity_matches(
+            expected, ["(: p (S x) (STV 1 0.7))"],
+        ))
+        self.assertFalse(profile._all_materialize_identity_matches(
+            expected,
+            ["(: p (S x) (STV 1 0.7))", "(: other (S x) (STV 1 0.7))"],
+        ))
+        self.assertFalse(profile._all_materialize_identity_matches(expected, []))
+
     def test_run_repaired_compileadd_exact_fact_query_gate_blocks_wrong_answer(self):
         with (
             patch.object(profile, "inspect_duplicate_compile_import_repair", return_value={"exact_targeted_import_removal": True}),
@@ -1548,6 +1560,28 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
                 "expected_internal_stored": True,
                 "exact_answer_present": False,
                 "query_answer_count": 1,
+            }),
+        ):
+            result = profile.run_repaired_compileadd_exact_fact_query_gate(
+                "(: p (S x) (STV 1 0.9))",
+                project_root=Path("/project"),
+                candidate_repo_path=Path("/candidate"),
+            )
+
+        self.assertEqual(result["status"], "blocked")
+
+    def test_run_repaired_compileadd_exact_fact_query_gate_blocks_extra_answer(self):
+        with (
+            patch.object(profile, "inspect_duplicate_compile_import_repair", return_value={"exact_targeted_import_removal": True}),
+            patch.object(profile, "inspect_compile_dispatch_for_statement", return_value={"selected_compile_branch": "fact-assertion"}),
+            patch.object(profile, "inspect_mm2compile_collection_shape", return_value={"shape_confirmed": True}),
+            patch.object(profile, "_configure_local_runtime", return_value=None),
+            patch.object(profile, "_run_isolated_stage", return_value={
+                "status": "ok",
+                "expected_internal_stored": True,
+                "exact_answer_present": True,
+                "exact_answer_only": False,
+                "query_answer_count": 2,
             }),
         ):
             result = profile.run_repaired_compileadd_exact_fact_query_gate(
