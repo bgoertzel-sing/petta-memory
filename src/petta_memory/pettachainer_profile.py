@@ -1766,6 +1766,84 @@ def _compile_wrapper_direct_stage(
     }
 
 
+def _compile_wrapper_direct_from_repo_stage(
+    statement: str, repo_path: str, max_output_items: int = 16,
+) -> dict[str, object]:
+    """Compare compiler entry points after selecting one isolated checkout."""
+    sys.path.insert(0, repo_path)
+    return _compile_wrapper_direct_stage(statement, max_output_items)
+
+
+def run_repaired_compile_wrapper_direct_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    candidate_repo_path: str | Path,
+    stage_timeout_sec: float = 5.0,
+    max_output_items: int = 16,
+) -> dict[str, object]:
+    """Remeasure the first downstream compiler rung on an exact repair.
+
+    The candidate must pass the same critical-file comparison as the admitted
+    duplicate-import repair.  This gate invokes only public ``compile`` and
+    direct ``compile_``; collector, add, and query paths remain closed.
+    """
+    if stage_timeout_sec <= 0:
+        raise ValueError("stage_timeout_sec must be positive")
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    baseline_repo = project_root / "repos" / "PeTTaChainer"
+    candidate_repo = Path(candidate_repo_path)
+    repair = inspect_duplicate_compile_import_repair(baseline_repo, candidate_repo)
+    dispatch = inspect_compile_dispatch_for_statement(candidate_repo, statement)
+    wrapper = inspect_compile_wrapper_shape(candidate_repo)
+    source_admitted = (
+        repair["exact_targeted_import_removal"] is True
+        and dispatch["selected_compile_branch"] == "fact-assertion"
+        and wrapper["shape_confirmed"] is True
+    )
+    if not source_admitted:
+        return {
+            "source": "non-live repaired PeTTaChainer compile wrapper/direct gate",
+            "status": "skipped",
+            "reason": "exact repair, fact dispatch, or compile wrapper source gate failed",
+            "repair_inspection": repair,
+            "inspection": dispatch,
+            "wrapper_inspection": wrapper,
+            "runtime_event": None,
+        }
+    _configure_local_runtime(project_root)
+    event = _run_isolated_stage(
+        "repaired_compile_wrapper_direct",
+        _compile_wrapper_direct_from_repo_stage,
+        (statement, str(candidate_repo), max_output_items),
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    rungs = (event.get("public_compile"), event.get("direct_compile_"))
+    completed = event.get("status") == "ok" and all(
+        isinstance(rung, dict)
+        and isinstance(rung.get("output_count"), int)
+        and not isinstance(rung.get("output_count"), bool)
+        and rung["output_count"] > 0
+        and rung.get("unique_output_count") == 1
+        for rung in rungs
+    )
+    return {
+        "source": "non-live repaired PeTTaChainer compile wrapper/direct gate",
+        "status": "completed" if completed else "blocked",
+        "repair_inspection": repair,
+        "inspection": dispatch,
+        "wrapper_inspection": wrapper,
+        "runtime_event": event,
+        "boundaries": {
+            "isolated_candidate_only": True,
+            "compile_entry_points_only": True,
+            "no_mm2compile_or_compileadd_or_query": True,
+            "no_memory_write_or_live_integration": True,
+        },
+    }
+
+
 def run_compile_wrapper_direct_gate(
     statement: str,
     *,

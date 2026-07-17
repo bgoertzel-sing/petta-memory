@@ -1293,6 +1293,56 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         self.assertEqual(run_stage.call_count, 2)
         self.assertTrue(result["boundaries"]["no_mm2compile_or_compileadd_or_query"])
 
+    def test_run_repaired_compile_wrapper_direct_gate_remeasures_exact_candidate(self):
+        events = {
+            "status": "ok",
+            "public_compile": {"output_count": 2, "unique_output_count": 1},
+            "direct_compile_": {"output_count": 1, "unique_output_count": 1},
+        }
+        captured = {}
+
+        def fake_stage(label, target, args, *, stage_timeout_sec):
+            captured.update(label=label, target=target, args=args, timeout=stage_timeout_sec)
+            return events
+
+        with (
+            patch.object(profile, "inspect_duplicate_compile_import_repair", return_value={"exact_targeted_import_removal": True}),
+            patch.object(profile, "inspect_compile_dispatch_for_statement", return_value={"selected_compile_branch": "fact-assertion"}),
+            patch.object(profile, "inspect_compile_wrapper_shape", return_value={"shape_confirmed": True}),
+            patch.object(profile, "_configure_local_runtime", return_value=None),
+            patch.object(profile, "_run_isolated_stage", side_effect=fake_stage),
+        ):
+            result = profile.run_repaired_compile_wrapper_direct_gate(
+                "(: p (S x) (STV 1 0.9))",
+                project_root=Path("/project"),
+                candidate_repo_path=Path("/candidate"),
+                stage_timeout_sec=3.0,
+                max_output_items=4,
+            )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(captured["label"], "repaired_compile_wrapper_direct")
+        self.assertEqual(captured["target"], profile._compile_wrapper_direct_from_repo_stage)
+        self.assertEqual(captured["args"], ("(: p (S x) (STV 1 0.9))", "/candidate", 4))
+        self.assertTrue(result["boundaries"]["no_mm2compile_or_compileadd_or_query"])
+
+    def test_run_repaired_compile_wrapper_direct_gate_skips_inexact_candidate(self):
+        with (
+            patch.object(profile, "inspect_duplicate_compile_import_repair", return_value={"exact_targeted_import_removal": False}),
+            patch.object(profile, "inspect_compile_dispatch_for_statement", return_value={"selected_compile_branch": "fact-assertion"}),
+            patch.object(profile, "inspect_compile_wrapper_shape", return_value={"shape_confirmed": True}),
+            patch.object(profile, "_configure_local_runtime") as configure,
+        ):
+            result = profile.run_repaired_compile_wrapper_direct_gate(
+                "(: p (S x) (STV 1 0.9))",
+                project_root=Path("/project"),
+                candidate_repo_path=Path("/candidate"),
+            )
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertIsNone(result["runtime_event"])
+        configure.assert_not_called()
+
     def test_run_compile_single_registration_gate_compares_clone_and_direct(self):
         captured = {}
 
