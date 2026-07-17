@@ -1438,6 +1438,74 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         self.assertIsNone(result["runtime_event"])
         configure.assert_not_called()
 
+    def test_run_repaired_compileadd_add_only_gate_checks_exact_stored_fact(self):
+        event = {
+            "status": "ok",
+            "expected_external_present": True,
+            "expected_internal_stored": True,
+            "stored_match_count": 1,
+        }
+        with (
+            patch.object(profile, "inspect_duplicate_compile_import_repair", return_value={"exact_targeted_import_removal": True}),
+            patch.object(profile, "inspect_compile_dispatch_for_statement", return_value={"selected_compile_branch": "fact-assertion"}),
+            patch.object(profile, "inspect_mm2compile_collection_shape", return_value={"shape_confirmed": True}),
+            patch.object(profile, "_configure_local_runtime", return_value=None),
+            patch.object(profile, "_run_isolated_stage", return_value=event) as run_stage,
+        ):
+            result = profile.run_repaired_compileadd_add_only_gate(
+                "(: p (S x) (STV 1 0.9))",
+                project_root=Path("/project"),
+                candidate_repo_path=Path("/candidate"),
+                stage_timeout_sec=3.0,
+                max_output_items=4,
+            )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertIs(run_stage.call_args.args[1], profile._compileadd_add_only_from_repo_stage)
+        self.assertEqual(run_stage.call_args.args[2], (
+            "(: p (S x) (STV 1 0.9))", "/candidate", 4,
+        ))
+        self.assertTrue(result["boundaries"]["single_compileadd_only"])
+        self.assertTrue(result["boundaries"]["no_query_or_result_admission"])
+
+    def test_run_repaired_compileadd_add_only_gate_blocks_unstored_output(self):
+        with (
+            patch.object(profile, "inspect_duplicate_compile_import_repair", return_value={"exact_targeted_import_removal": True}),
+            patch.object(profile, "inspect_compile_dispatch_for_statement", return_value={"selected_compile_branch": "fact-assertion"}),
+            patch.object(profile, "inspect_mm2compile_collection_shape", return_value={"shape_confirmed": True}),
+            patch.object(profile, "_configure_local_runtime", return_value=None),
+            patch.object(profile, "_run_isolated_stage", return_value={
+                "status": "ok",
+                "expected_external_present": True,
+                "expected_internal_stored": False,
+                "stored_match_count": 0,
+            }),
+        ):
+            result = profile.run_repaired_compileadd_add_only_gate(
+                "(: p (S x) (STV 1 0.9))",
+                project_root=Path("/project"),
+                candidate_repo_path=Path("/candidate"),
+            )
+
+        self.assertEqual(result["status"], "blocked")
+
+    def test_run_repaired_compileadd_add_only_gate_skips_source_drift(self):
+        with (
+            patch.object(profile, "inspect_duplicate_compile_import_repair", return_value={"exact_targeted_import_removal": False}),
+            patch.object(profile, "inspect_compile_dispatch_for_statement", return_value={"selected_compile_branch": "fact-assertion"}),
+            patch.object(profile, "inspect_mm2compile_collection_shape", return_value={"shape_confirmed": True}),
+            patch.object(profile, "_configure_local_runtime") as configure,
+        ):
+            result = profile.run_repaired_compileadd_add_only_gate(
+                "(: p (S x) (STV 1 0.9))",
+                project_root=Path("/project"),
+                candidate_repo_path=Path("/candidate"),
+            )
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertIsNone(result["runtime_event"])
+        configure.assert_not_called()
+
     def test_run_compile_single_registration_gate_compares_clone_and_direct(self):
         captured = {}
 

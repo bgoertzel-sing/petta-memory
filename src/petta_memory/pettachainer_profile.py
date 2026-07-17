@@ -3047,6 +3047,118 @@ def _full_mm2compile_from_repo_stage(
     }
 
 
+def _compileadd_add_only_from_repo_stage(
+    statement: str, repo_path: str, max_output_items: int = 16,
+) -> dict[str, object]:
+    """Run one repaired ``compileadd`` and verify its exact stored fact.
+
+    This deliberately stops at an exact ``&kb`` membership check.  It does not
+    invoke PeTTaChainer's query compiler or treat the add result as an inferred
+    answer.
+    """
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    sys.path.insert(0, repo_path)
+    from pettachainer import PeTTaChainer
+
+    handler = PeTTaChainer()
+    parsed = parse_one_list(statement)
+    if len(parsed) != 4 or symbol_text(parsed[0]) != ":":
+        raise ValueError("statement must be a four-field PeTTaChainer proof statement")
+    proof, fact_type, truth_value = (to_source(item) for item in parsed[1:])
+    kb_context = f"({handler.kb} MAIN Nil)"
+    expected_external = f"(: {kb_context} {proof} {fact_type} {truth_value})"
+    expected_internal = f"({fact_type} {kb_context} {proof} {truth_value})"
+    call_text = f"!(compileadd {handler.kb} {statement})"
+    result = handler.handler.process_metta_string(call_text)
+    items = result if isinstance(result, list) else [result]
+    rendered = [str(item) for item in items]
+    stored_call_text = f"!(match &kb {expected_internal} {expected_internal})"
+    stored_result = handler.handler.process_metta_string(stored_call_text)
+    stored_items = stored_result if isinstance(stored_result, list) else [stored_result]
+    stored_rendered = [str(item) for item in stored_items]
+    return {
+        "call_text": call_text,
+        "stored_check_call_text": stored_call_text,
+        "expected_external": expected_external,
+        "expected_internal": expected_internal,
+        "output_count": len(rendered),
+        "unique_output_count": len(dict.fromkeys(rendered)),
+        "output_items": rendered[:max_output_items],
+        "output_truncated": len(rendered) > max_output_items,
+        "expected_external_present": _materialize_identity_matches(expected_external, rendered),
+        "stored_match_count": len(stored_rendered),
+        "stored_match_items": stored_rendered[:max_output_items],
+        "stored_match_truncated": len(stored_rendered) > max_output_items,
+        "expected_internal_stored": _materialize_identity_matches(expected_internal, stored_rendered),
+    }
+
+
+def run_repaired_compileadd_add_only_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    candidate_repo_path: str | Path,
+    stage_timeout_sec: float = 5.0,
+    max_output_items: int = 16,
+) -> dict[str, object]:
+    """Retry exactly one ``compileadd`` after the admitted import repair."""
+    if stage_timeout_sec <= 0:
+        raise ValueError("stage_timeout_sec must be positive")
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    baseline_repo = project_root / "repos" / "PeTTaChainer"
+    candidate_repo = Path(candidate_repo_path)
+    repair = inspect_duplicate_compile_import_repair(baseline_repo, candidate_repo)
+    dispatch = inspect_compile_dispatch_for_statement(candidate_repo, statement)
+    collection = inspect_mm2compile_collection_shape(candidate_repo)
+    source_admitted = (
+        repair["exact_targeted_import_removal"] is True
+        and dispatch["selected_compile_branch"] == "fact-assertion"
+        and collection["shape_confirmed"] is True
+    )
+    if not source_admitted:
+        return {
+            "source": "non-live repaired PeTTaChainer compileadd add-only gate",
+            "status": "skipped",
+            "reason": "exact repair, fact dispatch, or mm2compile source gate failed",
+            "repair_inspection": repair,
+            "inspection": dispatch,
+            "mm2compile_inspection": collection,
+            "runtime_event": None,
+        }
+    _configure_local_runtime(project_root)
+    event = _run_isolated_stage(
+        "repaired_compileadd_add_only",
+        _compileadd_add_only_from_repo_stage,
+        (statement, str(candidate_repo), max_output_items),
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    completed = (
+        event.get("status") == "ok"
+        and event.get("expected_external_present") is True
+        and event.get("expected_internal_stored") is True
+        and isinstance(event.get("stored_match_count"), int)
+        and not isinstance(event.get("stored_match_count"), bool)
+        and event["stored_match_count"] > 0
+    )
+    return {
+        "source": "non-live repaired PeTTaChainer compileadd add-only gate",
+        "status": "completed" if completed else "blocked",
+        "repair_inspection": repair,
+        "inspection": dispatch,
+        "mm2compile_inspection": collection,
+        "runtime_event": event,
+        "boundaries": {
+            "isolated_candidate_only": True,
+            "single_compileadd_only": True,
+            "exact_kb_membership_check_only": True,
+            "no_query_or_result_admission": True,
+            "no_memory_write_or_live_integration": True,
+        },
+    }
+
+
 def run_repaired_full_mm2compile_gate(
     statement: str,
     *,
