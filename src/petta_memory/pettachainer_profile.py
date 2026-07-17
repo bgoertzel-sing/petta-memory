@@ -2237,6 +2237,145 @@ def run_compile_fact_dispatch_ladder_gate(
     }
 
 
+def inspect_compile_import_multiplicity(repo_path: str | Path) -> dict[str, object]:
+    """Confirm the two pinned import paths that register ``compile_``."""
+    metta = Path(repo_path) / "pettachainer" / "metta"
+    paths = {
+        "root": metta / "petta_chainer.metta",
+        "context": metta / "context" / "context_from_kb.metta",
+        "generation": metta / "context" / "context_generation.metta",
+    }
+    missing = [str(path) for path in paths.values() if not path.exists()]
+    if missing:
+        raise FileNotFoundError("missing PeTTaChainer import source: " + ", ".join(missing))
+    sources = {name: path.read_text(encoding="utf-8") for name, path in paths.items()}
+    matched = {
+        "root_imports_compile": "!(import! &self chainer/compile)" in sources["root"],
+        "root_imports_context": "!(import! &self context/context_from_kb)" in sources["root"],
+        "context_imports_generation": "!(import! &self context/context_generation)" in sources["context"],
+        "generation_imports_compile": "!(import! &self chainer/compile)" in sources["generation"],
+    }
+    return {
+        "source": "pettachainer compile import multiplicity inspection",
+        "repo_path": str(Path(repo_path)),
+        "matched_imports": matched,
+        "two_compile_import_paths_confirmed": all(matched.values()),
+        "import_paths": (
+            "petta_chainer -> chainer/compile",
+            "petta_chainer -> context/context_from_kb -> context/context_generation -> chainer/compile",
+        ),
+        "boundaries": {
+            "source_inspection_only": True,
+            "no_upstream_semantic_change": True,
+            "no_compileadd_or_query": True,
+        },
+    }
+
+
+def _compile_single_registration_stage(
+    statement: str, max_output_items: int = 16,
+) -> dict[str, object]:
+    """Compare direct ``compile_`` with one source-equivalent local definition."""
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    from pettachainer import PeTTaChainer
+
+    handler = PeTTaChainer()
+    clone = "pm-profile-single-compile-fact"
+    definition = (
+        f"(= ({clone} $kb (@ $stmt (: $prf $Type $tv))) "
+        "(if (is-var $Type) (empty) "
+        "(if (= $Type (Implication (cons Premises $premises) (cons Conclusions $conclusions))) (empty) "
+        "(if (bidirectional-implication-type? $Type) (empty) "
+        "(let $fact-kb (compile-fact-kb $kb) "
+        "(superpose ((() |- ((: $fact-kb $prf $Type $tv))) "
+        "(compile-outputs (: $fact-kb $prf $Type $tv)))))))))"
+    )
+    handler.handler.process_metta_string(definition)
+
+    def summarize(call_text: str) -> dict[str, object]:
+        result = handler.handler.process_metta_string(call_text)
+        items = result if isinstance(result, list) else [result]
+        rendered = [str(item) for item in items]
+        unique = list(dict.fromkeys(rendered))
+        return {
+            "call_text": call_text,
+            "output_count": len(rendered),
+            "unique_output_count": len(unique),
+            "output_items": rendered[:max_output_items],
+            "output_truncated": len(rendered) > max_output_items,
+        }
+
+    return {
+        "single_registration_clone": summarize(f"!({clone} {handler.kb} {statement})"),
+        "direct_compile_": summarize(f"!(compile_ {handler.kb} {statement})"),
+    }
+
+
+def run_compile_single_registration_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 5.0,
+    max_output_items: int = 16,
+) -> dict[str, object]:
+    """Measure duplicate compiler registration without adding compiled atoms."""
+    if stage_timeout_sec <= 0:
+        raise ValueError("stage_timeout_sec must be positive")
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    repo = project_root / "repos" / "PeTTaChainer"
+    dispatch = inspect_compile_dispatch_for_statement(repo, statement)
+    ladder = inspect_compile_fact_dispatch_ladder_shape(repo)
+    imports = inspect_compile_import_multiplicity(repo)
+    confirmed = (
+        dispatch["selected_compile_branch"] == "fact-assertion"
+        and ladder["shape_confirmed"] is True
+        and imports["two_compile_import_paths_confirmed"] is True
+    )
+    if not confirmed:
+        return {
+            "source": "non-live PeTTaChainer single-registration compile gate",
+            "status": "skipped",
+            "reason": "fact dispatch, definition shape, or duplicate import paths were not confirmed",
+            "inspection": dispatch,
+            "ladder_inspection": ladder,
+            "import_inspection": imports,
+            "runtime_event": None,
+        }
+    _configure_local_runtime(project_root)
+    event = _run_isolated_stage(
+        "compile_single_registration",
+        _compile_single_registration_stage,
+        (statement, max_output_items),
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    clone = event.get("single_registration_clone")
+    direct = event.get("direct_compile_")
+    completed = event.get("status") == "ok" and all(
+        isinstance(rung, dict)
+        and isinstance(rung.get("output_count"), int)
+        and not isinstance(rung.get("output_count"), bool)
+        and rung["output_count"] > 0
+        for rung in (clone, direct)
+    )
+    return {
+        "source": "non-live PeTTaChainer single-registration compile gate",
+        "status": "completed" if completed else "blocked",
+        "inspection": dispatch,
+        "ladder_inspection": ladder,
+        "import_inspection": imports,
+        "runtime_event": event,
+        "boundaries": {
+            "diagnostic_only": True,
+            "single_local_definition_only": True,
+            "no_upstream_semantic_change": True,
+            "no_mm2compile_or_compileadd_or_query": True,
+            "no_memory_write_or_live_integration": True,
+        },
+    }
+
+
 def _fact_compiled_clause(statement: str, kb: str) -> str:
     """Build the one base-fact clause emitted by the ``compile_`` fact branch."""
     form = parse_one_list(statement)

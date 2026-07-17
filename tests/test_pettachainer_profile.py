@@ -1198,6 +1198,68 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         self.assertEqual(result["status"], "skipped")
         configure.assert_not_called()
 
+    def test_inspect_compile_import_multiplicity_closes_two_paths(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            metta = repo / "pettachainer" / "metta"
+            (metta / "context").mkdir(parents=True)
+            (metta / "petta_chainer.metta").write_text(
+                "!(import! &self chainer/compile)\n!(import! &self context/context_from_kb)\n",
+                encoding="utf-8",
+            )
+            (metta / "context" / "context_from_kb.metta").write_text(
+                "!(import! &self context/context_generation)\n", encoding="utf-8",
+            )
+            (metta / "context" / "context_generation.metta").write_text(
+                "!(import! &self chainer/compile)\n", encoding="utf-8",
+            )
+
+            result = profile.inspect_compile_import_multiplicity(repo)
+
+        self.assertTrue(result["two_compile_import_paths_confirmed"])
+        self.assertTrue(all(result["matched_imports"].values()))
+
+    def test_run_compile_single_registration_gate_compares_clone_and_direct(self):
+        captured = {}
+
+        def fake_stage(label, target, args, *, stage_timeout_sec):
+            captured.update(label=label, target=target, args=args, stage_timeout_sec=stage_timeout_sec)
+            return {
+                "status": "ok",
+                "single_registration_clone": {"output_count": 64},
+                "direct_compile_": {"output_count": 128},
+            }
+
+        with (
+            patch.object(profile, "inspect_compile_dispatch_for_statement", return_value={"selected_compile_branch": "fact-assertion"}),
+            patch.object(profile, "inspect_compile_fact_dispatch_ladder_shape", return_value={"shape_confirmed": True}),
+            patch.object(profile, "inspect_compile_import_multiplicity", return_value={"two_compile_import_paths_confirmed": True}),
+            patch.object(profile, "_configure_local_runtime", return_value=None),
+            patch.object(profile, "_run_isolated_stage", side_effect=fake_stage),
+        ):
+            result = profile.run_compile_single_registration_gate(
+                "(: p (S x) (STV 1 0.9))", project_root=Path("/project"), stage_timeout_sec=3.0,
+            )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(captured["label"], "compile_single_registration")
+        self.assertEqual(captured["target"], profile._compile_single_registration_stage)
+        self.assertTrue(result["boundaries"]["no_mm2compile_or_compileadd_or_query"])
+
+    def test_run_compile_single_registration_gate_skips_import_drift(self):
+        with (
+            patch.object(profile, "inspect_compile_dispatch_for_statement", return_value={"selected_compile_branch": "fact-assertion"}),
+            patch.object(profile, "inspect_compile_fact_dispatch_ladder_shape", return_value={"shape_confirmed": True}),
+            patch.object(profile, "inspect_compile_import_multiplicity", return_value={"two_compile_import_paths_confirmed": False}),
+            patch.object(profile, "_configure_local_runtime") as configure,
+        ):
+            result = profile.run_compile_single_registration_gate(
+                "(: p (S x) (STV 1 0.9))", project_root=Path("/project"),
+            )
+
+        self.assertEqual(result["status"], "skipped")
+        configure.assert_not_called()
+
     def test_fact_compiled_clause_builds_one_canonical_base_fact(self):
         clause = profile._fact_compiled_clause(
             "(: p (Requires MemoryTarget0 PLNReadyViews) (STV 1 0.9))", "kb-test",
