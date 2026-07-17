@@ -14,6 +14,8 @@ Normative design source: `library/atlas-indexed-reversible-pipln/specification.p
 
 `petta_memory.pipln_models` provides the first dependency-free Phase-1 primitives:
 
+- isolated duplicate-import repair admission: a source gate proves that a candidate differs at the critical compiler/import files only by removing the sole `chainer/compile` import from `context_generation.metta`, then compares direct `compile_` in separate bounded processes. On pinned PeTTaChainer `e4db5ca`, baseline returned 128 copies of one clause and the candidate returned one normalized-equivalent clause. This overturns the provisional independent-factor repair expectation; downstream rungs must be remeasured before another repair or `compileadd` retry.
+
 - immutable validated `EvidenceToken`, `EvidencePacket`, and `EvidenceBasis` records;
 - immutable create-once JSON snapshot documents with a canonical payload checksum and fail-closed loader; v2 snapshots commit a digest for each packet's complete frozen semantic content and derive the snapshot fingerprint from those digests, preventing a caller from compiling changed packet content under an unchanged snapshot identity;
 - a content-addressed `EvidenceSnapshotRepository` that discovers validated snapshot documents, rejects filename/fingerprint drift and duplicate logical snapshot IDs, and provides fail-closed lookup;

@@ -1,6 +1,6 @@
 # PeTTaChainer fact-path fan-out repair plan
 
-Status: diagnostic plan only; no upstream change or set collapse is approved.
+Status: first isolated source repair admitted; no upstream change or set collapse is approved.
 
 The source-gated probes now close the 256-copy public `compile` result for one
 concrete fact:
@@ -23,8 +23,10 @@ copies.
 fails closed when any measured count drifts. The repair order is:
 
 1. Test removal of duplicate compiler registration in an isolated pinned
-   PeTTaChainer checkout. This is the narrowest source repair and must reduce
-   direct `compile_` from 128 to 64 unique-equivalent outputs.
+   PeTTaChainer checkout. **Completed 2026-07-17:** an exact one-line removal
+   reduced direct `compile_` from 128 duplicate-equivalent outputs to one with
+   the same normalized clause. The factors above are therefore diagnostic
+   attributions under the duplicated runtime, not independent repair effects.
 2. Make the zero-premise `mm2stmt` case exclusive while proving unchanged
    behavior for non-empty premise lists.
 3. Investigate the bidirectional classifier, annotated head, `compile-fact-kb`,
@@ -33,6 +35,8 @@ fails closed when any measured count drifts. The repair order is:
    separate fact/rule semantic parity tests. Do not use it to conceal matcher or
    import defects.
 
-Keep `compileadd`, query/result admission, manifest construction, promotion,
+Before applying another repair, rerun the existing public wrapper, fact-KB,
+predicate-ladder, annotation, `mm2stmt`, and collection gates against this
+single-import candidate. Keep `compileadd`, query/result admission, manifest construction, promotion,
 memory writes, and live OmegaClaw/GoalChainer integration closed until a pinned
 isolated repair passes the existing rungs.

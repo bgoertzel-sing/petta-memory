@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
 import json
 import multiprocessing as mp
 import os
@@ -2268,6 +2269,161 @@ def inspect_compile_import_multiplicity(repo_path: str | Path) -> dict[str, obje
             "source_inspection_only": True,
             "no_upstream_semantic_change": True,
             "no_compileadd_or_query": True,
+        },
+    }
+
+
+def inspect_duplicate_compile_import_repair(
+    baseline_repo_path: str | Path, candidate_repo_path: str | Path,
+) -> dict[str, object]:
+    """Verify an isolated candidate removes only the duplicate compile import.
+
+    This closes the source side of the first repair-plan rung without modifying
+    either checkout.  The candidate must leave the root import chain and the
+    compiler source byte-identical and remove exactly one import line from
+    ``context_generation.metta``.
+    """
+    relative_paths = (
+        Path("pettachainer/metta/petta_chainer.metta"),
+        Path("pettachainer/metta/context/context_from_kb.metta"),
+        Path("pettachainer/metta/context/context_generation.metta"),
+        Path("pettachainer/metta/chainer/compile.metta"),
+    )
+    baseline_root = Path(baseline_repo_path)
+    candidate_root = Path(candidate_repo_path)
+    missing = [
+        str(root / relative)
+        for root in (baseline_root, candidate_root)
+        for relative in relative_paths
+        if not (root / relative).is_file()
+    ]
+    if missing:
+        raise FileNotFoundError("missing PeTTaChainer repair source: " + ", ".join(missing))
+    baseline = {
+        relative: (baseline_root / relative).read_text(encoding="utf-8")
+        for relative in relative_paths
+    }
+    candidate = {
+        relative: (candidate_root / relative).read_text(encoding="utf-8")
+        for relative in relative_paths
+    }
+    generation = Path("pettachainer/metta/context/context_generation.metta")
+    import_line = "!(import! &self chainer/compile)\n"
+    occurrence_count = baseline[generation].count(import_line)
+    expected_generation = baseline[generation].replace(import_line, "", 1)
+    unchanged_paths = tuple(str(relative) for relative in relative_paths if relative != generation)
+    exact_repair = (
+        occurrence_count == 1
+        and candidate[generation] == expected_generation
+        and all(candidate[relative] == baseline[relative] for relative in relative_paths if relative != generation)
+    )
+
+    def digest(text: str) -> str:
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    return {
+        "source": "isolated PeTTaChainer duplicate compile-import repair inspection",
+        "baseline_repo_path": str(baseline_root),
+        "candidate_repo_path": str(candidate_root),
+        "target_import_occurrences": occurrence_count,
+        "exact_targeted_import_removal": exact_repair,
+        "unchanged_paths": unchanged_paths,
+        "baseline_hashes": {str(path): digest(text) for path, text in baseline.items()},
+        "candidate_hashes": {str(path): digest(text) for path, text in candidate.items()},
+        "boundaries": {
+            "source_inspection_only": True,
+            "candidate_checkout_only": True,
+            "no_compileadd_or_query": True,
+        },
+    }
+
+
+def _compile_direct_from_repo_stage(
+    statement: str, repo_path: str, max_output_items: int = 16,
+) -> dict[str, object]:
+    """Run direct ``compile_`` after selecting one isolated checkout."""
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    sys.path.insert(0, repo_path)
+    from pettachainer import PeTTaChainer
+
+    handler = PeTTaChainer()
+    call_text = f"!(compile_ {handler.kb} {statement})"
+    result = handler.handler.process_metta_string(call_text)
+    items = result if isinstance(result, list) else [result]
+    rendered = [str(item) for item in items]
+    unique = list(dict.fromkeys(rendered))
+    normalized = list(dict.fromkeys(item.replace(str(handler.kb), "$KB") for item in rendered))
+    return {
+        "call_text": call_text,
+        "output_count": len(rendered),
+        "unique_output_count": len(unique),
+        "output_items": rendered[:max_output_items],
+        "normalized_output_items": normalized[:max_output_items],
+        "output_truncated": len(rendered) > max_output_items,
+    }
+
+
+def run_duplicate_compile_import_repair_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    candidate_repo_path: str | Path,
+    stage_timeout_sec: float = 5.0,
+    max_output_items: int = 16,
+) -> dict[str, object]:
+    """Compare direct compilation before/after one exact isolated import repair."""
+    if stage_timeout_sec <= 0:
+        raise ValueError("stage_timeout_sec must be positive")
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    baseline_repo = project_root / "repos" / "PeTTaChainer"
+    candidate_repo = Path(candidate_repo_path)
+    inspection = inspect_duplicate_compile_import_repair(baseline_repo, candidate_repo)
+    if inspection["exact_targeted_import_removal"] is not True:
+        return {
+            "source": "non-live PeTTaChainer duplicate compile-import repair gate",
+            "status": "skipped",
+            "reason": "candidate is not the exact one-line duplicate-import removal",
+            "inspection": inspection,
+            "baseline_event": None,
+            "candidate_event": None,
+        }
+    _configure_local_runtime(project_root)
+    baseline_event = _run_isolated_stage(
+        "compile_direct_baseline",
+        _compile_direct_from_repo_stage,
+        (statement, str(baseline_repo), max_output_items),
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    candidate_event = _run_isolated_stage(
+        "compile_direct_repaired_candidate",
+        _compile_direct_from_repo_stage,
+        (statement, str(candidate_repo), max_output_items),
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    admitted = (
+        baseline_event.get("status") == "ok"
+        and candidate_event.get("status") == "ok"
+        and baseline_event.get("unique_output_count") == 1
+        and candidate_event.get("unique_output_count") == 1
+        and candidate_event.get("output_count") == 1
+        and isinstance(baseline_event.get("output_count"), int)
+        and baseline_event["output_count"] > candidate_event["output_count"]
+        and baseline_event.get("normalized_output_items")
+        == candidate_event.get("normalized_output_items")
+    )
+    return {
+        "source": "non-live PeTTaChainer duplicate compile-import repair gate",
+        "status": "admitted" if admitted else "blocked",
+        "inspection": inspection,
+        "baseline_event": baseline_event,
+        "candidate_event": candidate_event,
+        "boundaries": {
+            "isolated_candidate_only": True,
+            "direct_compile_only": True,
+            "no_mm2compile_or_compileadd_or_query": True,
+            "no_memory_write_or_live_integration": True,
         },
     }
 

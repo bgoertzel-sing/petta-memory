@@ -1219,6 +1219,80 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         self.assertTrue(result["two_compile_import_paths_confirmed"])
         self.assertTrue(all(result["matched_imports"].values()))
 
+    def test_inspect_duplicate_compile_import_repair_requires_exact_one_line_removal(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            baseline = root / "baseline"
+            candidate = root / "candidate"
+            relative_sources = {
+                "pettachainer/metta/petta_chainer.metta": "!(import! &self chainer/compile)\nroot\n",
+                "pettachainer/metta/context/context_from_kb.metta": "context\n",
+                "pettachainer/metta/context/context_generation.metta": "before\n!(import! &self chainer/compile)\nafter\n",
+                "pettachainer/metta/chainer/compile.metta": "(= (compile_ $kb $stmt) $stmt)\n",
+            }
+            for relative, text in relative_sources.items():
+                for repo in (baseline, candidate):
+                    path = repo / relative
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(text, encoding="utf-8")
+            generation = candidate / "pettachainer/metta/context/context_generation.metta"
+            generation.write_text("before\nafter\n", encoding="utf-8")
+
+            result = profile.inspect_duplicate_compile_import_repair(baseline, candidate)
+
+        self.assertTrue(result["exact_targeted_import_removal"])
+        self.assertEqual(result["target_import_occurrences"], 1)
+        self.assertNotEqual(
+            result["baseline_hashes"]["pettachainer/metta/context/context_generation.metta"],
+            result["candidate_hashes"]["pettachainer/metta/context/context_generation.metta"],
+        )
+
+    def test_inspect_duplicate_compile_import_repair_rejects_adjacent_drift(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            baseline = root / "baseline"
+            candidate = root / "candidate"
+            for repo in (baseline, candidate):
+                for relative, text in {
+                    "pettachainer/metta/petta_chainer.metta": "root\n",
+                    "pettachainer/metta/context/context_from_kb.metta": "context\n",
+                    "pettachainer/metta/context/context_generation.metta": "!(import! &self chainer/compile)\nbody\n",
+                    "pettachainer/metta/chainer/compile.metta": "compiler\n",
+                }.items():
+                    path = repo / relative
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(text, encoding="utf-8")
+            (candidate / "pettachainer/metta/context/context_generation.metta").write_text(
+                "changed-body\n", encoding="utf-8",
+            )
+
+            result = profile.inspect_duplicate_compile_import_repair(baseline, candidate)
+
+        self.assertFalse(result["exact_targeted_import_removal"])
+
+    def test_run_duplicate_compile_import_repair_gate_admits_one_output_candidate(self):
+        inspection = {"exact_targeted_import_removal": True}
+        events = (
+            {"status": "ok", "output_count": 128, "unique_output_count": 1, "normalized_output_items": ["fact"]},
+            {"status": "ok", "output_count": 1, "unique_output_count": 1, "normalized_output_items": ["fact"]},
+        )
+        with (
+            patch.object(profile, "inspect_duplicate_compile_import_repair", return_value=inspection),
+            patch.object(profile, "_configure_local_runtime", return_value=None),
+            patch.object(profile, "_run_isolated_stage", side_effect=events) as run_stage,
+        ):
+            result = profile.run_duplicate_compile_import_repair_gate(
+                "(: p (S x) (STV 1 0.9))",
+                project_root=Path("/project"),
+                candidate_repo_path=Path("/candidate"),
+                stage_timeout_sec=3.0,
+                max_output_items=4,
+            )
+
+        self.assertEqual(result["status"], "admitted")
+        self.assertEqual(run_stage.call_count, 2)
+        self.assertTrue(result["boundaries"]["no_mm2compile_or_compileadd_or_query"])
+
     def test_run_compile_single_registration_gate_compares_clone_and_direct(self):
         captured = {}
 
