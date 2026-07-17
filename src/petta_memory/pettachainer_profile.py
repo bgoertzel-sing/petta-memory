@@ -2486,6 +2486,128 @@ def run_compile_annotation_dispatch_gate(
     }
 
 
+def build_pettachainer_fact_fanout_repair_plan(
+    *,
+    public_compile_count: int,
+    direct_compile_count: int,
+    single_registration_annotated_count: int,
+    single_registration_structural_count: int,
+    literal_fact_count: int,
+    bidirectional_gate_count: int,
+    fact_kb_count: int,
+    mm2stmt_count: int,
+    mm2compile_collection_count: int,
+) -> dict[str, object]:
+    """Close measured fact-path multiplicity before proposing a repair.
+
+    The inputs are deliberately explicit: this plan is valid only for a set of
+    observed counts from the source-gated probes above.  Any arithmetic drift
+    fails closed instead of silently preserving a stale upstream diagnosis.
+    """
+    counts = {
+        "public_compile": public_compile_count,
+        "direct_compile": direct_compile_count,
+        "single_registration_annotated": single_registration_annotated_count,
+        "single_registration_structural": single_registration_structural_count,
+        "literal_fact": literal_fact_count,
+        "bidirectional_gate": bidirectional_gate_count,
+        "fact_kb": fact_kb_count,
+        "mm2stmt": mm2stmt_count,
+        "mm2compile_collection": mm2compile_collection_count,
+    }
+    for name, value in counts.items():
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError(f"{name} count must be a positive integer")
+
+    factor_inputs = (
+        ("public_wrapper", public_compile_count, direct_compile_count),
+        ("duplicate_registration", direct_compile_count, single_registration_annotated_count),
+        (
+            "annotated_head",
+            single_registration_annotated_count,
+            single_registration_structural_count,
+        ),
+        ("bidirectional_classifier", bidirectional_gate_count, literal_fact_count),
+        ("fact_kb", fact_kb_count, literal_fact_count),
+        ("mm2stmt_overlap", mm2stmt_count, literal_fact_count),
+        ("mm2compile_collection", mm2compile_collection_count, mm2stmt_count),
+    )
+    factors: dict[str, int] = {}
+    for name, numerator, denominator in factor_inputs:
+        factor, remainder = divmod(numerator, denominator)
+        if remainder or factor <= 0:
+            raise ValueError(f"{name} counts do not form a positive integer factor")
+        factors[name] = factor
+
+    compiler_product = (
+        factors["public_wrapper"]
+        * factors["duplicate_registration"]
+        * factors["annotated_head"]
+        * factors["bidirectional_classifier"]
+        * factors["fact_kb"]
+        * literal_fact_count
+    )
+    if compiler_product != public_compile_count:
+        raise ValueError("compiler factors do not close the public compile count")
+    collection_product = (
+        factors["mm2stmt_overlap"]
+        * factors["mm2compile_collection"]
+        * literal_fact_count
+    )
+    if collection_product != mm2compile_collection_count:
+        raise ValueError("collection factors do not close the deduplicated mm2compile count")
+
+    return {
+        "schema": "petta-memory-pettachainer-fact-fanout-repair-plan-v1",
+        "status": "attribution-closed",
+        "counts": counts,
+        "factors": factors,
+        "closure": {
+            "compiler_product": compiler_product,
+            "public_compile_count": public_compile_count,
+            "collection_product": collection_product,
+            "mm2compile_collection_count": mm2compile_collection_count,
+        },
+        "repair_order": [
+            {
+                "rank": 1,
+                "target": "duplicate compiler registration",
+                "kind": "source/import repair",
+                "acceptance_gate": "one compile_ definition is registered and direct compile_ falls from 128 to 64 unique-equivalent outputs",
+            },
+            {
+                "rank": 2,
+                "target": "overlapping zero-premise mm2stmt arms",
+                "kind": "source pattern repair",
+                "acceptance_gate": "one canonical zero-premise clause yields one fact without changing non-empty-premise conversion",
+            },
+            {
+                "rank": 3,
+                "target": "bidirectional classifier, annotated head, fact-kb, and wrapper evaluator multiplicity",
+                "kind": "upstream matcher/evaluator investigation",
+                "acceptance_gate": "each source-gated rung returns one unique-equivalent output before compileadd is retried",
+            },
+            {
+                "rank": 4,
+                "target": "deduplicating collector",
+                "kind": "experimental fallback only",
+                "acceptance_gate": "set collapse is limited to byte-identical fact clauses and passes fact/rule semantic parity tests",
+            },
+        ],
+        "next_bounded_gate": (
+            "Apply no production change yet; test the duplicate-registration import repair in an isolated pinned "
+            "PeTTaChainer checkout, rerun the existing compile rungs, and keep compileadd/query closed."
+        ),
+        "boundaries": {
+            "diagnostic_plan_only": True,
+            "no_upstream_change": True,
+            "no_set_collapse_approved": True,
+            "no_compileadd_or_query": True,
+            "no_memory_write_or_live_integration": True,
+        },
+    }
+
+
 def _fact_compiled_clause(statement: str, kb: str) -> str:
     """Build the one base-fact clause emitted by the ``compile_`` fact branch."""
     form = parse_one_list(statement)

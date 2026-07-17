@@ -1311,6 +1311,55 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
                 "(: p (S x) (STV 1 0.9))", project_root=Path("/project"), max_output_items=0,
             )
 
+    def test_fact_fanout_repair_plan_closes_all_measured_factors(self):
+        result = profile.build_pettachainer_fact_fanout_repair_plan(
+            public_compile_count=256,
+            direct_compile_count=128,
+            single_registration_annotated_count=64,
+            single_registration_structural_count=32,
+            literal_fact_count=1,
+            bidirectional_gate_count=4,
+            fact_kb_count=8,
+            mm2stmt_count=2,
+            mm2compile_collection_count=4,
+        )
+
+        self.assertEqual(result["status"], "attribution-closed")
+        self.assertEqual(
+            result["factors"],
+            {
+                "public_wrapper": 2,
+                "duplicate_registration": 2,
+                "annotated_head": 2,
+                "bidirectional_classifier": 4,
+                "fact_kb": 8,
+                "mm2stmt_overlap": 2,
+                "mm2compile_collection": 2,
+            },
+        )
+        self.assertEqual(result["closure"]["compiler_product"], 256)
+        self.assertEqual(result["closure"]["collection_product"], 4)
+        self.assertEqual(result["repair_order"][0]["target"], "duplicate compiler registration")
+        self.assertTrue(result["boundaries"]["no_set_collapse_approved"])
+
+    def test_fact_fanout_repair_plan_rejects_stale_or_malformed_counts(self):
+        valid = {
+            "public_compile_count": 256,
+            "direct_compile_count": 128,
+            "single_registration_annotated_count": 64,
+            "single_registration_structural_count": 32,
+            "literal_fact_count": 1,
+            "bidirectional_gate_count": 4,
+            "fact_kb_count": 8,
+            "mm2stmt_count": 2,
+            "mm2compile_collection_count": 4,
+        }
+        for name, value in (("public_compile_count", 255), ("literal_fact_count", True)):
+            with self.subTest(name=name):
+                drifted = {**valid, name: value}
+                with self.assertRaises(ValueError):
+                    profile.build_pettachainer_fact_fanout_repair_plan(**drifted)
+
     def test_fact_compiled_clause_builds_one_canonical_base_fact(self):
         clause = profile._fact_compiled_clause(
             "(: p (Requires MemoryTarget0 PLNReadyViews) (STV 1 0.9))", "kb-test",
