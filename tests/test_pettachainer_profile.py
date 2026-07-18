@@ -3,6 +3,7 @@ import json
 import tempfile
 import time
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,8 +12,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import petta_memory.pettachainer_profile as profile
 from petta_memory.pipln_models import (
+    EpisodeBudget,
     PeTTaChainerEpisodeContract,
     PeTTaChainerInputStatement,
+    build_pettachainer_episode_manifest,
     read_pettachainer_derived_result_capture,
     write_pettachainer_derived_result_capture,
 )
@@ -1744,6 +1747,31 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         self.assertRegex(capture.runtime_capture.capture_digest, r"^[0-9a-f]{64}$")
         self.assertRegex(capture.result_digest, r"^[0-9a-f]{64}$")
 
+        manifest_kwargs = {
+            "contract": contract,
+            "result": capture,
+            "kernel_name": "PeTTaChainer",
+            "kernel_version": "e4db5ca+single-import-repair",
+            "kernel_capabilities_cid": "1" * 64,
+            "repair_profile_id": "single-import-compile-repair-v1",
+            "repaired_source_cid": "2" * 64,
+            "controller_envelope_cid": "3" * 64,
+            "seed": 0,
+            "budget": EpisodeBudget(max_steps=5, max_runtime_ms=5000, max_output_chars=1_000_000),
+            "started_at": "2026-07-18T07:00:00-07:00",
+            "finished_at": "2026-07-18T07:00:01-07:00",
+        }
+        manifest = build_pettachainer_episode_manifest(**manifest_kwargs)
+        self.assertEqual(manifest.result_cid, capture.result_digest)
+        self.assertEqual(manifest.runtime_capture_cid, capture.runtime_capture.capture_digest)
+        self.assertFalse(manifest.promotion_authorized)
+        self.assertEqual(
+            build_pettachainer_episode_manifest(**manifest_kwargs).manifest_digest,
+            manifest.manifest_digest,
+        )
+        with self.assertRaisesRegex(ValueError, "cannot authorize promotion"):
+            replace(manifest, promotion_authorized=True)
+
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "derived-result.json"
             write_pettachainer_derived_result_capture(path, capture)
@@ -1770,6 +1798,10 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, "compiler provenance mismatch"):
                 read_pettachainer_derived_result_capture(path, contract=drifted_contract)
+            with self.assertRaisesRegex(ValueError, "does not close"):
+                build_pettachainer_episode_manifest(
+                    **(manifest_kwargs | {"contract": drifted_contract}),
+                )
 
             document = json.loads(path.read_text(encoding="utf-8"))
             document["payload"]["runtime_capture"]["stdout_bytes"] += 1

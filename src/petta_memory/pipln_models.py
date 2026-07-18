@@ -755,6 +755,169 @@ def read_pettachainer_derived_result_capture(
 
 
 @dataclass(frozen=True)
+class PeTTaChainerEpisodeManifest:
+    """Audit identity for one completed repaired PeTTaChainer episode.
+
+    This is deliberately distinct from the stock patham9 ``EpisodeManifest``:
+    the isolated PeTTaChainer runner retains content identities for its noisy
+    streams rather than their raw contents, and a derived result retains fact
+    and rule evidence sidecars separately.  The record is non-promoting.
+    """
+
+    episode_id: str
+    chart_fingerprint: str
+    contract_cid: str
+    result_cid: str
+    validator_capture_cid: str
+    runtime_capture_cid: str
+    kernel_name: str
+    kernel_version: str
+    kernel_capabilities_cid: str
+    repair_profile_id: str
+    repaired_source_cid: str
+    controller_envelope_cid: str
+    seed: int
+    budget: "EpisodeBudget"
+    started_at: str
+    finished_at: str
+    result_classification: str
+    promotion_authorized: bool
+    manifest_digest: str
+
+    def __post_init__(self) -> None:
+        for field in (
+            "episode_id", "kernel_name", "kernel_version", "repair_profile_id",
+            "result_classification",
+        ):
+            _nonempty(getattr(self, field), field)
+        for field in (
+            "chart_fingerprint", "contract_cid", "result_cid",
+            "validator_capture_cid", "runtime_capture_cid",
+            "kernel_capabilities_cid", "repaired_source_cid",
+            "controller_envelope_cid", "manifest_digest",
+        ):
+            _sha256_digest(getattr(self, field), field)
+        if isinstance(self.seed, bool) or not isinstance(self.seed, int) or self.seed < 0:
+            raise ValueError("seed must be a non-negative integer")
+        if not isinstance(self.budget, EpisodeBudget):
+            raise ValueError("budget must be an EpisodeBudget")
+        if _timestamp(self.finished_at, "finished_at") < _timestamp(self.started_at, "started_at"):
+            raise ValueError("finished_at must not precede started_at")
+        if self.result_classification != "compiler-bound-one-rule-derived-result":
+            raise ValueError("unsupported PeTTaChainer result classification")
+        if self.promotion_authorized is not False:
+            raise ValueError("PeTTaChainer episode manifests cannot authorize promotion")
+        expected = _canonical_hash(_pettachainer_episode_manifest_payload(self, include_digest=False))
+        if self.manifest_digest != expected:
+            raise ValueError("PeTTaChainer manifest digest does not match typed content")
+
+
+def _pettachainer_contract_payload(contract: PeTTaChainerEpisodeContract) -> dict[str, object]:
+    return {
+        "episode_id": contract.episode_id,
+        "chart_fingerprint": contract.chart_fingerprint,
+        "statements": [
+            {
+                "atom": statement.atom,
+                "proof_id": statement.proof_id,
+                "sentence_digest": statement.sentence_digest,
+                "canonical_term": statement.canonical_term,
+                "strength": statement.strength,
+                "confidence": statement.confidence,
+                "stamp_ints": list(statement.stamp_ints),
+                "evidence_basis_ids": list(statement.evidence_basis_ids),
+            }
+            for statement in contract.statements
+        ],
+        "query_term": contract.query_term,
+        "query_atom": contract.query_atom,
+    }
+
+
+def _pettachainer_episode_manifest_payload(
+    manifest: PeTTaChainerEpisodeManifest, *, include_digest: bool = True,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        field: getattr(manifest, field)
+        for field in manifest.__dataclass_fields__
+        if field not in {"budget", "manifest_digest"}
+    }
+    payload["budget"] = {
+        field: getattr(manifest.budget, field)
+        for field in manifest.budget.__dataclass_fields__
+    }
+    if include_digest:
+        payload["manifest_digest"] = manifest.manifest_digest
+    return payload
+
+
+def build_pettachainer_episode_manifest(
+    *, contract: PeTTaChainerEpisodeContract,
+    result: PeTTaChainerDerivedResultCapture,
+    kernel_name: str,
+    kernel_version: str,
+    kernel_capabilities_cid: str,
+    repair_profile_id: str,
+    repaired_source_cid: str,
+    controller_envelope_cid: str,
+    seed: int,
+    budget: "EpisodeBudget",
+    started_at: str,
+    finished_at: str,
+) -> PeTTaChainerEpisodeManifest:
+    """Adapt one compiler-bound derived capture into a non-promoting manifest."""
+    if not isinstance(contract, PeTTaChainerEpisodeContract):
+        raise ValueError("contract must be an immutable PeTTaChainer episode contract")
+    if not isinstance(result, PeTTaChainerDerivedResultCapture):
+        raise ValueError("result must be a typed PeTTaChainer derived capture")
+    statements = {statement.sentence_digest: statement for statement in contract.statements}
+    fact = statements.get(result.fact_sentence_digest)
+    rule = statements.get(result.rule_sentence_digest)
+    if (
+        result.episode_id != contract.episode_id
+        or result.chart_fingerprint != contract.chart_fingerprint
+        or result.query_term != contract.query_term
+        or len(contract.statements) != 2
+        or fact is None
+        or rule is None
+        or result.fact_proof_id != fact.proof_id
+        or result.rule_proof_id != rule.proof_id
+        or result.fact_stamp_ints != fact.stamp_ints
+        or result.rule_stamp_ints != rule.stamp_ints
+        or result.fact_evidence_basis_ids != fact.evidence_basis_ids
+        or result.rule_evidence_basis_ids != rule.evidence_basis_ids
+    ):
+        raise ValueError("PeTTaChainer result does not close against the episode contract")
+    values = {
+        "episode_id": contract.episode_id,
+        "chart_fingerprint": contract.chart_fingerprint,
+        "contract_cid": _canonical_hash(_pettachainer_contract_payload(contract)),
+        "result_cid": result.result_digest,
+        "validator_capture_cid": result.validator_capture.capture_digest,
+        "runtime_capture_cid": result.runtime_capture.capture_digest,
+        "kernel_name": kernel_name,
+        "kernel_version": kernel_version,
+        "kernel_capabilities_cid": kernel_capabilities_cid,
+        "repair_profile_id": repair_profile_id,
+        "repaired_source_cid": repaired_source_cid,
+        "controller_envelope_cid": controller_envelope_cid,
+        "seed": seed,
+        "budget": budget,
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "result_classification": "compiler-bound-one-rule-derived-result",
+        "promotion_authorized": False,
+    }
+    digest_payload = dict(values)
+    digest_payload["budget"] = {
+        field: getattr(budget, field) for field in budget.__dataclass_fields__
+    }
+    return PeTTaChainerEpisodeManifest(
+        **values, manifest_digest=_canonical_hash(digest_payload),
+    )
+
+
+@dataclass(frozen=True)
 class ValidatedKernelResult:
     """One structurally validated, provenance-closed patham9 result atom."""
 
