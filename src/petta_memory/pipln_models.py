@@ -590,8 +590,12 @@ class PeTTaChainerDerivedResultCapture:
         ):
             if not stamps or tuple(sorted(set(stamps))) != stamps:
                 raise ValueError(f"{label} stamps must be non-empty, unique, and sorted")
+            if any(isinstance(stamp, bool) or not isinstance(stamp, int) or stamp < 0 for stamp in stamps):
+                raise ValueError(f"{label} stamps must be non-negative integers")
             if not bases or tuple(sorted(set(bases))) != bases:
                 raise ValueError(f"{label} evidence bases must be non-empty, unique, and sorted")
+            if any(not isinstance(basis, str) or not basis.strip() for basis in bases):
+                raise ValueError(f"{label} evidence bases must be non-empty strings")
         if not isinstance(self.validator_capture, PeTTaChainerStageCapture) or not isinstance(self.runtime_capture, PeTTaChainerStageCapture):
             raise ValueError("derived result requires typed validator and runtime captures")
         expected_digest = _canonical_hash(_pettachainer_derived_result_payload(self))
@@ -650,6 +654,104 @@ def build_pettachainer_derived_result_capture(
     return PeTTaChainerDerivedResultCapture(
         **values, result_digest=_canonical_hash(digest_payload),
     )
+
+
+def pettachainer_derived_result_capture_document(
+    result: PeTTaChainerDerivedResultCapture,
+) -> dict[str, object]:
+    """Return a checksummed persistence envelope for one derived capture."""
+    payload = {
+        field: getattr(result, field)
+        for field in result.__dataclass_fields__
+        if field not in {"validator_capture", "runtime_capture"}
+    }
+    payload["fact_stamp_ints"] = list(result.fact_stamp_ints)
+    payload["rule_stamp_ints"] = list(result.rule_stamp_ints)
+    payload["fact_evidence_basis_ids"] = list(result.fact_evidence_basis_ids)
+    payload["rule_evidence_basis_ids"] = list(result.rule_evidence_basis_ids)
+    for field in ("validator_capture", "runtime_capture"):
+        capture = getattr(result, field)
+        payload[field] = {
+            capture_field: getattr(capture, capture_field)
+            for capture_field in capture.__dataclass_fields__
+        }
+    return {
+        "schema": "petta-memory-pettachainer-derived-result-capture-v1",
+        "payload": payload,
+        "document_digest": _canonical_hash(payload),
+    }
+
+
+def write_pettachainer_derived_result_capture(
+    path: str | Path,
+    result: PeTTaChainerDerivedResultCapture,
+) -> None:
+    """Create one immutable derived-result capture artifact; never replace it."""
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    data = json.dumps(
+        pettachainer_derived_result_capture_document(result), sort_keys=True, indent=2,
+    ) + "\n"
+    descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        destination.unlink(missing_ok=True)
+        raise
+
+
+def read_pettachainer_derived_result_capture(
+    path: str | Path,
+    *,
+    contract: PeTTaChainerEpisodeContract,
+) -> PeTTaChainerDerivedResultCapture:
+    """Reload a capture and close its compiler provenance against one contract."""
+    document = json.loads(Path(path).read_text(encoding="utf-8"))
+    schema = "petta-memory-pettachainer-derived-result-capture-v1"
+    if (not isinstance(document, dict)
+            or set(document) != {"schema", "payload", "document_digest"}
+            or document.get("schema") != schema):
+        raise ValueError("invalid PeTTaChainer derived result capture document schema")
+    payload = document.get("payload")
+    if not isinstance(payload, dict) or document.get("document_digest") != _canonical_hash(payload):
+        raise ValueError("PeTTaChainer derived result capture document checksum mismatch")
+    expected_fields = set(PeTTaChainerDerivedResultCapture.__dataclass_fields__)
+    list_fields = {
+        "fact_stamp_ints", "rule_stamp_ints",
+        "fact_evidence_basis_ids", "rule_evidence_basis_ids",
+    }
+    capture_fields = {"validator_capture", "runtime_capture"}
+    if (set(payload) != expected_fields
+            or any(not isinstance(payload[field], list) for field in list_fields)
+            or any(not isinstance(payload[field], dict) for field in capture_fields)
+            or any(set(payload[field]) != set(PeTTaChainerStageCapture.__dataclass_fields__)
+                   for field in capture_fields)):
+        raise ValueError("invalid PeTTaChainer derived result capture payload")
+    if (not isinstance(contract, PeTTaChainerEpisodeContract)
+            or payload["episode_id"] != contract.episode_id
+            or payload["chart_fingerprint"] != contract.chart_fingerprint
+            or payload["query_term"] != contract.query_term):
+        raise ValueError("PeTTaChainer derived result capture does not match episode contract")
+    statements = {statement.sentence_digest: statement for statement in contract.statements}
+    fact = statements.get(payload["fact_sentence_digest"])
+    rule = statements.get(payload["rule_sentence_digest"])
+    if (fact is None or rule is None
+            or payload["fact_proof_id"] != fact.proof_id
+            or payload["rule_proof_id"] != rule.proof_id
+            or tuple(payload["fact_stamp_ints"]) != fact.stamp_ints
+            or tuple(payload["rule_stamp_ints"]) != rule.stamp_ints
+            or tuple(payload["fact_evidence_basis_ids"]) != fact.evidence_basis_ids
+            or tuple(payload["rule_evidence_basis_ids"]) != rule.evidence_basis_ids):
+        raise ValueError("PeTTaChainer derived result capture compiler provenance mismatch")
+    values = dict(payload)
+    for field in list_fields:
+        values[field] = tuple(payload[field])
+    for field in capture_fields:
+        values[field] = PeTTaChainerStageCapture(**payload[field])
+    return PeTTaChainerDerivedResultCapture(**values)
 
 
 @dataclass(frozen=True)

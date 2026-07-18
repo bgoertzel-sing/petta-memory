@@ -1,4 +1,5 @@
 import hashlib
+import json
 import tempfile
 import time
 import unittest
@@ -9,7 +10,12 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import petta_memory.pettachainer_profile as profile
-from petta_memory.pipln_models import PeTTaChainerEpisodeContract, PeTTaChainerInputStatement
+from petta_memory.pipln_models import (
+    PeTTaChainerEpisodeContract,
+    PeTTaChainerInputStatement,
+    read_pettachainer_derived_result_capture,
+    write_pettachainer_derived_result_capture,
+)
 from petta_memory.pettachainer_profile import _run_isolated_stage, build_profile_store, build_promoted_cluster
 
 
@@ -1737,6 +1743,39 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         self.assertEqual(capture.runtime_capture.stdout_bytes, 120)
         self.assertRegex(capture.runtime_capture.capture_digest, r"^[0-9a-f]{64}$")
         self.assertRegex(capture.result_digest, r"^[0-9a-f]{64}$")
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "derived-result.json"
+            write_pettachainer_derived_result_capture(path, capture)
+            self.assertEqual(
+                read_pettachainer_derived_result_capture(path, contract=contract),
+                capture,
+            )
+            with self.assertRaises(FileExistsError):
+                write_pettachainer_derived_result_capture(path, capture)
+
+            rule, fact = contract.statements
+            drifted_fact = PeTTaChainerInputStatement(
+                atom=fact.atom, proof_id=fact.proof_id,
+                sentence_digest=fact.sentence_digest,
+                canonical_term=fact.canonical_term, strength=fact.strength,
+                confidence=fact.confidence, stamp_ints=(2,),
+                evidence_basis_ids=("basis-other",),
+            )
+            drifted_contract = PeTTaChainerEpisodeContract(
+                episode_id=contract.episode_id,
+                chart_fingerprint=contract.chart_fingerprint,
+                statements=(rule, drifted_fact), query_term=contract.query_term,
+                query_atom=contract.query_atom,
+            )
+            with self.assertRaisesRegex(ValueError, "compiler provenance mismatch"):
+                read_pettachainer_derived_result_capture(path, contract=drifted_contract)
+
+            document = json.loads(path.read_text(encoding="utf-8"))
+            document["payload"]["runtime_capture"]["stdout_bytes"] += 1
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "checksum mismatch"):
+                read_pettachainer_derived_result_capture(path, contract=contract)
 
         runtime["stdout_sha256"] = "not-a-digest"
         with self.assertRaisesRegex(ValueError, "SHA-256"):
