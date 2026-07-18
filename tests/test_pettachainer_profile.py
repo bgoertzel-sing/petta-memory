@@ -1834,6 +1834,24 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
                 read_pettachainer_derived_result_capture(path, contract=contract)
             path.write_text(capture_text, encoding="utf-8")
 
+            manifest_link = Path(directory) / "episode-manifest-link.json"
+            manifest_link.symlink_to(manifest_path)
+            with self.assertRaises(OSError):
+                read_pettachainer_episode_manifest(
+                    manifest_link, contract=contract, result=capture,
+                )
+            capture_link = Path(directory) / "derived-result-link.json"
+            capture_link.symlink_to(path)
+            with self.assertRaises(OSError):
+                read_pettachainer_derived_result_capture(
+                    capture_link, contract=contract,
+                )
+
+            with self.assertRaisesRegex(ValueError, "must be a regular file"):
+                read_pettachainer_derived_result_capture(
+                    Path(directory), contract=contract,
+                )
+
             rule, fact = contract.statements
             drifted_fact = PeTTaChainerInputStatement(
                 atom=fact.atom, proof_id=fact.proof_id,

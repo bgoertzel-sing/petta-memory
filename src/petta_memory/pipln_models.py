@@ -15,6 +15,7 @@ import math
 import os
 from pathlib import Path
 import signal
+import stat
 import subprocess
 import threading
 from typing import Callable, Iterable, Literal, Mapping
@@ -77,8 +78,21 @@ def _load_unambiguous_json(
             result[key] = value
         return result
 
-    with Path(path).open("rb") as handle:
-        encoded = handle.read(max_bytes + 1)
+    artifact_path = os.fspath(path)
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(artifact_path, flags)
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("JSON artifact must be a regular file")
+        with os.fdopen(descriptor, "rb") as handle:
+            descriptor = -1
+            encoded = handle.read(max_bytes + 1)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
     if len(encoded) > max_bytes:
         raise ValueError(f"JSON artifact exceeds {max_bytes} byte limit")
     return json.loads(encoded.decode("utf-8"), object_pairs_hook=reject_duplicates)
