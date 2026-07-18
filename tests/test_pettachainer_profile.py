@@ -1822,6 +1822,18 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
                 read_pettachainer_derived_result_capture(path, contract=contract)
             path.write_text(capture_text, encoding="utf-8")
 
+            manifest_path.write_bytes(b" " * 1_000_001)
+            with self.assertRaisesRegex(ValueError, "exceeds 1000000 byte limit"):
+                read_pettachainer_episode_manifest(
+                    manifest_path, contract=contract, result=capture,
+                )
+            manifest_path.write_text(manifest_text, encoding="utf-8")
+
+            path.write_bytes(b" " * 1_000_001)
+            with self.assertRaisesRegex(ValueError, "exceeds 1000000 byte limit"):
+                read_pettachainer_derived_result_capture(path, contract=contract)
+            path.write_text(capture_text, encoding="utf-8")
+
             rule, fact = contract.statements
             drifted_fact = PeTTaChainerInputStatement(
                 atom=fact.atom, proof_id=fact.proof_id,

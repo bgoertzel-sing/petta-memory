@@ -33,6 +33,7 @@ DEFAULT_MAX_EPISODE_PROGRAM_CHARS = 2_000_000
 DEFAULT_MAX_EPISODE_QUERY_STEPS = 10_000
 DEFAULT_MAX_EPISODE_QUEUE_SIZE = 100_000
 DEFAULT_MAX_KERNEL_CAPTURE_BYTES = 1_000_000
+DEFAULT_MAX_PETTACHAINER_ARTIFACT_BYTES = 1_000_000
 _EXECUTABLE_TERM_HEADS = frozenset({
     "!", "bind!", "case", "collapse", "eval", "if", "import!", "include", "let", "let*",
     "match", "pragma!", "superpose",
@@ -61,8 +62,13 @@ def _canonical_hash(payload: object) -> str:
     return sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def _load_unambiguous_json(path: str | Path) -> object:
-    """Load JSON while rejecting duplicate object members at every depth."""
+def _load_unambiguous_json(
+    path: str | Path, *, max_bytes: int = DEFAULT_MAX_PETTACHAINER_ARTIFACT_BYTES,
+) -> object:
+    """Load bounded JSON while rejecting duplicate members at every depth."""
+    if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes < 1:
+        raise ValueError("max_bytes must be a positive integer")
+
     def reject_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
         result: dict[str, object] = {}
         for key, value in pairs:
@@ -71,9 +77,11 @@ def _load_unambiguous_json(path: str | Path) -> object:
             result[key] = value
         return result
 
-    return json.loads(
-        Path(path).read_text(encoding="utf-8"), object_pairs_hook=reject_duplicates,
-    )
+    with Path(path).open("rb") as handle:
+        encoded = handle.read(max_bytes + 1)
+    if len(encoded) > max_bytes:
+        raise ValueError(f"JSON artifact exceeds {max_bytes} byte limit")
+    return json.loads(encoded.decode("utf-8"), object_pairs_hook=reject_duplicates)
 
 
 def _sha256_digest(value: str, field: str) -> None:
