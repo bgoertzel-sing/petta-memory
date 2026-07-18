@@ -45,6 +45,29 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
             query_atom="(: $prf (S a) $tv)",
         )
 
+    @staticmethod
+    def rule_episode_contract():
+        fact_digest = "a" * 64
+        rule_digest = "c" * 64
+        fact = PeTTaChainerInputStatement(
+            atom=f"(: pm-{fact_digest} (S a) (STV 0.8 0.6))",
+            proof_id=f"pm-{fact_digest}", sentence_digest=fact_digest,
+            canonical_term="(S a)", strength=0.8, confidence=0.6,
+            stamp_ints=(0,), evidence_basis_ids=("basis-fact",),
+        )
+        rule_term = "(Implication (Premises (S $x)) (Conclusions (T $x)))"
+        rule = PeTTaChainerInputStatement(
+            atom=f"(: pm-{rule_digest} {rule_term} (STV 0.9 0.8))",
+            proof_id=f"pm-{rule_digest}", sentence_digest=rule_digest,
+            canonical_term=rule_term, strength=0.9, confidence=0.8,
+            stamp_ints=(1,), evidence_basis_ids=("basis-rule",),
+        )
+        return PeTTaChainerEpisodeContract(
+            episode_id="episode-rule-probe", chart_fingerprint="b" * 64,
+            statements=(rule, fact), query_term="(T a)",
+            query_atom="(: $prf (T a) $tv)",
+        )
+
     def test_episode_contract_probe_runs_runtime_only_after_exact_validation(self):
         events = [
             {"label": "validate_episode_contract", "status": "ok", "statement_results": [1.0], "query_result": 1.0},
@@ -1639,6 +1662,68 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
             profile.run_repaired_pettachainer_episode_contract_gate(
                 mismatched,
                 project_root=Path("/project"),
+                candidate_repo_path=Path("/candidate"),
+            )
+
+    def test_repaired_rule_contract_gate_binds_compiler_provenance(self):
+        contract = self.rule_episode_contract()
+        with patch.object(
+            profile, "run_repaired_pettachainer_one_rule_derivation_gate",
+            return_value={"status": "completed"},
+        ) as run_gate:
+            result = profile.run_repaired_pettachainer_rule_episode_contract_gate(
+                contract, project_root=Path("/project"),
+                candidate_repo_path=Path("/candidate"), query_steps=7,
+            )
+
+        fact = contract.statements[1]
+        rule = contract.statements[0]
+        self.assertTrue(result["runtime_admitted"])
+        self.assertEqual(result["result_classification"], "compiler-bound-one-rule-derived-result")
+        self.assertEqual(result["fact_statement_digest"], fact.sentence_digest)
+        self.assertEqual(result["rule_statement_digest"], rule.sentence_digest)
+        self.assertEqual(result["fact_evidence_basis_ids"], ["basis-fact"])
+        self.assertEqual(result["rule_stamps"], [1])
+        self.assertEqual(
+            result["expected_derived_proof"],
+            f"(rule-proof {rule.proof_id} {fact.proof_id})",
+        )
+        self.assertEqual(run_gate.call_args.args[:3], (fact.atom, rule.atom, "(T a)"))
+        self.assertEqual(run_gate.call_args.kwargs["query_steps"], 7)
+        self.assertTrue(result["boundaries"]["no_episode_manifest"])
+
+    def test_repaired_rule_contract_gate_rejects_wrong_shape_or_stored_query(self):
+        contract = self.rule_episode_contract()
+        with self.assertRaisesRegex(ValueError, "exactly two"):
+            profile.run_repaired_pettachainer_rule_episode_contract_gate(
+                self.episode_contract(), project_root=Path("/project"),
+                candidate_repo_path=Path("/candidate"),
+            )
+        other_digest = "d" * 64
+        other_fact = PeTTaChainerInputStatement(
+            atom=f"(: pm-{other_digest} (S b) (STV 0.7 0.5))",
+            proof_id=f"pm-{other_digest}", sentence_digest=other_digest,
+            canonical_term="(S b)", strength=0.7, confidence=0.5,
+            stamp_ints=(2,), evidence_basis_ids=("basis-other",),
+        )
+        two_facts = PeTTaChainerEpisodeContract(
+            episode_id=contract.episode_id, chart_fingerprint=contract.chart_fingerprint,
+            statements=(contract.statements[1], other_fact),
+            query_term="(T a)", query_atom="(: $prf (T a) $tv)",
+        )
+        with self.assertRaisesRegex(ValueError, "one fact and one implication"):
+            profile.run_repaired_pettachainer_rule_episode_contract_gate(
+                two_facts, project_root=Path("/project"),
+                candidate_repo_path=Path("/candidate"),
+            )
+        stored_query = PeTTaChainerEpisodeContract(
+            episode_id=contract.episode_id, chart_fingerprint=contract.chart_fingerprint,
+            statements=contract.statements, query_term="(S a)",
+            query_atom="(: $prf (S a) $tv)",
+        )
+        with self.assertRaisesRegex(ValueError, "differ from stored inputs"):
+            profile.run_repaired_pettachainer_rule_episode_contract_gate(
+                stored_query, project_root=Path("/project"),
                 candidate_repo_path=Path("/candidate"),
             )
 

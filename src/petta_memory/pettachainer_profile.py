@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 from typing import Callable, Iterable
 
-from .pipln_models import PeTTaChainerEpisodeContract
+from .pipln_models import PeTTaChainerEpisodeContract, PeTTaChainerInputStatement
 from .sexpr import parse_one_list, symbol_text, to_source
 from .store import MediumMemoryStore
 
@@ -3497,6 +3497,84 @@ def run_repaired_pettachainer_episode_contract_gate(
             "single_compiler_emitted_statement": True,
             "exact_stored_fact_query_only": True,
             "not_a_derived_pln_result": True,
+            "no_episode_manifest": True,
+            "no_inferred_result_promotion_or_memory_write": True,
+            "no_live_integration": True,
+        },
+    }
+
+
+def run_repaired_pettachainer_rule_episode_contract_gate(
+    contract: PeTTaChainerEpisodeContract,
+    *,
+    project_root: Path,
+    candidate_repo_path: str | Path,
+    stage_timeout_sec: float = 5.0,
+    query_steps: int = 5,
+    max_output_items: int = 16,
+) -> dict[str, object]:
+    """Bind one repaired derived result to immutable compiler output.
+
+    The contract must contain exactly one ordinary fact and one implication.
+    Their content-addressed proof ids, truth values, stamps, and evidence bases
+    come from ``build_pettachainer_episode_contract``.  The existing repaired
+    one-rule gate then requires the runtime proof to be exactly
+    ``(rule-proof <rule-proof-id> <fact-proof-id>)``.  This wrapper records that
+    typed binding but does not construct a patham9 ``EpisodeManifest`` or grant
+    promotion authority.
+    """
+    if not isinstance(contract, PeTTaChainerEpisodeContract):
+        raise ValueError("contract must be an immutable PeTTaChainer episode contract")
+    if len(contract.statements) != 2:
+        raise ValueError("repaired rule contract gate requires exactly two statements")
+
+    classified: list[tuple[str, PeTTaChainerInputStatement]] = []
+    for statement in contract.statements:
+        term = parse_one_list(statement.canonical_term)
+        role = "rule" if term and symbol_text(term[0]) == "Implication" else "fact"
+        classified.append((role, statement))
+    facts = [statement for role, statement in classified if role == "fact"]
+    rules = [statement for role, statement in classified if role == "rule"]
+    if len(facts) != 1 or len(rules) != 1:
+        raise ValueError("repaired rule contract gate requires one fact and one implication")
+    fact = facts[0]
+    rule = rules[0]
+    if contract.query_term in {fact.canonical_term, rule.canonical_term}:
+        raise ValueError("repaired rule contract query must differ from stored inputs")
+
+    runtime_gate = run_repaired_pettachainer_one_rule_derivation_gate(
+        fact.atom,
+        rule.atom,
+        contract.query_term,
+        project_root=project_root,
+        candidate_repo_path=candidate_repo_path,
+        stage_timeout_sec=stage_timeout_sec,
+        query_steps=query_steps,
+        max_output_items=max_output_items,
+    )
+    admitted = runtime_gate.get("status") == "completed"
+    return {
+        "schema": "petta-memory-repaired-pettachainer-rule-contract-gate-v1",
+        "episode_id": contract.episode_id,
+        "chart_fingerprint": contract.chart_fingerprint,
+        "query_term": contract.query_term,
+        "fact_statement_digest": fact.sentence_digest,
+        "rule_statement_digest": rule.sentence_digest,
+        "fact_proof_id": fact.proof_id,
+        "rule_proof_id": rule.proof_id,
+        "expected_derived_proof": f"(rule-proof {rule.proof_id} {fact.proof_id})",
+        "fact_stamps": list(fact.stamp_ints),
+        "rule_stamps": list(rule.stamp_ints),
+        "fact_evidence_basis_ids": list(fact.evidence_basis_ids),
+        "rule_evidence_basis_ids": list(rule.evidence_basis_ids),
+        "runtime_admitted": admitted,
+        "result_classification": "compiler-bound-one-rule-derived-result" if admitted else None,
+        "runtime_gate": runtime_gate,
+        "boundaries": {
+            "exactly_one_compiler_emitted_fact_and_rule": True,
+            "content_addressed_input_proof_ids": True,
+            "typed_input_provenance_retained": True,
+            "exact_rule_proof_required": True,
             "no_episode_manifest": True,
             "no_inferred_result_promotion_or_memory_write": True,
             "no_live_integration": True,
