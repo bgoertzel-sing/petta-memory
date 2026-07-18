@@ -1,0 +1,13 @@
+{
+  "schema": "petta-memory-repaired-pettachainer-one-rule-derivation-v1",
+  "status": "completed",
+  "source_revision": "PeTTaChainer e4db5cad60a39c0d3f81a07296d606af6de4d76d",
+  "repair": "removed only context_generation.metta's duplicate chainer/compile import in an isolated candidate",
+  "fact_statement": "(: fact_a (S a) (STV 0.8 0.6))",
+  "rule_statement": "(: rule_s_t (Implication (Premises (S $x)) (Conclusions (T $x))) (STV 0.9 0.8))",
+  "query": "(: $prf (T a) $tv)",
+  "answer": "(: (rule-proof rule_s_t fact_a) (T a) (STV 0.7600000000000001 0.52))",
+  "validation": {"statement_results": [1.0, 1.0], "query_result": 1.0, "stdout_bytes": 8087, "stdout_sha256": "975bf3a447ff98f0258f5c332b3126cac639cc7f4a96cc6d341764d517615c53", "stderr_bytes": 0, "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
+  "runtime": {"query_steps": 5, "query_answer_count": 1, "query_target_only": true, "exact_derived_proof_only": true, "typed_stv_only": true, "seconds": 0.377463, "stdout_bytes": 607215, "stdout_sha256": "6f3e5faeccffe65b155c55ba606a8ce10c535cfdd5d5d3a8d413b76073193731", "stderr_bytes": 126, "stderr_sha256": "0388815d37b4428667b7ef44a5c100684a66d99c495d5007f5f10c0c401c74a5"},
+  "boundaries": {"diagnostics_are_opaque_and_content_addressed": true, "no_episode_manifest": true, "no_inferred_result_promotion_or_memory_write": true, "no_live_integration": true}
+}

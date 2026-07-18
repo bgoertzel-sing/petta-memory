@@ -4,6 +4,7 @@ import argparse
 import ast
 import hashlib
 import json
+import math
 import multiprocessing as mp
 import os
 import queue
@@ -3187,6 +3188,105 @@ def _compileadd_exact_fact_query_from_repo_stage(
     }
 
 
+def _compileadd_one_rule_derivation_from_repo_stage(
+    fact_statement: str,
+    rule_statement: str,
+    query_term: str,
+    repo_path: str,
+    query_steps: int = 5,
+    max_output_items: int = 16,
+) -> dict[str, object]:
+    """Add one fact and one rule, then require query answers to be derived."""
+    if query_steps <= 0:
+        raise ValueError("query_steps must be positive")
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    canonical_query_term = to_source(parse_one_list(query_term))
+    if canonical_query_term != query_term:
+        raise ValueError("query_term must already be canonical")
+    parsed_statements = [parse_one_list(item) for item in (fact_statement, rule_statement)]
+    if any(len(item) != 4 or symbol_text(item[0]) != ":" for item in parsed_statements):
+        raise ValueError("inputs must be four-field PeTTaChainer proof statements")
+    input_proofs = {to_source(item[1]) for item in parsed_statements}
+    fact_proof = to_source(parsed_statements[0][1])
+    rule_proof = to_source(parsed_statements[1][1])
+    expected_proof = f"(rule-proof {rule_proof} {fact_proof})"
+    fact_term = to_source(parsed_statements[0][2])
+    if fact_term == query_term:
+        raise ValueError("derived query term must differ from the stored input fact")
+
+    sys.path.insert(0, repo_path)
+    from pettachainer import PeTTaChainer
+
+    handler = PeTTaChainer()
+    add_events: list[dict[str, object]] = []
+    for label, statement in (("fact", fact_statement), ("rule", rule_statement)):
+        call_text = f"!(compileadd {handler.kb} {statement})"
+        result = handler.handler.process_metta_string(call_text)
+        items = result if isinstance(result, list) else [result]
+        add_events.append({
+            "label": label,
+            "call_text": call_text,
+            "output_count": len(items),
+            "output_items": [str(item) for item in items[:max_output_items]],
+            "output_truncated": len(items) > max_output_items,
+        })
+
+    query = f"(: $prf {query_term} $tv)"
+    query_call_text = f"!(query {query_steps} {handler.kb} {query})"
+    result = handler.handler.process_metta_string(query_call_text)
+    items = result if isinstance(result, list) else [result]
+    rendered = [str(item) for item in items if str(item).strip() != "()"]
+    parsed_answers: list[tuple[object, ...]] = []
+    malformed_answers: list[str] = []
+    for answer in rendered:
+        try:
+            parsed = parse_one_list(answer)
+        except ValueError:
+            malformed_answers.append(answer)
+            continue
+        if len(parsed) != 4 or symbol_text(parsed[0]) != ":":
+            malformed_answers.append(answer)
+            continue
+        parsed_answers.append(parsed)
+    target_only = bool(parsed_answers) and not malformed_answers and all(
+        to_source(answer[2]) == query_term for answer in parsed_answers
+    )
+    exact_derived_proof_only = target_only and all(
+        to_source(answer[1]) == expected_proof for answer in parsed_answers
+    )
+    typed_stv_only = target_only
+    for answer in parsed_answers:
+        truth = answer[3]
+        if not isinstance(truth, tuple) or len(truth) != 3 or symbol_text(truth[0]) != "STV":
+            typed_stv_only = False
+            break
+        try:
+            strength, confidence = (float(symbol_text(item)) for item in truth[1:])
+        except (TypeError, ValueError):
+            typed_stv_only = False
+            break
+        if not all(math.isfinite(value) and 0.0 <= value <= 1.0 for value in (strength, confidence)):
+            typed_stv_only = False
+            break
+    return {
+        "add_events": add_events,
+        "query_call_text": query_call_text,
+        "query": query,
+        "query_steps": query_steps,
+        "input_proof_ids": sorted(input_proofs),
+        "query_answer_count": len(rendered),
+        "query_unique_answer_count": len(dict.fromkeys(rendered)),
+        "query_answer_items": rendered[:max_output_items],
+        "query_answer_truncated": len(rendered) > max_output_items,
+        "malformed_answer_count": len(malformed_answers),
+        "query_target_only": target_only,
+        "expected_derived_proof": expected_proof,
+        "exact_derived_proof_only": exact_derived_proof_only,
+        "typed_stv_only": typed_stv_only,
+    }
+
+
 def run_repaired_compileadd_exact_fact_query_gate(
     statement: str,
     *,
@@ -3326,6 +3426,111 @@ def run_repaired_pettachainer_episode_contract_gate(
             "single_compiler_emitted_statement": True,
             "exact_stored_fact_query_only": True,
             "not_a_derived_pln_result": True,
+            "no_episode_manifest": True,
+            "no_inferred_result_promotion_or_memory_write": True,
+            "no_live_integration": True,
+        },
+    }
+
+
+def run_repaired_pettachainer_one_rule_derivation_gate(
+    fact_statement: str,
+    rule_statement: str,
+    query_term: str,
+    *,
+    project_root: Path,
+    candidate_repo_path: str | Path,
+    stage_timeout_sec: float = 5.0,
+    query_steps: int = 5,
+    max_output_items: int = 16,
+) -> dict[str, object]:
+    """Admit one repaired fact-plus-rule result as a derived runtime result."""
+    if stage_timeout_sec <= 0:
+        raise ValueError("stage_timeout_sec must be positive")
+    if query_steps <= 0:
+        raise ValueError("query_steps must be positive")
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    baseline_repo = project_root / "repos" / "PeTTaChainer"
+    candidate_repo = Path(candidate_repo_path)
+    repair = inspect_duplicate_compile_import_repair(baseline_repo, candidate_repo)
+    fact_dispatch = inspect_compile_dispatch_for_statement(candidate_repo, fact_statement)
+    rule_dispatch = inspect_compile_dispatch_for_statement(candidate_repo, rule_statement)
+    collection = inspect_mm2compile_collection_shape(candidate_repo)
+    source_admitted = (
+        repair.get("exact_targeted_import_removal") is True
+        and fact_dispatch.get("selected_compile_branch") == "fact-assertion"
+        and rule_dispatch.get("selected_compile_branch") == "implication-rule"
+        and collection.get("shape_confirmed") is True
+    )
+    if not source_admitted:
+        return {
+            "schema": "petta-memory-repaired-pettachainer-one-rule-derivation-v1",
+            "status": "skipped",
+            "reason": "exact repair, dispatch, or mm2compile source gate failed",
+            "repair_inspection": repair,
+            "fact_inspection": fact_dispatch,
+            "rule_inspection": rule_dispatch,
+            "mm2compile_inspection": collection,
+            "validation_event": None,
+            "runtime_event": None,
+        }
+
+    query_atom = f"(: $prf {query_term} $tv)"
+    _configure_local_runtime(project_root)
+    validation = _run_isolated_stage(
+        "validate_repaired_one_rule_derivation",
+        _check_episode_contract_stage,
+        ([fact_statement, rule_statement], query_atom),
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    validators_admitted = (
+        validation.get("status") == "ok"
+        and validation.get("statement_results") == [1.0, 1.0]
+        and all(not isinstance(value, bool) for value in validation.get("statement_results", []))
+        and validation.get("query_result") == 1.0
+        and not isinstance(validation.get("query_result"), bool)
+        and _captured_stream_provenance_complete(validation)
+    )
+    runtime = None
+    if validators_admitted:
+        runtime = _run_isolated_stage(
+            "repaired_one_rule_derivation",
+            _compileadd_one_rule_derivation_from_repo_stage,
+            (fact_statement, rule_statement, query_term, str(candidate_repo), query_steps, max_output_items),
+            stage_timeout_sec=stage_timeout_sec,
+        )
+    admitted = (
+        runtime is not None
+        and runtime.get("status") == "ok"
+        and _captured_stream_provenance_complete(runtime)
+        and isinstance(runtime.get("query_answer_count"), int)
+        and not isinstance(runtime.get("query_answer_count"), bool)
+        and runtime["query_answer_count"] > 0
+        and runtime.get("malformed_answer_count") == 0
+        and runtime.get("query_target_only") is True
+        and runtime.get("exact_derived_proof_only") is True
+        and runtime.get("typed_stv_only") is True
+    )
+    return {
+        "schema": "petta-memory-repaired-pettachainer-one-rule-derivation-v1",
+        "status": "completed" if admitted else "blocked",
+        "validators_admitted": validators_admitted,
+        "runtime_admitted": admitted,
+        "result_classification": "one-rule-derived-result" if admitted else None,
+        "repair_inspection": repair,
+        "fact_inspection": fact_dispatch,
+        "rule_inspection": rule_dispatch,
+        "mm2compile_inspection": collection,
+        "validation_event": validation,
+        "runtime_event": runtime,
+        "diagnostic_stream_classification": "opaque-runtime-diagnostics-content-addressed",
+        "boundaries": {
+            "isolated_candidate_only": True,
+            "one_fact_one_rule": True,
+            "query_term_must_differ_from_stored_fact": True,
+            "exact_rule_proof_required": True,
+            "typed_unit_interval_stv_required": True,
             "no_episode_manifest": True,
             "no_inferred_result_promotion_or_memory_write": True,
             "no_live_integration": True,

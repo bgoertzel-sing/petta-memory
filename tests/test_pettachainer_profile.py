@@ -1642,6 +1642,57 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
                 candidate_repo_path=Path("/candidate"),
             )
 
+    def test_repaired_one_rule_derivation_gate_requires_exact_derived_answer(self):
+        validation = {
+            "status": "ok", "statement_results": [1.0, 1.0], "query_result": 1.0,
+            "stdout_bytes": 0, "stdout_sha256": hashlib.sha256(b"").hexdigest(),
+            "stderr_bytes": 0, "stderr_sha256": hashlib.sha256(b"").hexdigest(),
+        }
+        runtime = {
+            "status": "ok", "query_answer_count": 1, "malformed_answer_count": 0,
+            "query_target_only": True, "exact_derived_proof_only": True, "typed_stv_only": True,
+            "stdout_bytes": 10, "stdout_sha256": "a" * 64,
+            "stderr_bytes": 2, "stderr_sha256": "b" * 64,
+        }
+        with (
+            patch.object(profile, "inspect_duplicate_compile_import_repair", return_value={"exact_targeted_import_removal": True}),
+            patch.object(profile, "inspect_compile_dispatch_for_statement", side_effect=[
+                {"selected_compile_branch": "fact-assertion"},
+                {"selected_compile_branch": "implication-rule"},
+            ]),
+            patch.object(profile, "inspect_mm2compile_collection_shape", return_value={"shape_confirmed": True}),
+            patch.object(profile, "_configure_local_runtime", return_value=None),
+            patch.object(profile, "_run_isolated_stage", side_effect=[validation, runtime]),
+        ):
+            result = profile.run_repaired_pettachainer_one_rule_derivation_gate(
+                "(: fact_a (S a) (STV 0.8 0.6))",
+                "(: rule_s_t (Implication (Premises (S $x)) (Conclusions (T $x))) (STV 0.9 0.8))",
+                "(T a)", project_root=Path("/project"), candidate_repo_path=Path("/candidate"),
+            )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["result_classification"], "one-rule-derived-result")
+        self.assertTrue(result["boundaries"]["exact_rule_proof_required"])
+        self.assertTrue(result["boundaries"]["no_episode_manifest"])
+
+        runtime["exact_derived_proof_only"] = False
+        with (
+            patch.object(profile, "inspect_duplicate_compile_import_repair", return_value={"exact_targeted_import_removal": True}),
+            patch.object(profile, "inspect_compile_dispatch_for_statement", side_effect=[
+                {"selected_compile_branch": "fact-assertion"},
+                {"selected_compile_branch": "implication-rule"},
+            ]),
+            patch.object(profile, "inspect_mm2compile_collection_shape", return_value={"shape_confirmed": True}),
+            patch.object(profile, "_configure_local_runtime", return_value=None),
+            patch.object(profile, "_run_isolated_stage", side_effect=[validation, runtime]),
+        ):
+            blocked = profile.run_repaired_pettachainer_one_rule_derivation_gate(
+                "(: fact_a (S a) (STV 0.8 0.6))",
+                "(: rule_s_t (Implication (Premises (S $x)) (Conclusions (T $x))) (STV 0.9 0.8))",
+                "(T a)", project_root=Path("/project"), candidate_repo_path=Path("/candidate"),
+            )
+        self.assertEqual(blocked["status"], "blocked")
+
     def test_run_repaired_compileadd_exact_fact_query_gate_blocks_missing_capture_provenance(self):
         with (
             patch.object(profile, "inspect_duplicate_compile_import_repair", return_value={"exact_targeted_import_removal": True}),
