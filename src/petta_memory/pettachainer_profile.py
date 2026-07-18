@@ -3259,6 +3259,80 @@ def run_repaired_compileadd_exact_fact_query_gate(
     }
 
 
+def run_repaired_pettachainer_episode_contract_gate(
+    contract: PeTTaChainerEpisodeContract,
+    *,
+    project_root: Path,
+    candidate_repo_path: str | Path,
+    stage_timeout_sec: float = 5.0,
+    query_steps: int = 1,
+    max_output_items: int = 16,
+) -> dict[str, object]:
+    """Admit one typed contract only as repaired exact stored-fact recall.
+
+    This deliberately supports the smallest compiler-to-runtime rung: one
+    immutable input statement whose term is exactly the contract query term.
+    It first closes PeTTaChainer's public validators, then delegates execution
+    to the exact source-repair/add/storage/answer-set gate.  A successful result
+    is classified as stored-fact retrieval, never as a derived PLN result.
+    """
+    if not isinstance(contract, PeTTaChainerEpisodeContract):
+        raise ValueError("contract must be an immutable PeTTaChainer episode contract")
+    if len(contract.statements) != 1:
+        raise ValueError("repaired contract gate currently requires exactly one statement")
+    statement = contract.statements[0]
+    if statement.canonical_term != contract.query_term:
+        raise ValueError("repaired contract gate requires an exact stored-fact query term")
+
+    _configure_local_runtime(project_root)
+    validation = _run_isolated_stage(
+        "validate_repaired_episode_contract",
+        _check_episode_contract_stage,
+        ([statement.atom], contract.query_atom),
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    validators_admitted = (
+        validation.get("status") == "ok"
+        and validation.get("statement_results") == [1.0]
+        and not isinstance(validation.get("statement_results", [None])[0], bool)
+        and validation.get("query_result") == 1.0
+        and not isinstance(validation.get("query_result"), bool)
+        and _captured_stream_provenance_complete(validation)
+    )
+    runtime_gate = None
+    if validators_admitted:
+        runtime_gate = run_repaired_compileadd_exact_fact_query_gate(
+            statement.atom,
+            project_root=project_root,
+            candidate_repo_path=candidate_repo_path,
+            stage_timeout_sec=stage_timeout_sec,
+            query_steps=query_steps,
+            max_output_items=max_output_items,
+        )
+    admitted = validators_admitted and runtime_gate is not None and runtime_gate.get("status") == "completed"
+    return {
+        "schema": "petta-memory-repaired-pettachainer-contract-gate-v1",
+        "episode_id": contract.episode_id,
+        "chart_fingerprint": contract.chart_fingerprint,
+        "statement_digest": statement.sentence_digest,
+        "query_term": contract.query_term,
+        "validators_admitted": validators_admitted,
+        "runtime_admitted": admitted,
+        "result_classification": "stored-fact-retrieval" if admitted else None,
+        "validation_event": validation,
+        "runtime_gate": runtime_gate,
+        "diagnostic_stream_classification": "opaque-runtime-diagnostics-content-addressed",
+        "boundaries": {
+            "single_compiler_emitted_statement": True,
+            "exact_stored_fact_query_only": True,
+            "not_a_derived_pln_result": True,
+            "no_episode_manifest": True,
+            "no_inferred_result_promotion_or_memory_write": True,
+            "no_live_integration": True,
+        },
+    }
+
+
 def run_repaired_compileadd_add_only_gate(
     statement: str,
     *,

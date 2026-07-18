@@ -1569,6 +1569,79 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         self.assertTrue(result["boundaries"]["content_addressed_process_streams"])
         self.assertTrue(result["boundaries"]["no_inferred_result_promotion_or_memory_write"])
 
+    def test_repaired_episode_contract_gate_binds_typed_contract_to_exact_recall(self):
+        validation = {
+            "status": "ok",
+            "statement_results": [1.0],
+            "query_result": 1.0,
+            "stdout_bytes": 0,
+            "stdout_sha256": hashlib.sha256(b"").hexdigest(),
+            "stderr_bytes": 0,
+            "stderr_sha256": hashlib.sha256(b"").hexdigest(),
+        }
+        runtime = {"status": "completed"}
+        with (
+            patch.object(profile, "_configure_local_runtime", return_value=None),
+            patch.object(profile, "_run_isolated_stage", return_value=validation),
+            patch.object(profile, "run_repaired_compileadd_exact_fact_query_gate", return_value=runtime) as run_gate,
+        ):
+            result = profile.run_repaired_pettachainer_episode_contract_gate(
+                self.episode_contract(),
+                project_root=Path("/project"),
+                candidate_repo_path=Path("/candidate"),
+                query_steps=2,
+            )
+
+        self.assertTrue(result["validators_admitted"])
+        self.assertTrue(result["runtime_admitted"])
+        self.assertEqual(result["result_classification"], "stored-fact-retrieval")
+        self.assertEqual(result["statement_digest"], "a" * 64)
+        self.assertEqual(run_gate.call_args.args[0], self.episode_contract().statements[0].atom)
+        self.assertTrue(result["boundaries"]["not_a_derived_pln_result"])
+        self.assertTrue(result["boundaries"]["no_episode_manifest"])
+
+    def test_repaired_episode_contract_gate_stops_on_validator_drift(self):
+        validation = {
+            "status": "ok",
+            "statement_results": [True],
+            "query_result": 1.0,
+            "stdout_bytes": 0,
+            "stdout_sha256": hashlib.sha256(b"").hexdigest(),
+            "stderr_bytes": 0,
+            "stderr_sha256": hashlib.sha256(b"").hexdigest(),
+        }
+        with (
+            patch.object(profile, "_configure_local_runtime", return_value=None),
+            patch.object(profile, "_run_isolated_stage", return_value=validation),
+            patch.object(profile, "run_repaired_compileadd_exact_fact_query_gate") as run_gate,
+        ):
+            result = profile.run_repaired_pettachainer_episode_contract_gate(
+                self.episode_contract(),
+                project_root=Path("/project"),
+                candidate_repo_path=Path("/candidate"),
+            )
+
+        self.assertFalse(result["validators_admitted"])
+        self.assertFalse(result["runtime_admitted"])
+        self.assertIsNone(result["runtime_gate"])
+        run_gate.assert_not_called()
+
+    def test_repaired_episode_contract_gate_rejects_nonexact_query(self):
+        contract = self.episode_contract()
+        mismatched = PeTTaChainerEpisodeContract(
+            episode_id=contract.episode_id,
+            chart_fingerprint=contract.chart_fingerprint,
+            statements=contract.statements,
+            query_term="(S b)",
+            query_atom="(: $prf (S b) $tv)",
+        )
+        with self.assertRaisesRegex(ValueError, "exact stored-fact query"):
+            profile.run_repaired_pettachainer_episode_contract_gate(
+                mismatched,
+                project_root=Path("/project"),
+                candidate_repo_path=Path("/candidate"),
+            )
+
     def test_run_repaired_compileadd_exact_fact_query_gate_blocks_missing_capture_provenance(self):
         with (
             patch.object(profile, "inspect_duplicate_compile_import_repair", return_value={"exact_targeted_import_removal": True}),
