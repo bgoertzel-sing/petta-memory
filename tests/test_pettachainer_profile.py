@@ -1,3 +1,4 @@
+import hashlib
 import tempfile
 import time
 import unittest
@@ -134,6 +135,31 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         self.assertEqual(event["label"], "echo")
         self.assertEqual(event["result"], "ok")
         self.assertGreater(event["stdout_chars"], 0)
+        self.assertEqual(event["stdout_bytes"], event["stdout_chars"])
+        self.assertEqual(
+            event["stdout_sha256"],
+            hashlib.sha256(b"noisy runtime output\n").hexdigest(),
+        )
+        self.assertEqual(event["stderr_bytes"], 0)
+        self.assertEqual(event["stderr_sha256"], hashlib.sha256(b"").hexdigest())
+
+    def test_captured_stream_provenance_rejects_malformed_or_missing_fields(self):
+        valid = {
+            "stdout_bytes": 1,
+            "stdout_sha256": "a" * 64,
+            "stderr_bytes": 0,
+            "stderr_sha256": hashlib.sha256(b"").hexdigest(),
+        }
+        self.assertTrue(profile._captured_stream_provenance_complete(valid))
+        for key, value in (
+            ("stdout_bytes", True),
+            ("stderr_bytes", -1),
+            ("stdout_sha256", "A" * 64),
+            ("stderr_sha256", "0" * 63),
+        ):
+            malformed = dict(valid)
+            malformed[key] = value
+            self.assertFalse(profile._captured_stream_provenance_complete(malformed))
 
     def test_isolated_stage_timeout_returns_bounded_event(self):
         event = _run_isolated_stage("slow", _slow_profile_stage, (), stage_timeout_sec=0.05)
@@ -1509,6 +1535,10 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
     def test_run_repaired_compileadd_exact_fact_query_gate_requires_exact_answer(self):
         event = {
             "status": "ok",
+            "stdout_bytes": 1,
+            "stdout_sha256": "a" * 64,
+            "stderr_bytes": 0,
+            "stderr_sha256": "b" * 64,
             "expected_internal_stored": True,
             "exact_answer_present": True,
             "exact_answer_only": True,
@@ -1536,7 +1566,30 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
             "(: p (S x) (STV 1 0.9))", "/candidate", 2, 4,
         ))
         self.assertTrue(result["boundaries"]["single_compileadd_then_exact_fact_query"])
+        self.assertTrue(result["boundaries"]["content_addressed_process_streams"])
         self.assertTrue(result["boundaries"]["no_inferred_result_promotion_or_memory_write"])
+
+    def test_run_repaired_compileadd_exact_fact_query_gate_blocks_missing_capture_provenance(self):
+        with (
+            patch.object(profile, "inspect_duplicate_compile_import_repair", return_value={"exact_targeted_import_removal": True}),
+            patch.object(profile, "inspect_compile_dispatch_for_statement", return_value={"selected_compile_branch": "fact-assertion"}),
+            patch.object(profile, "inspect_mm2compile_collection_shape", return_value={"shape_confirmed": True}),
+            patch.object(profile, "_configure_local_runtime", return_value=None),
+            patch.object(profile, "_run_isolated_stage", return_value={
+                "status": "ok",
+                "expected_internal_stored": True,
+                "exact_answer_present": True,
+                "exact_answer_only": True,
+                "query_answer_count": 1,
+            }),
+        ):
+            result = profile.run_repaired_compileadd_exact_fact_query_gate(
+                "(: p (S x) (STV 1 0.9))",
+                project_root=Path("/project"),
+                candidate_repo_path=Path("/candidate"),
+            )
+
+        self.assertEqual(result["status"], "blocked")
 
     def test_all_materialize_identity_matches_rejects_mixed_answers(self):
         expected = "(: p (S x) (STV 1.0 0.70))"

@@ -108,6 +108,22 @@ def _run_isolated_stage(
     return payload
 
 
+def _captured_stream_provenance_complete(payload: dict[str, object]) -> bool:
+    """Return whether an isolated-stage result closes both stream identities."""
+    for stream in ("stdout", "stderr"):
+        byte_count = payload.get(f"{stream}_bytes")
+        digest = payload.get(f"{stream}_sha256")
+        if (
+            not isinstance(byte_count, int)
+            or isinstance(byte_count, bool)
+            or byte_count < 0
+            or not isinstance(digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+        ):
+            return False
+    return True
+
+
 def _isolated_stage_worker(
     target: Callable[..., dict[str, object]],
     args: tuple[object, ...],
@@ -136,10 +152,18 @@ def _isolated_stage_worker(
         finally:
             os.close(stdout_original)
             os.close(stderr_original)
-        stdout_file.seek(0, os.SEEK_END)
-        stderr_file.seek(0, os.SEEK_END)
-        payload["stdout_chars"] = stdout_file.tell()
-        payload["stderr_chars"] = stderr_file.tell()
+        for stream, capture_file in (("stdout", stdout_file), ("stderr", stderr_file)):
+            capture_file.seek(0)
+            digest = hashlib.sha256()
+            byte_count = 0
+            while chunk := capture_file.read(64 * 1024):
+                digest.update(chunk)
+                byte_count += len(chunk)
+            payload[f"{stream}_bytes"] = byte_count
+            payload[f"{stream}_sha256"] = digest.hexdigest()
+            # Retain the original field for artifact compatibility. The capture
+            # is binary, so this historical name has always counted bytes.
+            payload[f"{stream}_chars"] = byte_count
     result_queue.put(payload)
 
 
@@ -3208,6 +3232,7 @@ def run_repaired_compileadd_exact_fact_query_gate(
     )
     completed = (
         event.get("status") == "ok"
+        and _captured_stream_provenance_complete(event)
         and event.get("expected_internal_stored") is True
         and event.get("exact_answer_present") is True
         and event.get("exact_answer_only") is True
@@ -3227,6 +3252,7 @@ def run_repaired_compileadd_exact_fact_query_gate(
             "single_compileadd_then_exact_fact_query": True,
             "bounded_query_steps": query_steps,
             "exact_answer_only": True,
+            "content_addressed_process_streams": True,
             "no_inferred_result_promotion_or_memory_write": True,
             "no_live_integration": True,
         },
