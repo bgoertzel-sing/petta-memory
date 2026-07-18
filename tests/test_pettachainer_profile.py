@@ -16,8 +16,10 @@ from petta_memory.pipln_models import (
     PeTTaChainerEpisodeContract,
     PeTTaChainerInputStatement,
     build_pettachainer_episode_manifest,
+    read_pettachainer_episode_manifest,
     read_pettachainer_derived_result_capture,
     write_pettachainer_derived_result_capture,
+    write_pettachainer_episode_manifest,
 )
 from petta_memory.pettachainer_profile import _run_isolated_stage, build_profile_store, build_promoted_cluster
 
@@ -1774,6 +1776,16 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "derived-result.json"
+            manifest_path = Path(directory) / "episode-manifest.json"
+            write_pettachainer_episode_manifest(manifest_path, manifest)
+            self.assertEqual(
+                read_pettachainer_episode_manifest(
+                    manifest_path, contract=contract, result=capture,
+                ),
+                manifest,
+            )
+            with self.assertRaises(FileExistsError):
+                write_pettachainer_episode_manifest(manifest_path, manifest)
             write_pettachainer_derived_result_capture(path, capture)
             self.assertEqual(
                 read_pettachainer_derived_result_capture(path, contract=contract),
@@ -1801,6 +1813,18 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "does not close"):
                 build_pettachainer_episode_manifest(
                     **(manifest_kwargs | {"contract": drifted_contract}),
+                )
+            with self.assertRaisesRegex(ValueError, "input provenance mismatch"):
+                read_pettachainer_episode_manifest(
+                    manifest_path, contract=drifted_contract, result=capture,
+                )
+
+            manifest_document = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest_document["payload"]["seed"] = 1
+            manifest_path.write_text(json.dumps(manifest_document), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "checksum mismatch"):
+                read_pettachainer_episode_manifest(
+                    manifest_path, contract=contract, result=capture,
                 )
 
             document = json.loads(path.read_text(encoding="utf-8"))

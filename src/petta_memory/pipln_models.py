@@ -917,6 +917,75 @@ def build_pettachainer_episode_manifest(
     )
 
 
+def pettachainer_episode_manifest_document(
+    manifest: PeTTaChainerEpisodeManifest,
+) -> dict[str, object]:
+    """Return a checksummed document for one non-promoting manifest."""
+    payload = _pettachainer_episode_manifest_payload(manifest)
+    return {
+        "schema": "petta-memory-pettachainer-episode-manifest-v1",
+        "payload": payload,
+        "document_digest": _canonical_hash(payload),
+    }
+
+
+def write_pettachainer_episode_manifest(
+    path: str | Path, manifest: PeTTaChainerEpisodeManifest,
+) -> None:
+    """Create one immutable PeTTaChainer manifest artifact."""
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    data = json.dumps(
+        pettachainer_episode_manifest_document(manifest), sort_keys=True, indent=2,
+    ) + "\n"
+    descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        destination.unlink(missing_ok=True)
+        raise
+
+
+def read_pettachainer_episode_manifest(
+    path: str | Path, *, contract: PeTTaChainerEpisodeContract,
+    result: PeTTaChainerDerivedResultCapture,
+) -> PeTTaChainerEpisodeManifest:
+    """Reload a checksummed manifest and close it against its typed inputs."""
+    document = json.loads(Path(path).read_text(encoding="utf-8"))
+    if (not isinstance(document, dict)
+            or set(document) != {"schema", "payload", "document_digest"}
+            or document.get("schema")
+            != "petta-memory-pettachainer-episode-manifest-v1"):
+        raise ValueError("invalid PeTTaChainer episode manifest document schema")
+    payload = document.get("payload")
+    if not isinstance(payload, dict) or document.get("document_digest") != _canonical_hash(payload):
+        raise ValueError("PeTTaChainer episode manifest document checksum mismatch")
+    expected_fields = set(PeTTaChainerEpisodeManifest.__dataclass_fields__) - {"budget"}
+    expected_fields.add("budget")
+    if (set(payload) != expected_fields
+            or not isinstance(payload["budget"], dict)
+            or set(payload["budget"]) != set(EpisodeBudget.__dataclass_fields__)):
+        raise ValueError("invalid PeTTaChainer episode manifest payload")
+    if not isinstance(contract, PeTTaChainerEpisodeContract):
+        raise ValueError("contract must be an immutable PeTTaChainer episode contract")
+    if not isinstance(result, PeTTaChainerDerivedResultCapture):
+        raise ValueError("result must be a typed PeTTaChainer derived capture")
+    expected_contract_cid = _canonical_hash(_pettachainer_contract_payload(contract))
+    if (payload["episode_id"] != contract.episode_id
+            or payload["chart_fingerprint"] != contract.chart_fingerprint
+            or payload["contract_cid"] != expected_contract_cid
+            or payload["result_cid"] != result.result_digest
+            or payload["validator_capture_cid"] != result.validator_capture.capture_digest
+            or payload["runtime_capture_cid"] != result.runtime_capture.capture_digest):
+        raise ValueError("PeTTaChainer episode manifest input provenance mismatch")
+    values = dict(payload)
+    values["budget"] = EpisodeBudget(**payload["budget"])
+    return PeTTaChainerEpisodeManifest(**values)
+
+
 @dataclass(frozen=True)
 class ValidatedKernelResult:
     """One structurally validated, provenance-closed patham9 result atom."""
