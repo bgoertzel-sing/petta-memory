@@ -61,6 +61,21 @@ def _canonical_hash(payload: object) -> str:
     return sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _load_unambiguous_json(path: str | Path) -> object:
+    """Load JSON while rejecting duplicate object members at every depth."""
+    def reject_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON object member: {key}")
+            result[key] = value
+        return result
+
+    return json.loads(
+        Path(path).read_text(encoding="utf-8"), object_pairs_hook=reject_duplicates,
+    )
+
+
 def _sha256_digest(value: str, field: str) -> None:
     if not isinstance(value, str) or len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
         raise ValueError(f"{field} must be a lowercase SHA-256 digest")
@@ -709,7 +724,7 @@ def read_pettachainer_derived_result_capture(
     contract: PeTTaChainerEpisodeContract,
 ) -> PeTTaChainerDerivedResultCapture:
     """Reload a capture and close its compiler provenance against one contract."""
-    document = json.loads(Path(path).read_text(encoding="utf-8"))
+    document = _load_unambiguous_json(path)
     schema = "petta-memory-pettachainer-derived-result-capture-v1"
     if (not isinstance(document, dict)
             or set(document) != {"schema", "payload", "document_digest"}
@@ -954,7 +969,7 @@ def read_pettachainer_episode_manifest(
     result: PeTTaChainerDerivedResultCapture,
 ) -> PeTTaChainerEpisodeManifest:
     """Reload a checksummed manifest and close it against its typed inputs."""
-    document = json.loads(Path(path).read_text(encoding="utf-8"))
+    document = _load_unambiguous_json(path)
     if (not isinstance(document, dict)
             or set(document) != {"schema", "payload", "document_digest"}
             or document.get("schema")

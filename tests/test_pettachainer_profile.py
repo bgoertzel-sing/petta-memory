@@ -1794,6 +1794,34 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 write_pettachainer_derived_result_capture(path, capture)
 
+            manifest_text = manifest_path.read_text(encoding="utf-8")
+            manifest_path.write_text(
+                manifest_text.replace(
+                    '{\n  "document_digest"',
+                    '{\n  "schema": "petta-memory-pettachainer-episode-manifest-v1",\n  "document_digest"',
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "duplicate JSON object member: schema"):
+                read_pettachainer_episode_manifest(
+                    manifest_path, contract=contract, result=capture,
+                )
+            manifest_path.write_text(manifest_text, encoding="utf-8")
+
+            capture_text = path.read_text(encoding="utf-8")
+            path.write_text(
+                capture_text.replace(
+                    '{\n  "document_digest"',
+                    '{\n  "schema": "petta-memory-pettachainer-derived-result-capture-v1",\n  "document_digest"',
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "duplicate JSON object member: schema"):
+                read_pettachainer_derived_result_capture(path, contract=contract)
+            path.write_text(capture_text, encoding="utf-8")
+
             rule, fact = contract.statements
             drifted_fact = PeTTaChainerInputStatement(
                 atom=fact.atom, proof_id=fact.proof_id,
