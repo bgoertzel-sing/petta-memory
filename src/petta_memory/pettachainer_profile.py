@@ -3214,6 +3214,21 @@ def _compileadd_one_rule_derivation_from_repo_stage(
     fact_term = to_source(parsed_statements[0][2])
     if fact_term == query_term:
         raise ValueError("derived query term must differ from the stored input fact")
+    fact_tv = parsed_statements[0][3]
+    rule_tv = parsed_statements[1][3]
+    if any(
+        not isinstance(tv, tuple) or len(tv) != 3 or symbol_text(tv[0]) != "STV"
+        for tv in (fact_tv, rule_tv)
+    ):
+        raise ValueError("fact and rule must have STV truth values")
+    fact_strength, fact_confidence = (float(symbol_text(item)) for item in fact_tv[1:])
+    rule_strength, rule_confidence = (float(symbol_text(item)) for item in rule_tv[1:])
+    fallback_strength = fallback_confidence = 0.2
+    expected_strength = rule_strength * fact_strength + fallback_strength * (1.0 - fact_strength)
+    expected_confidence = (
+        fact_strength * min(rule_confidence, fact_confidence)
+        + (1.0 - fact_strength) * min(fallback_confidence, fact_confidence)
+    )
 
     sys.path.insert(0, repo_path)
     from pettachainer import PeTTaChainer
@@ -3256,6 +3271,7 @@ def _compileadd_one_rule_derivation_from_repo_stage(
         to_source(answer[1]) == expected_proof for answer in parsed_answers
     )
     typed_stv_only = target_only
+    truth_formula_match = target_only
     for answer in parsed_answers:
         truth = answer[3]
         if not isinstance(truth, tuple) or len(truth) != 3 or symbol_text(truth[0]) != "STV":
@@ -3269,6 +3285,11 @@ def _compileadd_one_rule_derivation_from_repo_stage(
         if not all(math.isfinite(value) and 0.0 <= value <= 1.0 for value in (strength, confidence)):
             typed_stv_only = False
             break
+        if not (
+            math.isclose(strength, expected_strength, rel_tol=1e-12, abs_tol=1e-12)
+            and math.isclose(confidence, expected_confidence, rel_tol=1e-12, abs_tol=1e-12)
+        ):
+            truth_formula_match = False
     return {
         "add_events": add_events,
         "query_call_text": query_call_text,
@@ -3284,6 +3305,56 @@ def _compileadd_one_rule_derivation_from_repo_stage(
         "expected_derived_proof": expected_proof,
         "exact_derived_proof_only": exact_derived_proof_only,
         "typed_stv_only": typed_stv_only,
+        "truth_formula": "TotalMpFormula-with-0.2-fallback",
+        "expected_truth_value": [expected_strength, expected_confidence],
+        "truth_formula_match": truth_formula_match and typed_stv_only,
+    }
+
+
+def inspect_one_rule_truth_formula_path(repo_path: str | Path) -> dict[str, object]:
+    """Close the exact TotalMP source path used by a unary implication."""
+    root = Path(repo_path) / "pettachainer" / "metta" / "chainer"
+    compile_path = root / "compile.metta"
+    formula_path = root / "tv_formulas.metta"
+    missing = [str(path) for path in (compile_path, formula_path) if not path.is_file()]
+    if missing:
+        raise FileNotFoundError("missing PeTTaChainer truth-formula source: " + ", ".join(missing))
+    compile_source = " ".join(compile_path.read_text(encoding="utf-8").split())
+    formula_source = " ".join(formula_path.read_text(encoding="utf-8").split())
+    shapes = {
+        "forward_rule_calls_total_mp_conclusion": (
+            "(CPU TotalMpConclusionFormula ($source-kb $pair-a $b $atv $tv (STV 0.2 0.2)) $btv)"
+            in compile_source
+        ),
+        "missing_complement_uses_fallback": (
+            "(if (== $hits ()) $fallback (car-atom $hits))" in compile_source
+        ),
+        "positive_premise_calls_total_mp": (
+            "($_ (TotalMpFormula $atv $tv (complement-implication-tv $kb $premise $conclusion $fallback)))"
+            in compile_source
+        ),
+        "total_mp_formula_exact": (
+            "(= (TotalMpFormula (STV $as $ac) (STV $bs_a $bc_a) (STV $bs_na $bc_na)) "
+            "(STV (+ (* $bs_a $as) (* $bs_na (- 1 $as))) "
+            "(+ (* $as (min $bc_a $ac)) (* (- 1 $as) (min $bc_na $ac)))))"
+            in formula_source
+        ),
+    }
+    return {
+        "source": "pettachainer unary implication TotalMP truth-formula inspection",
+        "repo_path": str(Path(repo_path)),
+        "matched_shapes": shapes,
+        "shape_confirmed": all(shapes.values()),
+        "fallback_truth_value": [0.2, 0.2],
+        "source_sha256": {
+            "compile.metta": hashlib.sha256(compile_path.read_bytes()).hexdigest(),
+            "tv_formulas.metta": hashlib.sha256(formula_path.read_bytes()).hexdigest(),
+        },
+        "boundaries": {
+            "source_inspection_only": True,
+            "no_formula_or_upstream_change": True,
+            "no_promotion_write_or_live_integration": True,
+        },
     }
 
 
@@ -3457,11 +3528,13 @@ def run_repaired_pettachainer_one_rule_derivation_gate(
     fact_dispatch = inspect_compile_dispatch_for_statement(candidate_repo, fact_statement)
     rule_dispatch = inspect_compile_dispatch_for_statement(candidate_repo, rule_statement)
     collection = inspect_mm2compile_collection_shape(candidate_repo)
+    truth_formula = inspect_one_rule_truth_formula_path(candidate_repo)
     source_admitted = (
         repair.get("exact_targeted_import_removal") is True
         and fact_dispatch.get("selected_compile_branch") == "fact-assertion"
         and rule_dispatch.get("selected_compile_branch") == "implication-rule"
         and collection.get("shape_confirmed") is True
+        and truth_formula.get("shape_confirmed") is True
     )
     if not source_admitted:
         return {
@@ -3472,6 +3545,7 @@ def run_repaired_pettachainer_one_rule_derivation_gate(
             "fact_inspection": fact_dispatch,
             "rule_inspection": rule_dispatch,
             "mm2compile_inspection": collection,
+            "truth_formula_inspection": truth_formula,
             "validation_event": None,
             "runtime_event": None,
         }
@@ -3511,6 +3585,7 @@ def run_repaired_pettachainer_one_rule_derivation_gate(
         and runtime.get("query_target_only") is True
         and runtime.get("exact_derived_proof_only") is True
         and runtime.get("typed_stv_only") is True
+        and runtime.get("truth_formula_match") is True
     )
     return {
         "schema": "petta-memory-repaired-pettachainer-one-rule-derivation-v1",
@@ -3522,6 +3597,7 @@ def run_repaired_pettachainer_one_rule_derivation_gate(
         "fact_inspection": fact_dispatch,
         "rule_inspection": rule_dispatch,
         "mm2compile_inspection": collection,
+        "truth_formula_inspection": truth_formula,
         "validation_event": validation,
         "runtime_event": runtime,
         "diagnostic_stream_classification": "opaque-runtime-diagnostics-content-addressed",
@@ -3531,6 +3607,7 @@ def run_repaired_pettachainer_one_rule_derivation_gate(
             "query_term_must_differ_from_stored_fact": True,
             "exact_rule_proof_required": True,
             "typed_unit_interval_stv_required": True,
+            "exact_total_mp_truth_formula_required": True,
             "no_episode_manifest": True,
             "no_inferred_result_promotion_or_memory_write": True,
             "no_live_integration": True,

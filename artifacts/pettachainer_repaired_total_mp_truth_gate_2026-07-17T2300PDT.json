@@ -1,0 +1,13 @@
+{
+  "schema": "petta-memory-repaired-pettachainer-total-mp-truth-gate-v1",
+  "status": "completed",
+  "source_revision": "PeTTaChainer e4db5cad60a39c0d3f81a07296d606af6de4d76d",
+  "repair": "removed only context_generation.metta's duplicate chainer/compile import in an isolated candidate",
+  "source_sha256": {"compile.metta": "197c84dfa619c2b136c7b097b1ae3315fcb7929a709cf4085e9dcb9bed909ee9", "tv_formulas.metta": "a115bb67a7466c265b8431dd26a477b693662a42987083ce8e87c4fec8c3d8e4"},
+  "formula": "TotalMpFormula with absent-complement fallback (STV 0.2 0.2)",
+  "inputs": {"fact": "(STV 0.8 0.6)", "rule": "(STV 0.9 0.8)"},
+  "expected_truth_value": [0.7600000000000001, 0.52],
+  "answer": "(: (rule-proof rule_s_t fact_a) (T a) (STV 0.7600000000000001 0.52))",
+  "runtime": {"truth_formula_match": true, "seconds": 0.425119, "stdout_bytes": 607215, "stdout_sha256": "6329f00981b24eea6657c7c08b430579a427e25906f7dc6f1526247140ffb921", "stderr_bytes": 149, "stderr_sha256": "8138b1293cbbfa7a7c1557b885bf47d090260e481787ed9522f5cc2ea4811bae"},
+  "boundaries": {"no_episode_manifest": true, "no_inferred_result_promotion_or_memory_write": true, "no_live_integration": true}
+}

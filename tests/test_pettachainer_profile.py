@@ -1651,6 +1651,7 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         runtime = {
             "status": "ok", "query_answer_count": 1, "malformed_answer_count": 0,
             "query_target_only": True, "exact_derived_proof_only": True, "typed_stv_only": True,
+            "truth_formula_match": True,
             "stdout_bytes": 10, "stdout_sha256": "a" * 64,
             "stderr_bytes": 2, "stderr_sha256": "b" * 64,
         }
@@ -1661,6 +1662,7 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
                 {"selected_compile_branch": "implication-rule"},
             ]),
             patch.object(profile, "inspect_mm2compile_collection_shape", return_value={"shape_confirmed": True}),
+            patch.object(profile, "inspect_one_rule_truth_formula_path", return_value={"shape_confirmed": True}),
             patch.object(profile, "_configure_local_runtime", return_value=None),
             patch.object(profile, "_run_isolated_stage", side_effect=[validation, runtime]),
         ):
@@ -1683,6 +1685,7 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
                 {"selected_compile_branch": "implication-rule"},
             ]),
             patch.object(profile, "inspect_mm2compile_collection_shape", return_value={"shape_confirmed": True}),
+            patch.object(profile, "inspect_one_rule_truth_formula_path", return_value={"shape_confirmed": True}),
             patch.object(profile, "_configure_local_runtime", return_value=None),
             patch.object(profile, "_run_isolated_stage", side_effect=[validation, runtime]),
         ):
@@ -1692,6 +1695,13 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
                 "(T a)", project_root=Path("/project"), candidate_repo_path=Path("/candidate"),
             )
         self.assertEqual(blocked["status"], "blocked")
+
+    def test_one_rule_truth_formula_path_matches_pinned_source(self):
+        repo = Path(__file__).resolve().parents[2] / "PeTTaChainer"
+        result = profile.inspect_one_rule_truth_formula_path(repo)
+        self.assertTrue(result["shape_confirmed"])
+        self.assertEqual(result["fallback_truth_value"], [0.2, 0.2])
+        self.assertEqual(set(result["source_sha256"]), {"compile.metta", "tv_formulas.metta"})
 
     def test_run_repaired_compileadd_exact_fact_query_gate_blocks_missing_capture_provenance(self):
         with (
