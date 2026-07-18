@@ -15,7 +15,13 @@ import time
 from pathlib import Path
 from typing import Callable, Iterable
 
-from .pipln_models import PeTTaChainerEpisodeContract, PeTTaChainerInputStatement
+from .pipln_models import (
+    PeTTaChainerDerivedResultCapture,
+    PeTTaChainerEpisodeContract,
+    PeTTaChainerInputStatement,
+    build_pettachainer_derived_result_capture,
+    build_pettachainer_stage_capture,
+)
 from .sexpr import parse_one_list, symbol_text, to_source
 from .store import MediumMemoryStore
 
@@ -3580,6 +3586,115 @@ def run_repaired_pettachainer_rule_episode_contract_gate(
             "no_live_integration": True,
         },
     }
+
+
+def build_repaired_pettachainer_rule_episode_capture(
+    contract: PeTTaChainerEpisodeContract,
+    gate: dict[str, object],
+) -> PeTTaChainerDerivedResultCapture:
+    """Close one admitted rule-contract gate into a typed capture artifact.
+
+    The artifact binds the canonical derived atom to compiler input identities
+    and to content commitments for both isolated stages. Raw diagnostic stream
+    content is deliberately not claimed or reconstructed.
+    """
+    if not isinstance(contract, PeTTaChainerEpisodeContract):
+        raise ValueError("contract must be an immutable PeTTaChainer episode contract")
+    if not isinstance(gate, dict):
+        raise ValueError("gate must be a repaired rule-contract gate object")
+    if (
+        gate.get("schema") != "petta-memory-repaired-pettachainer-rule-contract-gate-v1"
+        or gate.get("runtime_admitted") is not True
+        or gate.get("result_classification") != "compiler-bound-one-rule-derived-result"
+        or gate.get("episode_id") != contract.episode_id
+        or gate.get("chart_fingerprint") != contract.chart_fingerprint
+        or gate.get("query_term") != contract.query_term
+    ):
+        raise ValueError("repaired rule-contract gate is not admitted for this contract")
+
+    facts: list[PeTTaChainerInputStatement] = []
+    rules: list[PeTTaChainerInputStatement] = []
+    for statement in contract.statements:
+        term = parse_one_list(statement.canonical_term)
+        (rules if term and symbol_text(term[0]) == "Implication" else facts).append(statement)
+    if len(facts) != 1 or len(rules) != 1:
+        raise ValueError("capture requires one compiler-emitted fact and one implication")
+    fact, rule = facts[0], rules[0]
+    identity_fields = {
+        "fact_statement_digest": fact.sentence_digest,
+        "rule_statement_digest": rule.sentence_digest,
+        "fact_proof_id": fact.proof_id,
+        "rule_proof_id": rule.proof_id,
+        "fact_stamps": list(fact.stamp_ints),
+        "rule_stamps": list(rule.stamp_ints),
+        "fact_evidence_basis_ids": list(fact.evidence_basis_ids),
+        "rule_evidence_basis_ids": list(rule.evidence_basis_ids),
+    }
+    if any(gate.get(field) != expected for field, expected in identity_fields.items()):
+        raise ValueError("repaired rule-contract gate input provenance drifted")
+
+    runtime_gate = gate.get("runtime_gate")
+    if not isinstance(runtime_gate, dict) or runtime_gate.get("status") != "completed":
+        raise ValueError("nested repaired derivation gate is not completed")
+    validation = runtime_gate.get("validation_event")
+    runtime = runtime_gate.get("runtime_event")
+    if not isinstance(validation, dict) or not isinstance(runtime, dict):
+        raise ValueError("completed derivation gate lacks isolated stage captures")
+    if runtime.get("query_unique_answer_count") != 1:
+        raise ValueError("typed capture requires one unique derived answer")
+    answers = runtime.get("query_answer_items")
+    if not isinstance(answers, list) or not answers or not isinstance(answers[0], str):
+        raise ValueError("typed capture requires a retained derived answer sample")
+    parsed = parse_one_list(answers[0])
+    if len(parsed) != 4 or symbol_text(parsed[0]) != ":":
+        raise ValueError("retained derived answer is not a proof/type/STV atom")
+    proof, query_term = (to_source(item) for item in parsed[1:3])
+    truth = parsed[3]
+    if not isinstance(truth, tuple) or len(truth) != 3 or symbol_text(truth[0]) != "STV":
+        raise ValueError("retained derived answer lacks an STV")
+    try:
+        strength, confidence = (float(symbol_text(item)) for item in truth[1:])
+    except (TypeError, ValueError) as error:
+        raise ValueError("retained derived STV is not numeric") from error
+    expected_proof = f"(rule-proof {rule.proof_id} {fact.proof_id})"
+    expected_truth = runtime.get("expected_truth_value")
+    if (
+        proof != expected_proof
+        or query_term != contract.query_term
+        or not isinstance(expected_truth, list)
+        or len(expected_truth) != 2
+        or any(isinstance(value, bool) or not isinstance(value, (int, float)) for value in expected_truth)
+        or not math.isclose(strength, float(expected_truth[0]), rel_tol=1e-12, abs_tol=1e-12)
+        or not math.isclose(confidence, float(expected_truth[1]), rel_tol=1e-12, abs_tol=1e-12)
+    ):
+        raise ValueError("retained derived answer does not match admitted proof or truth formula")
+
+    def stage_capture(event: dict[str, object]):
+        try:
+            return build_pettachainer_stage_capture(
+                label=event["label"], elapsed_seconds=event["seconds"],
+                stdout_bytes=event["stdout_bytes"], stdout_sha256=event["stdout_sha256"],
+                stderr_bytes=event["stderr_bytes"], stderr_sha256=event["stderr_sha256"],
+            )
+        except (KeyError, TypeError) as error:
+            raise ValueError("isolated stage capture provenance is incomplete") from error
+
+    validator_capture = stage_capture(validation)
+    runtime_capture = stage_capture(runtime)
+    derived_atom = f"(: {proof} {query_term} (STV {strength} {confidence}))"
+    return build_pettachainer_derived_result_capture(
+        episode_id=contract.episode_id,
+        chart_fingerprint=contract.chart_fingerprint,
+        fact=fact,
+        rule=rule,
+        query_term=query_term,
+        derived_atom=derived_atom,
+        derived_proof=proof,
+        strength=strength,
+        confidence=confidence,
+        validator_capture=validator_capture,
+        runtime_capture=runtime_capture,
+    )
 
 
 def run_repaired_pettachainer_one_rule_derivation_gate(

@@ -1,0 +1,35 @@
+{
+  "schema": "petta-memory-pettachainer-typed-derived-capture-probe-v1",
+  "status": "completed",
+  "source_revision": "e4db5ca",
+  "repair": "isolated removal of context_generation.metta duplicate chainer/compile import",
+  "episode_id": "episode-typed-derived-capture",
+  "derived_atom": "(: (rule-proof pm-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc pm-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa) (T a) (STV 0.7600000000000001 0.52))",
+  "result_digest": "f77be2210dc63e507140d025645aae1d2d5e6c5f65407f7dbf7326716bb7ca24",
+  "validator_capture": {
+    "capture_digest": "b4c786598290e4b737b521b5ae1ca4525ba205356ba3a120d9c6e67dd5c1aac9",
+    "stdout_bytes": 8399,
+    "stdout_sha256": "8043a174b5a2f206681699b24eadd87d9fb7ee59367e3902f6ddbe5bdad6a349",
+    "stderr_bytes": 0,
+    "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "runtime_capture": {
+    "capture_digest": "824e7f2be0e3e22e0a03d68ccd309ac695242ee9868c666dcaa50ca4f27d1fab",
+    "stdout_bytes": 607555,
+    "stdout_sha256": "d94366bdf99a99bc33674ec5d133a27504e0e15d65dd145e325abdde92c4757e",
+    "stderr_bytes": 154,
+    "stderr_sha256": "ff64ac6d6a8d09df4b63c0193ad870f4763ac8933d0d0dce79525e8e02ff43a3"
+  },
+  "boundaries": {
+    "diagnostic_stream_content_opaque": true,
+    "no_episode_manifest": true,
+    "no_inferred_result_promotion_or_memory_write": true,
+    "no_upstream_source_change": true,
+    "no_live_integration": true
+  },
+  "provenance": {
+    "cron_id": "4f4e146a-bdf9-4a6e-97da-6484cfe3f81f",
+    "local_time": "2026-07-18T03:00:00-07:00",
+    "utc_time": "2026-07-18T10:00:00Z"
+  }
+}

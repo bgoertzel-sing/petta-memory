@@ -488,6 +488,171 @@ class PeTTaChainerEpisodeContract:
 
 
 @dataclass(frozen=True)
+class PeTTaChainerStageCapture:
+    """Content identity for one bounded isolated PeTTaChainer stage.
+
+    The profiling runner intentionally retains hashes and byte counts rather
+    than hundreds of kilobytes of diagnostic output.  This record makes that
+    limitation explicit: it is process provenance, not semantic output.
+    """
+
+    label: str
+    elapsed_seconds: float
+    stdout_bytes: int
+    stdout_sha256: str
+    stderr_bytes: int
+    stderr_sha256: str
+    capture_digest: str
+
+    def __post_init__(self) -> None:
+        _nonempty(self.label, "PeTTaChainer stage label")
+        _finite_nonnegative(self.elapsed_seconds, "PeTTaChainer stage elapsed_seconds")
+        for field in ("stdout_bytes", "stderr_bytes"):
+            value = getattr(self, field)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{field} must be a non-negative integer")
+        _sha256_digest(self.stdout_sha256, "stdout_sha256")
+        _sha256_digest(self.stderr_sha256, "stderr_sha256")
+        expected = _canonical_hash({
+            "label": self.label,
+            "elapsed_seconds": float(self.elapsed_seconds),
+            "stdout_bytes": self.stdout_bytes,
+            "stdout_sha256": self.stdout_sha256,
+            "stderr_bytes": self.stderr_bytes,
+            "stderr_sha256": self.stderr_sha256,
+        })
+        if self.capture_digest != expected:
+            raise ValueError("PeTTaChainer stage capture digest does not match typed content")
+
+
+def build_pettachainer_stage_capture(
+    *, label: str, elapsed_seconds: float, stdout_bytes: int,
+    stdout_sha256: str, stderr_bytes: int, stderr_sha256: str,
+) -> PeTTaChainerStageCapture:
+    _finite_nonnegative(elapsed_seconds, "PeTTaChainer stage elapsed_seconds")
+    payload = {
+        "label": label,
+        "elapsed_seconds": float(elapsed_seconds),
+        "stdout_bytes": stdout_bytes,
+        "stdout_sha256": stdout_sha256,
+        "stderr_bytes": stderr_bytes,
+        "stderr_sha256": stderr_sha256,
+    }
+    return PeTTaChainerStageCapture(**payload, capture_digest=_canonical_hash(payload))
+
+
+@dataclass(frozen=True)
+class PeTTaChainerDerivedResultCapture:
+    """Typed, non-promoting capture of one compiler-bound derived result."""
+
+    episode_id: str
+    chart_fingerprint: str
+    fact_sentence_digest: str
+    rule_sentence_digest: str
+    fact_proof_id: str
+    rule_proof_id: str
+    query_term: str
+    derived_atom: str
+    derived_proof: str
+    strength: float
+    confidence: float
+    fact_stamp_ints: tuple[int, ...]
+    rule_stamp_ints: tuple[int, ...]
+    fact_evidence_basis_ids: tuple[str, ...]
+    rule_evidence_basis_ids: tuple[str, ...]
+    validator_capture: PeTTaChainerStageCapture
+    runtime_capture: PeTTaChainerStageCapture
+    result_digest: str
+
+    def __post_init__(self) -> None:
+        _nonempty(self.episode_id, "episode_id")
+        _sha256_digest(self.chart_fingerprint, "chart_fingerprint")
+        _sha256_digest(self.fact_sentence_digest, "fact_sentence_digest")
+        _sha256_digest(self.rule_sentence_digest, "rule_sentence_digest")
+        if self.fact_proof_id != f"pm-{self.fact_sentence_digest}":
+            raise ValueError("fact proof id does not match its sentence digest")
+        if self.rule_proof_id != f"pm-{self.rule_sentence_digest}":
+            raise ValueError("rule proof id does not match its sentence digest")
+        if _canonical_kernel_term(self.query_term) != self.query_term:
+            raise ValueError("PeTTaChainer derived query term is not canonical")
+        expected_proof = f"(rule-proof {self.rule_proof_id} {self.fact_proof_id})"
+        if self.derived_proof != expected_proof:
+            raise ValueError("derived proof does not match compiler input proof ids")
+        for value, field in ((self.strength, "strength"), (self.confidence, "confidence")):
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 <= value <= 1:
+                raise ValueError(f"derived result {field} must be finite and in [0, 1]")
+        expected_atom = f"(: {self.derived_proof} {self.query_term} (STV {self.strength} {self.confidence}))"
+        if self.derived_atom != expected_atom:
+            raise ValueError("derived atom does not match typed result content")
+        for stamps, bases, label in (
+            (self.fact_stamp_ints, self.fact_evidence_basis_ids, "fact"),
+            (self.rule_stamp_ints, self.rule_evidence_basis_ids, "rule"),
+        ):
+            if not stamps or tuple(sorted(set(stamps))) != stamps:
+                raise ValueError(f"{label} stamps must be non-empty, unique, and sorted")
+            if not bases or tuple(sorted(set(bases))) != bases:
+                raise ValueError(f"{label} evidence bases must be non-empty, unique, and sorted")
+        if not isinstance(self.validator_capture, PeTTaChainerStageCapture) or not isinstance(self.runtime_capture, PeTTaChainerStageCapture):
+            raise ValueError("derived result requires typed validator and runtime captures")
+        expected_digest = _canonical_hash(_pettachainer_derived_result_payload(self))
+        if self.result_digest != expected_digest:
+            raise ValueError("PeTTaChainer derived result digest does not match typed content")
+
+
+def _pettachainer_derived_result_payload(result: PeTTaChainerDerivedResultCapture) -> dict[str, object]:
+    return {
+        field: getattr(result, field)
+        for field in result.__dataclass_fields__
+        if field not in {"result_digest", "validator_capture", "runtime_capture"}
+    } | {
+        "validator_capture_digest": result.validator_capture.capture_digest,
+        "runtime_capture_digest": result.runtime_capture.capture_digest,
+    }
+
+
+def build_pettachainer_derived_result_capture(
+    *, episode_id: str, chart_fingerprint: str,
+    fact: PeTTaChainerInputStatement, rule: PeTTaChainerInputStatement,
+    query_term: str, derived_atom: str, derived_proof: str,
+    strength: float, confidence: float,
+    validator_capture: PeTTaChainerStageCapture,
+    runtime_capture: PeTTaChainerStageCapture,
+) -> PeTTaChainerDerivedResultCapture:
+    for value, field in ((strength, "strength"), (confidence, "confidence")):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"derived result {field} must be numeric")
+    values = {
+        "episode_id": episode_id,
+        "chart_fingerprint": chart_fingerprint,
+        "fact_sentence_digest": fact.sentence_digest,
+        "rule_sentence_digest": rule.sentence_digest,
+        "fact_proof_id": fact.proof_id,
+        "rule_proof_id": rule.proof_id,
+        "query_term": query_term,
+        "derived_atom": derived_atom,
+        "derived_proof": derived_proof,
+        "strength": float(strength),
+        "confidence": float(confidence),
+        "fact_stamp_ints": fact.stamp_ints,
+        "rule_stamp_ints": rule.stamp_ints,
+        "fact_evidence_basis_ids": fact.evidence_basis_ids,
+        "rule_evidence_basis_ids": rule.evidence_basis_ids,
+        "validator_capture": validator_capture,
+        "runtime_capture": runtime_capture,
+    }
+    digest_payload = {
+        key: value for key, value in values.items()
+        if key not in {"validator_capture", "runtime_capture"}
+    } | {
+        "validator_capture_digest": validator_capture.capture_digest,
+        "runtime_capture_digest": runtime_capture.capture_digest,
+    }
+    return PeTTaChainerDerivedResultCapture(
+        **values, result_digest=_canonical_hash(digest_payload),
+    )
+
+
+@dataclass(frozen=True)
 class ValidatedKernelResult:
     """One structurally validated, provenance-closed patham9 result atom."""
 

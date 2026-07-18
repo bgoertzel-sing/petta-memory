@@ -1692,6 +1692,68 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         self.assertEqual(run_gate.call_args.kwargs["query_steps"], 7)
         self.assertTrue(result["boundaries"]["no_episode_manifest"])
 
+    def test_repaired_rule_contract_capture_closes_result_and_stream_provenance(self):
+        contract = self.rule_episode_contract()
+        fact, rule = contract.statements[1], contract.statements[0]
+        proof = f"(rule-proof {rule.proof_id} {fact.proof_id})"
+        validation = {
+            "label": "validate_repaired_one_rule_derivation", "seconds": 0.1,
+            "stdout_bytes": 0, "stdout_sha256": hashlib.sha256(b"").hexdigest(),
+            "stderr_bytes": 0, "stderr_sha256": hashlib.sha256(b"").hexdigest(),
+        }
+        runtime = {
+            "label": "repaired_one_rule_derivation", "seconds": 0.4,
+            "stdout_bytes": 120, "stdout_sha256": "d" * 64,
+            "stderr_bytes": 12, "stderr_sha256": "e" * 64,
+            "query_unique_answer_count": 1,
+            "query_answer_items": [f"(: {proof} (T a) (STV 0.7600000000000001 0.52))"],
+            "expected_truth_value": [0.7600000000000001, 0.52],
+        }
+        gate = {
+            "schema": "petta-memory-repaired-pettachainer-rule-contract-gate-v1",
+            "episode_id": contract.episode_id,
+            "chart_fingerprint": contract.chart_fingerprint,
+            "query_term": contract.query_term,
+            "fact_statement_digest": fact.sentence_digest,
+            "rule_statement_digest": rule.sentence_digest,
+            "fact_proof_id": fact.proof_id,
+            "rule_proof_id": rule.proof_id,
+            "fact_stamps": list(fact.stamp_ints),
+            "rule_stamps": list(rule.stamp_ints),
+            "fact_evidence_basis_ids": list(fact.evidence_basis_ids),
+            "rule_evidence_basis_ids": list(rule.evidence_basis_ids),
+            "runtime_admitted": True,
+            "result_classification": "compiler-bound-one-rule-derived-result",
+            "runtime_gate": {
+                "status": "completed", "validation_event": validation,
+                "runtime_event": runtime,
+            },
+        }
+
+        capture = profile.build_repaired_pettachainer_rule_episode_capture(contract, gate)
+
+        self.assertEqual(capture.derived_proof, proof)
+        self.assertEqual(capture.fact_evidence_basis_ids, ("basis-fact",))
+        self.assertEqual(capture.runtime_capture.stdout_bytes, 120)
+        self.assertRegex(capture.runtime_capture.capture_digest, r"^[0-9a-f]{64}$")
+        self.assertRegex(capture.result_digest, r"^[0-9a-f]{64}$")
+
+        runtime["stdout_sha256"] = "not-a-digest"
+        with self.assertRaisesRegex(ValueError, "SHA-256"):
+            profile.build_repaired_pettachainer_rule_episode_capture(contract, gate)
+
+    def test_repaired_rule_contract_capture_rejects_gate_identity_drift(self):
+        contract = self.rule_episode_contract()
+        with self.assertRaisesRegex(ValueError, "not admitted for this contract"):
+            profile.build_repaired_pettachainer_rule_episode_capture(contract, {
+                "schema": "petta-memory-repaired-pettachainer-rule-contract-gate-v1",
+                "runtime_admitted": True,
+                "result_classification": "compiler-bound-one-rule-derived-result",
+                "episode_id": "other-episode",
+                "chart_fingerprint": contract.chart_fingerprint,
+                "query_term": contract.query_term,
+            })
+
     def test_repaired_rule_contract_gate_rejects_wrong_shape_or_stored_query(self):
         contract = self.rule_episode_contract()
         with self.assertRaisesRegex(ValueError, "exactly two"):
