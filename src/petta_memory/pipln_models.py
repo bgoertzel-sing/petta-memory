@@ -768,6 +768,11 @@ def _write_create_once_durable(destination: Path, data: str) -> None:
                 os.unlink(destination.name, dir_fd=parent_descriptor)
             except FileNotFoundError:
                 pass
+            else:
+                # Make cleanup of a partially written directory entry durable
+                # before reporting the original write/sync failure.  Without
+                # this sync, a crash could resurrect the rejected artifact.
+                os.fsync(parent_descriptor)
         raise
     finally:
         os.close(parent_descriptor)

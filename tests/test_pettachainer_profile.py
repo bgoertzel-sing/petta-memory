@@ -1803,6 +1803,25 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 write_pettachainer_derived_result_capture(path, capture)
 
+            failed_file_sync_path = Path(directory) / "file-sync-failed.json"
+            real_fsync = os.fsync
+            sync_calls = 0
+
+            def fail_file_sync(descriptor):
+                nonlocal sync_calls
+                sync_calls += 1
+                if sync_calls == 1:
+                    raise OSError("simulated file fsync failure")
+                return real_fsync(descriptor)
+
+            with patch("petta_memory.pipln_models.os.fsync", side_effect=fail_file_sync):
+                with self.assertRaisesRegex(OSError, "file fsync failure"):
+                    write_pettachainer_derived_result_capture(
+                        failed_file_sync_path, capture,
+                    )
+            self.assertEqual(sync_calls, 2)
+            self.assertFalse(failed_file_sync_path.exists())
+
             failed_sync_path = Path(directory) / "directory-sync-failed.json"
             real_fsync = os.fsync
             sync_calls = 0
