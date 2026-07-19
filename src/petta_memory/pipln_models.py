@@ -737,6 +737,15 @@ def write_pettachainer_derived_result_capture(
 
 def _write_create_once_durable(destination: Path, data: str) -> None:
     """Create and durably publish one artifact without replacing an existing path."""
+    def record_cleanup_failure(error: BaseException, note: str) -> None:
+        add_note = getattr(error, "add_note", None)
+        if add_note is not None:
+            add_note(note)
+        else:
+            # Python 3.10 lacks BaseException.add_note(), but retaining the
+            # same attribute keeps cleanup diagnostics available to callers.
+            error.__notes__ = [*getattr(error, "__notes__", ()), note]
+
     directory_flags = os.O_RDONLY
     if hasattr(os, "O_DIRECTORY"):
         directory_flags |= os.O_DIRECTORY
@@ -757,7 +766,7 @@ def _write_create_once_durable(destination: Path, data: str) -> None:
             os.fsync(handle.fileno())
             file_synced = True
         os.fsync(parent_descriptor)
-    except BaseException:
+    except BaseException as publication_error:
         # Before the completed file is synced, a partial artifact is safe to
         # remove.  After that point its directory entry may already survive a
         # crash even when the parent fsync reports failure; retaining it keeps
@@ -768,11 +777,22 @@ def _write_create_once_durable(destination: Path, data: str) -> None:
                 os.unlink(destination.name, dir_fd=parent_descriptor)
             except FileNotFoundError:
                 pass
+            except OSError as cleanup_error:
+                record_cleanup_failure(
+                    publication_error,
+                    f"partial artifact cleanup failed: {cleanup_error}"
+                )
             else:
                 # Make cleanup of a partially written directory entry durable
                 # before reporting the original write/sync failure.  Without
                 # this sync, a crash could resurrect the rejected artifact.
-                os.fsync(parent_descriptor)
+                try:
+                    os.fsync(parent_descriptor)
+                except OSError as cleanup_error:
+                    record_cleanup_failure(
+                        publication_error,
+                        f"partial artifact cleanup sync failed: {cleanup_error}"
+                    )
         raise
     finally:
         os.close(parent_descriptor)

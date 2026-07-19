@@ -1822,6 +1822,58 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
             self.assertEqual(sync_calls, 2)
             self.assertFalse(failed_file_sync_path.exists())
 
+            failed_cleanup_sync_path = Path(directory) / "cleanup-sync-failed.json"
+            sync_calls = 0
+
+            def fail_file_and_cleanup_sync(descriptor):
+                nonlocal sync_calls
+                sync_calls += 1
+                if sync_calls == 1:
+                    raise OSError("primary file fsync failure")
+                raise OSError("secondary cleanup fsync failure")
+
+            with patch(
+                "petta_memory.pipln_models.os.fsync",
+                side_effect=fail_file_and_cleanup_sync,
+            ):
+                with self.assertRaisesRegex(
+                    OSError, "primary file fsync failure",
+                ) as raised:
+                    write_pettachainer_derived_result_capture(
+                        failed_cleanup_sync_path, capture,
+                    )
+            self.assertEqual(sync_calls, 2)
+            self.assertFalse(failed_cleanup_sync_path.exists())
+            self.assertIn(
+                "partial artifact cleanup sync failed: secondary cleanup fsync failure",
+                raised.exception.__notes__,
+            )
+
+            failed_unlink_path = Path(directory) / "unlink-failed.json"
+            sync_calls = 0
+
+            with (
+                patch(
+                    "petta_memory.pipln_models.os.fsync",
+                    side_effect=fail_file_sync,
+                ),
+                patch(
+                    "petta_memory.pipln_models.os.unlink",
+                    side_effect=OSError("secondary unlink failure"),
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    OSError, "simulated file fsync failure",
+                ) as raised:
+                    write_pettachainer_derived_result_capture(
+                        failed_unlink_path, capture,
+                    )
+            self.assertTrue(failed_unlink_path.exists())
+            self.assertIn(
+                "partial artifact cleanup failed: secondary unlink failure",
+                raised.exception.__notes__,
+            )
+
             failed_sync_path = Path(directory) / "directory-sync-failed.json"
             real_fsync = os.fsync
             sync_calls = 0
