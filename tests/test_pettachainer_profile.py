@@ -37,6 +37,23 @@ def _echo_profile_stage(value: str) -> dict[str, object]:
 
 
 class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
+    def test_json_artifact_admission_rejects_metadata_byte_count_mismatch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "artifact.json"
+            path.write_text('{"value":1}', encoding="utf-8")
+            actual = os.stat(path)
+            inconsistent_fields = list(actual)
+            inconsistent_fields[6] = actual.st_size + 1
+            inconsistent = os.stat_result(inconsistent_fields)
+
+            with patch.object(
+                pipln_models.os, "fstat", return_value=inconsistent,
+            ):
+                with self.assertRaisesRegex(
+                    ValueError, "byte count does not match file metadata",
+                ):
+                    pipln_models._load_unambiguous_json(path)
+
     def test_json_artifact_admission_rejects_concurrent_metadata_change(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "artifact.json"

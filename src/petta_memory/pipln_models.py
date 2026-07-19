@@ -101,6 +101,8 @@ def _load_unambiguous_json(
                 for field in stable_fields
             ):
                 raise ValueError("JSON artifact changed during admission")
+            if len(encoded) != final_metadata.st_size:
+                raise ValueError("JSON artifact byte count does not match file metadata")
     except BaseException as caught_error:
         admission_error = caught_error
         raise
