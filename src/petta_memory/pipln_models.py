@@ -738,11 +738,13 @@ def write_pettachainer_derived_result_capture(
 def _write_create_once_durable(destination: Path, data: str) -> None:
     """Create and durably publish one artifact without replacing an existing path."""
     descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    file_synced = False
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
+            file_synced = True
         directory_flags = os.O_RDONLY
         if hasattr(os, "O_DIRECTORY"):
             directory_flags |= os.O_DIRECTORY
@@ -752,7 +754,13 @@ def _write_create_once_durable(destination: Path, data: str) -> None:
         finally:
             os.close(parent_descriptor)
     except BaseException:
-        destination.unlink(missing_ok=True)
+        # Before the completed file is synced, a partial artifact is safe to
+        # remove.  After that point its directory entry may already survive a
+        # crash even when the parent fsync reports failure; retaining it keeps
+        # create-once semantics and prevents a later caller from overwriting
+        # an artifact whose publication state is uncertain.
+        if not file_synced:
+            destination.unlink(missing_ok=True)
         raise
 
 
