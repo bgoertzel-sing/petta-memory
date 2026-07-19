@@ -93,8 +93,10 @@ def _load_unambiguous_json(
             raise ValueError("JSON artifact must be a regular file")
         if metadata.st_nlink != 1:
             raise ValueError("JSON artifact must have exactly one filesystem link")
-        with os.fdopen(descriptor, "rb") as handle:
-            descriptor = -1
+        handle = os.fdopen(descriptor, "rb")
+        descriptor = -1
+        stream_error: BaseException | None = None
+        try:
             encoded = handle.read(max_bytes + 1)
             final_metadata = os.fstat(handle.fileno())
             stable_fields = (
@@ -107,6 +109,23 @@ def _load_unambiguous_json(
                 raise ValueError("JSON artifact changed during admission")
             if len(encoded) != final_metadata.st_size:
                 raise ValueError("JSON artifact byte count does not match file metadata")
+        except BaseException as caught_error:
+            stream_error = caught_error
+            raise
+        finally:
+            try:
+                handle.close()
+            except OSError as close_error:
+                if stream_error is None:
+                    raise
+                note = f"JSON artifact stream close failed: {close_error}"
+                add_note = getattr(stream_error, "add_note", None)
+                if add_note is not None:
+                    add_note(note)
+                else:
+                    stream_error.__notes__ = [
+                        *getattr(stream_error, "__notes__", ()), note,
+                    ]
     except BaseException as caught_error:
         admission_error = caught_error
         raise

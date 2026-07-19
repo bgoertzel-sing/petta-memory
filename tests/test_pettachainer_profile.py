@@ -37,6 +37,55 @@ def _echo_profile_stage(value: str) -> dict[str, object]:
 
 
 class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
+    def test_json_artifact_stream_close_does_not_mask_read_failure(self):
+        class FailingStream:
+            def read(self, _size):
+                raise OSError("primary artifact read failure")
+
+            def close(self):
+                raise OSError("secondary stream close failure")
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "artifact.json"
+            path.write_text('{"value":1}', encoding="utf-8")
+
+            with patch.object(pipln_models.os, "fdopen", return_value=FailingStream()):
+                with self.assertRaisesRegex(
+                    OSError, "primary artifact read failure",
+                ) as raised:
+                    pipln_models._load_unambiguous_json(path)
+            self.assertIn(
+                "JSON artifact stream close failed: secondary stream close failure",
+                raised.exception.__notes__,
+            )
+
+    def test_json_artifact_stream_close_failure_propagates_after_read(self):
+        class CloseFailingStream:
+            def __init__(self, descriptor):
+                self.descriptor = descriptor
+
+            def read(self, size):
+                return os.read(self.descriptor, size)
+
+            def fileno(self):
+                return self.descriptor
+
+            def close(self):
+                os.close(self.descriptor)
+                raise OSError("artifact stream close failure")
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "artifact.json"
+            path.write_text('{"value":1}', encoding="utf-8")
+
+            with patch.object(
+                pipln_models.os, "fdopen", side_effect=lambda descriptor, _mode: CloseFailingStream(descriptor),
+            ):
+                with self.assertRaisesRegex(
+                    OSError, "artifact stream close failure",
+                ):
+                    pipln_models._load_unambiguous_json(path)
+
     def test_json_artifact_admission_rejects_hard_link_alias(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "artifact.json"
