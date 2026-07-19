@@ -94,6 +94,13 @@ def _load_unambiguous_json(
         with os.fdopen(descriptor, "rb") as handle:
             descriptor = -1
             encoded = handle.read(max_bytes + 1)
+            final_metadata = os.fstat(handle.fileno())
+            stable_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+            if any(
+                getattr(metadata, field) != getattr(final_metadata, field)
+                for field in stable_fields
+            ):
+                raise ValueError("JSON artifact changed during admission")
     except BaseException as caught_error:
         admission_error = caught_error
         raise

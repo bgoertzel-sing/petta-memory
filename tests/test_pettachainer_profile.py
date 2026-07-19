@@ -12,6 +12,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import petta_memory.pettachainer_profile as profile
+import petta_memory.pipln_models as pipln_models
 from petta_memory.pipln_models import (
     EpisodeBudget,
     PeTTaChainerEpisodeContract,
@@ -36,6 +37,21 @@ def _echo_profile_stage(value: str) -> dict[str, object]:
 
 
 class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
+    def test_json_artifact_admission_rejects_concurrent_metadata_change(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "artifact.json"
+            path.write_text('{"value":1}', encoding="utf-8")
+            initial = os.stat(path)
+            changed_fields = list(initial)
+            changed_fields[6] = initial.st_size + 1
+            changed = os.stat_result(changed_fields)
+
+            with patch.object(
+                pipln_models.os, "fstat", side_effect=[initial, changed],
+            ):
+                with self.assertRaisesRegex(ValueError, "changed during admission"):
+                    pipln_models._load_unambiguous_json(path)
+
     @staticmethod
     def episode_contract():
         digest = "a" * 64
