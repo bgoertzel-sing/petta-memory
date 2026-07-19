@@ -1778,9 +1778,13 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "derived-result.json"
             manifest_path = Path(directory) / "episode-manifest.json"
-            with patch("petta_memory.pipln_models.os.fsync", wraps=os.fsync) as fsync:
+            with (patch("petta_memory.pipln_models.os.fsync", wraps=os.fsync) as fsync,
+                  patch("petta_memory.pipln_models.os.open", wraps=os.open) as open_file):
                 write_pettachainer_episode_manifest(manifest_path, manifest)
             self.assertEqual(fsync.call_count, 2)
+            self.assertEqual(open_file.call_args_list[0].args[0], manifest_path.parent)
+            self.assertEqual(open_file.call_args_list[1].args[0], manifest_path.name)
+            self.assertIsInstance(open_file.call_args_list[1].kwargs["dir_fd"], int)
             self.assertEqual(
                 read_pettachainer_episode_manifest(
                     manifest_path, contract=contract, result=capture,
