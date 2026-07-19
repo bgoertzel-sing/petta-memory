@@ -1874,6 +1874,42 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
                 raised.exception.__notes__,
             )
 
+            failed_close_path = Path(directory) / "close-failed.json"
+            real_close = os.close
+            sync_calls = 0
+            close_calls = 0
+
+            def fail_parent_close(descriptor):
+                nonlocal close_calls
+                close_calls += 1
+                if close_calls == 1:
+                    real_close(descriptor)
+                    raise OSError("secondary parent close failure")
+                return real_close(descriptor)
+
+            with (
+                patch(
+                    "petta_memory.pipln_models.os.fsync",
+                    side_effect=fail_file_sync,
+                ),
+                patch(
+                    "petta_memory.pipln_models.os.close",
+                    side_effect=fail_parent_close,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    OSError, "simulated file fsync failure",
+                ) as raised:
+                    write_pettachainer_derived_result_capture(
+                        failed_close_path, capture,
+                    )
+            self.assertEqual(close_calls, 1)
+            self.assertFalse(failed_close_path.exists())
+            self.assertIn(
+                "parent directory descriptor close failed: secondary parent close failure",
+                raised.exception.__notes__,
+            )
+
             failed_sync_path = Path(directory) / "directory-sync-failed.json"
             real_fsync = os.fsync
             sync_calls = 0

@@ -752,6 +752,7 @@ def _write_create_once_durable(destination: Path, data: str) -> None:
     parent_descriptor = os.open(destination.parent, directory_flags)
     file_created = False
     file_synced = False
+    publication_error: BaseException | None = None
     try:
         descriptor = os.open(
             destination.name,
@@ -766,7 +767,8 @@ def _write_create_once_durable(destination: Path, data: str) -> None:
             os.fsync(handle.fileno())
             file_synced = True
         os.fsync(parent_descriptor)
-    except BaseException as publication_error:
+    except BaseException as caught_error:
+        publication_error = caught_error
         # Before the completed file is synced, a partial artifact is safe to
         # remove.  After that point its directory entry may already survive a
         # crash even when the parent fsync reports failure; retaining it keeps
@@ -795,7 +797,15 @@ def _write_create_once_durable(destination: Path, data: str) -> None:
                     )
         raise
     finally:
-        os.close(parent_descriptor)
+        try:
+            os.close(parent_descriptor)
+        except OSError as close_error:
+            if publication_error is None:
+                raise
+            record_cleanup_failure(
+                publication_error,
+                f"parent directory descriptor close failed: {close_error}",
+            )
 
 
 def read_pettachainer_derived_result_capture(
