@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import tempfile
 import time
 import unittest
@@ -1850,6 +1851,13 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "must be a regular file"):
                 read_pettachainer_derived_result_capture(
                     Path(directory), contract=contract,
+                )
+
+            capture_fifo = Path(directory) / "derived-result.fifo"
+            os.mkfifo(capture_fifo)
+            with self.assertRaisesRegex(ValueError, "must be a regular file"):
+                read_pettachainer_derived_result_capture(
+                    capture_fifo, contract=contract,
                 )
 
             rule, fact = contract.statements

@@ -79,7 +79,10 @@ def _load_unambiguous_json(
         return result
 
     artifact_path = os.fspath(path)
-    flags = os.O_RDONLY
+    # Open nonblocking so a caller-supplied FIFO cannot stall artifact admission
+    # before the descriptor's file type is checked below.  O_NONBLOCK has no
+    # effect on ordinary regular-file reads.
+    flags = os.O_RDONLY | os.O_NONBLOCK
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     descriptor = os.open(artifact_path, flags)
