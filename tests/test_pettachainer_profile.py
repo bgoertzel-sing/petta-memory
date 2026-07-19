@@ -37,6 +37,18 @@ def _echo_profile_stage(value: str) -> dict[str, object]:
 
 
 class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
+    def test_json_artifact_admission_rejects_hard_link_alias(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "artifact.json"
+            alias = Path(directory) / "artifact-alias.json"
+            path.write_text('{"value":1}', encoding="utf-8")
+            os.link(path, alias)
+
+            with self.assertRaisesRegex(
+                ValueError, "must have exactly one filesystem link",
+            ):
+                pipln_models._load_unambiguous_json(path)
+
     def test_json_artifact_admission_rejects_metadata_byte_count_mismatch(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "artifact.json"

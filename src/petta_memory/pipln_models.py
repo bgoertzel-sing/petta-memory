@@ -91,11 +91,15 @@ def _load_unambiguous_json(
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode):
             raise ValueError("JSON artifact must be a regular file")
+        if metadata.st_nlink != 1:
+            raise ValueError("JSON artifact must have exactly one filesystem link")
         with os.fdopen(descriptor, "rb") as handle:
             descriptor = -1
             encoded = handle.read(max_bytes + 1)
             final_metadata = os.fstat(handle.fileno())
-            stable_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+            stable_fields = (
+                "st_dev", "st_ino", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns",
+            )
             if any(
                 getattr(metadata, field) != getattr(final_metadata, field)
                 for field in stable_fields
