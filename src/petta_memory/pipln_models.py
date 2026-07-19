@@ -86,6 +86,7 @@ def _load_unambiguous_json(
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     descriptor = os.open(artifact_path, flags)
+    admission_error: BaseException | None = None
     try:
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode):
@@ -93,9 +94,24 @@ def _load_unambiguous_json(
         with os.fdopen(descriptor, "rb") as handle:
             descriptor = -1
             encoded = handle.read(max_bytes + 1)
+    except BaseException as caught_error:
+        admission_error = caught_error
+        raise
     finally:
         if descriptor >= 0:
-            os.close(descriptor)
+            try:
+                os.close(descriptor)
+            except OSError as close_error:
+                if admission_error is None:
+                    raise
+                note = f"JSON artifact descriptor close failed: {close_error}"
+                add_note = getattr(admission_error, "add_note", None)
+                if add_note is not None:
+                    add_note(note)
+                else:
+                    admission_error.__notes__ = [
+                        *getattr(admission_error, "__notes__", ()), note,
+                    ]
     if len(encoded) > max_bytes:
         raise ValueError(f"JSON artifact exceeds {max_bytes} byte limit")
     return json.loads(encoded.decode("utf-8"), object_pairs_hook=reject_duplicates)

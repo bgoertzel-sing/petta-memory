@@ -1992,6 +1992,26 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
                     Path(directory), contract=contract,
                 )
 
+            real_close = os.close
+
+            def close_then_fail(descriptor):
+                real_close(descriptor)
+                raise OSError("secondary artifact close failure")
+
+            with patch(
+                "petta_memory.pipln_models.os.close", side_effect=close_then_fail,
+            ):
+                with self.assertRaisesRegex(
+                    ValueError, "must be a regular file",
+                ) as raised:
+                    read_pettachainer_derived_result_capture(
+                        Path(directory), contract=contract,
+                    )
+            self.assertIn(
+                "JSON artifact descriptor close failed: secondary artifact close failure",
+                raised.exception.__notes__,
+            )
+
             capture_fifo = Path(directory) / "derived-result.fifo"
             os.mkfifo(capture_fifo)
             with self.assertRaisesRegex(ValueError, "must be a regular file"):
