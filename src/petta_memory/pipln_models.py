@@ -732,12 +732,25 @@ def write_pettachainer_derived_result_capture(
     data = json.dumps(
         pettachainer_derived_result_capture_document(result), sort_keys=True, indent=2,
     ) + "\n"
+    _write_create_once_durable(destination, data)
+
+
+def _write_create_once_durable(destination: Path, data: str) -> None:
+    """Create and durably publish one artifact without replacing an existing path."""
     descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
+        directory_flags = os.O_RDONLY
+        if hasattr(os, "O_DIRECTORY"):
+            directory_flags |= os.O_DIRECTORY
+        parent_descriptor = os.open(destination.parent, directory_flags)
+        try:
+            os.fsync(parent_descriptor)
+        finally:
+            os.close(parent_descriptor)
     except BaseException:
         destination.unlink(missing_ok=True)
         raise
@@ -978,15 +991,7 @@ def write_pettachainer_episode_manifest(
     data = json.dumps(
         pettachainer_episode_manifest_document(manifest), sort_keys=True, indent=2,
     ) + "\n"
-    descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-    except BaseException:
-        destination.unlink(missing_ok=True)
-        raise
+    _write_create_once_durable(destination, data)
 
 
 def read_pettachainer_episode_manifest(
