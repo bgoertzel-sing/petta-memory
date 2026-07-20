@@ -37,6 +37,20 @@ def _echo_profile_stage(value: str) -> dict[str, object]:
 
 
 class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
+    def test_json_artifact_metadata_size_limit_rejects_before_read(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "artifact.json"
+            path.write_bytes(b" " * 11)
+
+            with patch.object(
+                pipln_models.os, "fdopen",
+                side_effect=AssertionError("oversized artifact must not be read"),
+            ):
+                with self.assertRaisesRegex(
+                    ValueError, "exceeds 10 byte limit",
+                ):
+                    pipln_models._load_unambiguous_json(path, max_bytes=10)
+
     def test_json_artifact_stream_close_does_not_mask_read_failure(self):
         class FailingStream:
             def read(self, _size):

@@ -93,6 +93,8 @@ def _load_unambiguous_json(
             raise ValueError("JSON artifact must be a regular file")
         if metadata.st_nlink != 1:
             raise ValueError("JSON artifact must have exactly one filesystem link")
+        if metadata.st_size > max_bytes:
+            raise ValueError(f"JSON artifact exceeds {max_bytes} byte limit")
         handle = os.fdopen(descriptor, "rb")
         descriptor = -1
         stream_error: BaseException | None = None
