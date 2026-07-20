@@ -78,14 +78,28 @@ def _load_unambiguous_json(
             result[key] = value
         return result
 
-    artifact_path = os.fspath(path)
+    artifact_path = Path(path)
+    parent_flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        parent_flags |= os.O_DIRECTORY
+    if hasattr(os, "O_NOFOLLOW"):
+        parent_flags |= os.O_NOFOLLOW
+    parent_descriptor = os.open(os.fspath(artifact_path.parent), parent_flags)
+    parent_metadata = os.fstat(parent_descriptor)
+    if parent_metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        os.close(parent_descriptor)
+        raise ValueError("JSON artifact parent must not be group- or world-writable")
     # Open nonblocking so a caller-supplied FIFO cannot stall artifact admission
     # before the descriptor's file type is checked below.  O_NONBLOCK has no
     # effect on ordinary regular-file reads.
     flags = os.O_RDONLY | os.O_NONBLOCK
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
-    descriptor = os.open(artifact_path, flags)
+    try:
+        descriptor = os.open(artifact_path.name, flags, dir_fd=parent_descriptor)
+    except BaseException:
+        os.close(parent_descriptor)
+        raise
     admission_error: BaseException | None = None
     try:
         metadata = os.fstat(descriptor)
@@ -149,6 +163,19 @@ def _load_unambiguous_json(
                     admission_error.__notes__ = [
                         *getattr(admission_error, "__notes__", ()), note,
                     ]
+        try:
+            os.close(parent_descriptor)
+        except OSError as close_error:
+            if admission_error is None:
+                raise
+            note = f"JSON artifact parent descriptor close failed: {close_error}"
+            add_note = getattr(admission_error, "add_note", None)
+            if add_note is not None:
+                add_note(note)
+            else:
+                admission_error.__notes__ = [
+                    *getattr(admission_error, "__notes__", ()), note,
+                ]
     if len(encoded) > max_bytes:
         raise ValueError(f"JSON artifact exceeds {max_bytes} byte limit")
     return json.loads(encoded.decode("utf-8"), object_pairs_hook=reject_duplicates)

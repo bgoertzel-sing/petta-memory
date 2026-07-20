@@ -124,6 +124,32 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
                 pipln_models._load_unambiguous_json(path)
 
     @unittest.skipUnless(hasattr(os, "O_NOFOLLOW"), "requires O_NOFOLLOW")
+    def test_json_artifact_admission_rejects_symlinked_parent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            actual = root / "actual"
+            actual.mkdir()
+            (actual / "artifact.json").write_text('{"value":1}\n', encoding="utf-8")
+            linked = root / "linked"
+            linked.symlink_to(actual, target_is_directory=True)
+
+            with self.assertRaises(OSError):
+                pipln_models._load_unambiguous_json(linked / "artifact.json")
+
+    def test_json_artifact_admission_rejects_broadly_writable_parent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory) / "shared"
+            parent.mkdir()
+            path = parent / "artifact.json"
+            path.write_text('{"value":1}\n', encoding="utf-8")
+            parent.chmod(0o770)
+
+            with self.assertRaisesRegex(
+                ValueError, "parent must not be group- or world-writable",
+            ):
+                pipln_models._load_unambiguous_json(path)
+
+    @unittest.skipUnless(hasattr(os, "O_NOFOLLOW"), "requires O_NOFOLLOW")
     def test_create_once_publication_rejects_symlinked_parent_directory(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -162,7 +188,6 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
             changed_fields = list(initial)
             changed_fields[0] = initial.st_mode | 0o020
             changed = os.stat_result(changed_fields)
-
             with patch.object(
                 pipln_models.os, "fstat", side_effect=[initial, changed],
             ):
@@ -184,7 +209,6 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
             changed_fields = list(initial)
             changed_fields[4] = initial.st_uid + 1
             changed = os.stat_result(changed_fields)
-
             with patch.object(
                 pipln_models.os, "fstat", side_effect=[initial, changed],
             ):
@@ -222,9 +246,10 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
             changed_fields = list(initial)
             changed_fields[6] = initial.st_size + 1
             changed = os.stat_result(changed_fields)
+            parent = os.stat(path.parent)
 
             with patch.object(
-                pipln_models.os, "fstat", side_effect=[initial, changed],
+                pipln_models.os, "fstat", side_effect=[parent, initial, changed],
             ):
                 with self.assertRaisesRegex(ValueError, "changed during admission"):
                     pipln_models._load_unambiguous_json(path)
@@ -237,9 +262,10 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
             changed_fields = list(initial)
             changed_fields[0] = initial.st_mode ^ 0o020
             changed = os.stat_result(changed_fields)
+            parent = os.stat(path.parent)
 
             with patch.object(
-                pipln_models.os, "fstat", side_effect=[initial, changed],
+                pipln_models.os, "fstat", side_effect=[parent, initial, changed],
             ):
                 with self.assertRaisesRegex(ValueError, "changed during admission"):
                     pipln_models._load_unambiguous_json(path)
