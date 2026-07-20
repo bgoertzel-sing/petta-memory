@@ -149,6 +149,44 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
             ):
                 pipln_models._load_unambiguous_json(path)
 
+    def test_json_artifact_admission_rejects_parent_permission_drift(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "artifact.json"
+            path.write_text('{"value":1}\n', encoding="utf-8")
+            parent = os.stat(path.parent)
+            artifact = os.stat(path)
+            changed_fields = list(parent)
+            changed_fields[0] = parent.st_mode | 0o020
+            changed = os.stat_result(changed_fields)
+
+            with patch.object(
+                pipln_models.os, "fstat",
+                side_effect=[parent, artifact, artifact, changed],
+            ):
+                with self.assertRaisesRegex(
+                    ValueError, "parent changed during admission",
+                ):
+                    pipln_models._load_unambiguous_json(path)
+
+    def test_json_artifact_admission_rejects_parent_ownership_drift(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "artifact.json"
+            path.write_text('{"value":1}\n', encoding="utf-8")
+            parent = os.stat(path.parent)
+            artifact = os.stat(path)
+            changed_fields = list(parent)
+            changed_fields[4] = parent.st_uid + 1
+            changed = os.stat_result(changed_fields)
+
+            with patch.object(
+                pipln_models.os, "fstat",
+                side_effect=[parent, artifact, artifact, changed],
+            ):
+                with self.assertRaisesRegex(
+                    ValueError, "parent changed during admission",
+                ):
+                    pipln_models._load_unambiguous_json(path)
+
     @unittest.skipUnless(hasattr(os, "O_NOFOLLOW"), "requires O_NOFOLLOW")
     def test_create_once_publication_rejects_symlinked_parent_directory(self):
         with tempfile.TemporaryDirectory() as directory:

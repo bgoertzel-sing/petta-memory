@@ -145,6 +145,15 @@ def _load_unambiguous_json(
                     stream_error.__notes__ = [
                         *getattr(stream_error, "__notes__", ()), note,
                     ]
+        final_parent_metadata = os.fstat(parent_descriptor)
+        stable_parent_fields = (
+            "st_dev", "st_ino", "st_mode", "st_nlink", "st_uid", "st_gid",
+        )
+        if any(
+            getattr(parent_metadata, field) != getattr(final_parent_metadata, field)
+            for field in stable_parent_fields
+        ):
+            raise ValueError("JSON artifact parent changed during admission")
     except BaseException as caught_error:
         admission_error = caught_error
         raise
