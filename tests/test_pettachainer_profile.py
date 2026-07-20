@@ -123,6 +123,22 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
             ):
                 pipln_models._load_unambiguous_json(path)
 
+    @unittest.skipUnless(hasattr(os, "O_NOFOLLOW"), "requires O_NOFOLLOW")
+    def test_create_once_publication_rejects_symlinked_parent_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            actual_parent = root / "actual"
+            actual_parent.mkdir()
+            linked_parent = root / "linked"
+            linked_parent.symlink_to(actual_parent, target_is_directory=True)
+
+            with self.assertRaises(OSError):
+                pipln_models._write_create_once_durable(
+                    linked_parent / "artifact.json", '{"value":1}\n',
+                )
+
+            self.assertFalse((actual_parent / "artifact.json").exists())
+
     def test_json_artifact_admission_rejects_metadata_byte_count_mismatch(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "artifact.json"

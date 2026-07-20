@@ -802,6 +802,8 @@ def _write_create_once_durable(destination: Path, data: str) -> None:
     directory_flags = os.O_RDONLY
     if hasattr(os, "O_DIRECTORY"):
         directory_flags |= os.O_DIRECTORY
+    if hasattr(os, "O_NOFOLLOW"):
+        directory_flags |= os.O_NOFOLLOW
     parent_descriptor = os.open(destination.parent, directory_flags)
     file_created = False
     file_synced = False
