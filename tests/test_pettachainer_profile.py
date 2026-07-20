@@ -112,6 +112,17 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
             ):
                 pipln_models._load_unambiguous_json(path)
 
+    def test_json_artifact_admission_rejects_group_writable_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "artifact.json"
+            path.write_text('{"value":1}', encoding="utf-8")
+            path.chmod(0o620)
+
+            with self.assertRaisesRegex(
+                ValueError, "must not be group- or world-writable",
+            ):
+                pipln_models._load_unambiguous_json(path)
+
     def test_json_artifact_admission_rejects_metadata_byte_count_mismatch(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "artifact.json"

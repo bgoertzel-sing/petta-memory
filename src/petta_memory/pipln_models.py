@@ -91,6 +91,8 @@ def _load_unambiguous_json(
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode):
             raise ValueError("JSON artifact must be a regular file")
+        if metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            raise ValueError("JSON artifact must not be group- or world-writable")
         if metadata.st_nlink != 1:
             raise ValueError("JSON artifact must have exactly one filesystem link")
         if metadata.st_size > max_bytes:
