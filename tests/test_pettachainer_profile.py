@@ -173,6 +173,29 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
                 getattr(caught.exception, "__notes__", ()),
             )
 
+    def test_json_artifact_parent_metadata_failure_closes_descriptor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "artifact.json"
+            path.write_text('{"value":1}\n', encoding="utf-8")
+            real_close = os.close
+            closed_descriptors = []
+
+            def record_close(descriptor: int) -> None:
+                closed_descriptors.append(descriptor)
+                real_close(descriptor)
+
+            with (
+                patch.object(
+                    pipln_models.os, "fstat",
+                    side_effect=OSError("parent metadata unavailable"),
+                ),
+                patch.object(pipln_models.os, "close", side_effect=record_close),
+            ):
+                with self.assertRaisesRegex(OSError, "parent metadata unavailable"):
+                    pipln_models._load_unambiguous_json(path)
+
+            self.assertEqual(len(closed_descriptors), 1)
+
     def test_json_artifact_open_rejection_preserves_parent_close_failure(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "missing.json"

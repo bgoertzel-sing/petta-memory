@@ -94,7 +94,17 @@ def _load_unambiguous_json(
     if hasattr(os, "O_NOFOLLOW"):
         parent_flags |= os.O_NOFOLLOW
     parent_descriptor = os.open(os.fspath(artifact_path.parent), parent_flags)
-    parent_metadata = os.fstat(parent_descriptor)
+    try:
+        parent_metadata = os.fstat(parent_descriptor)
+    except BaseException as admission_error:
+        try:
+            os.close(parent_descriptor)
+        except OSError as close_error:
+            _add_exception_note(
+                admission_error,
+                f"JSON artifact parent descriptor close failed: {close_error}"
+            )
+        raise
     if parent_metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
         admission_error = ValueError(
             "JSON artifact parent must not be group- or world-writable"
