@@ -144,6 +144,21 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "changed during admission"):
                     pipln_models._load_unambiguous_json(path)
 
+    def test_json_artifact_admission_rejects_concurrent_mode_change(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "artifact.json"
+            path.write_text('{"value":1}', encoding="utf-8")
+            initial = os.stat(path)
+            changed_fields = list(initial)
+            changed_fields[0] = initial.st_mode ^ 0o020
+            changed = os.stat_result(changed_fields)
+
+            with patch.object(
+                pipln_models.os, "fstat", side_effect=[initial, changed],
+            ):
+                with self.assertRaisesRegex(ValueError, "changed during admission"):
+                    pipln_models._load_unambiguous_json(path)
+
     @staticmethod
     def episode_contract():
         digest = "a" * 64

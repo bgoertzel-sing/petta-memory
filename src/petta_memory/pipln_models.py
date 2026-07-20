@@ -102,7 +102,8 @@ def _load_unambiguous_json(
             encoded = handle.read(max_bytes + 1)
             final_metadata = os.fstat(handle.fileno())
             stable_fields = (
-                "st_dev", "st_ino", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns",
+                "st_dev", "st_ino", "st_mode", "st_nlink", "st_uid", "st_gid",
+                "st_size", "st_mtime_ns", "st_ctime_ns",
             )
             if any(
                 getattr(metadata, field) != getattr(final_metadata, field)
