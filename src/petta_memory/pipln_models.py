@@ -63,6 +63,15 @@ def _canonical_hash(payload: object) -> str:
     return sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _add_exception_note(error: BaseException, note: str) -> None:
+    """Retain a secondary diagnostic on supported Python versions."""
+    add_note = getattr(error, "add_note", None)
+    if add_note is not None:
+        add_note(note)
+    else:
+        error.__notes__ = [*getattr(error, "__notes__", ()), note]
+
+
 def _load_unambiguous_json(
     path: str | Path, *, max_bytes: int = DEFAULT_MAX_PETTACHAINER_ARTIFACT_BYTES,
 ) -> object:
@@ -87,8 +96,17 @@ def _load_unambiguous_json(
     parent_descriptor = os.open(os.fspath(artifact_path.parent), parent_flags)
     parent_metadata = os.fstat(parent_descriptor)
     if parent_metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
-        os.close(parent_descriptor)
-        raise ValueError("JSON artifact parent must not be group- or world-writable")
+        admission_error = ValueError(
+            "JSON artifact parent must not be group- or world-writable"
+        )
+        try:
+            os.close(parent_descriptor)
+        except OSError as close_error:
+            _add_exception_note(
+                admission_error,
+                f"JSON artifact parent descriptor close failed: {close_error}"
+            )
+        raise admission_error
     # Open nonblocking so a caller-supplied FIFO cannot stall artifact admission
     # before the descriptor's file type is checked below.  O_NONBLOCK has no
     # effect on ordinary regular-file reads.
@@ -97,8 +115,14 @@ def _load_unambiguous_json(
         flags |= os.O_NOFOLLOW
     try:
         descriptor = os.open(artifact_path.name, flags, dir_fd=parent_descriptor)
-    except BaseException:
-        os.close(parent_descriptor)
+    except BaseException as admission_error:
+        try:
+            os.close(parent_descriptor)
+        except OSError as close_error:
+            _add_exception_note(
+                admission_error,
+                f"JSON artifact parent descriptor close failed: {close_error}"
+            )
         raise
     admission_error: BaseException | None = None
     try:
