@@ -809,6 +809,11 @@ def _write_create_once_durable(destination: Path, data: str) -> None:
     file_synced = False
     publication_error: BaseException | None = None
     try:
+        parent_metadata = os.fstat(parent_descriptor)
+        if parent_metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            raise ValueError(
+                "artifact publication parent must not be group- or world-writable"
+            )
         descriptor = os.open(
             destination.name,
             os.O_WRONLY | os.O_CREAT | os.O_EXCL,

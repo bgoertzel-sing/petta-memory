@@ -139,6 +139,22 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
 
             self.assertFalse((actual_parent / "artifact.json").exists())
 
+    def test_create_once_publication_rejects_group_writable_parent_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory) / "shared"
+            parent.mkdir()
+            parent.chmod(0o770)
+            destination = parent / "artifact.json"
+
+            with self.assertRaisesRegex(
+                ValueError, "parent must not be group- or world-writable",
+            ):
+                pipln_models._write_create_once_durable(
+                    destination, '{"value":1}\n',
+                )
+
+            self.assertFalse(destination.exists())
+
     def test_json_artifact_admission_rejects_metadata_byte_count_mismatch(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "artifact.json"
