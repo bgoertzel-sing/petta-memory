@@ -167,7 +167,7 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
                 pipln_models.os, "fstat", side_effect=[initial, changed],
             ):
                 with self.assertRaisesRegex(
-                    ValueError, "permissions changed during publication",
+                    ValueError, "parent changed during publication",
                 ):
                     pipln_models._write_create_once_durable(
                         destination, '{"value":1}\n',
@@ -175,6 +175,26 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
 
             # The completed, file-synced artifact remains create-once even
             # though its publication state was rejected before directory sync.
+            self.assertTrue(destination.exists())
+
+    def test_create_once_publication_rejects_parent_ownership_drift(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "artifact.json"
+            initial = os.stat(directory)
+            changed_fields = list(initial)
+            changed_fields[4] = initial.st_uid + 1
+            changed = os.stat_result(changed_fields)
+
+            with patch.object(
+                pipln_models.os, "fstat", side_effect=[initial, changed],
+            ):
+                with self.assertRaisesRegex(
+                    ValueError, "parent changed during publication",
+                ):
+                    pipln_models._write_create_once_durable(
+                        destination, '{"value":1}\n',
+                    )
+
             self.assertTrue(destination.exists())
 
     def test_json_artifact_admission_rejects_metadata_byte_count_mismatch(self):
