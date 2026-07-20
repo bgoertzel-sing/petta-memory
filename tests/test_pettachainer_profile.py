@@ -155,6 +155,28 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
 
             self.assertFalse(destination.exists())
 
+    def test_create_once_publication_rejects_parent_permission_drift(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "artifact.json"
+            initial = os.stat(directory)
+            changed_fields = list(initial)
+            changed_fields[0] = initial.st_mode | 0o020
+            changed = os.stat_result(changed_fields)
+
+            with patch.object(
+                pipln_models.os, "fstat", side_effect=[initial, changed],
+            ):
+                with self.assertRaisesRegex(
+                    ValueError, "permissions changed during publication",
+                ):
+                    pipln_models._write_create_once_durable(
+                        destination, '{"value":1}\n',
+                    )
+
+            # The completed, file-synced artifact remains create-once even
+            # though its publication state was rejected before directory sync.
+            self.assertTrue(destination.exists())
+
     def test_json_artifact_admission_rejects_metadata_byte_count_mismatch(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "artifact.json"

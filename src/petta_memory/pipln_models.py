@@ -826,6 +826,11 @@ def _write_create_once_durable(destination: Path, data: str) -> None:
             handle.flush()
             os.fsync(handle.fileno())
             file_synced = True
+        final_parent_metadata = os.fstat(parent_descriptor)
+        if final_parent_metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            raise ValueError(
+                "artifact publication parent permissions changed during publication"
+            )
         os.fsync(parent_descriptor)
     except BaseException as caught_error:
         publication_error = caught_error
