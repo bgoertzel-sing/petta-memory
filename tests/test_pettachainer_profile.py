@@ -2572,6 +2572,43 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
                 raised.exception.__notes__,
             )
 
+            failed_stream_open_dual_close_path = (
+                Path(directory) / "stream-open-dual-close-failed.json"
+            )
+
+            def fail_both_descriptor_closes(descriptor):
+                real_close(descriptor)
+                raise OSError(f"secondary close failure for descriptor {descriptor}")
+
+            with (
+                patch(
+                    "petta_memory.pipln_models.os.fdopen",
+                    side_effect=OSError("primary artifact stream open failure"),
+                ),
+                patch(
+                    "petta_memory.pipln_models.os.close",
+                    side_effect=fail_both_descriptor_closes,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    OSError, "primary artifact stream open failure",
+                ) as raised:
+                    write_pettachainer_derived_result_capture(
+                        failed_stream_open_dual_close_path, capture,
+                    )
+            self.assertFalse(failed_stream_open_dual_close_path.exists())
+            self.assertEqual(len(raised.exception.__notes__), 2)
+            self.assertTrue(
+                raised.exception.__notes__[0].startswith(
+                    "artifact descriptor close failed: secondary close failure"
+                )
+            )
+            self.assertTrue(
+                raised.exception.__notes__[1].startswith(
+                    "parent directory descriptor close failed: secondary close failure"
+                )
+            )
+
             successful_stream_close_path = Path(directory) / "successful-stream-close-failed.json"
             with patch(
                 "petta_memory.pipln_models.os.fdopen",
