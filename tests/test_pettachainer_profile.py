@@ -2459,6 +2459,69 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
                 raised.exception.__notes__,
             )
 
+            failed_stream_close_path = Path(directory) / "stream-close-failed.json"
+            real_fdopen = os.fdopen
+            sync_calls = 0
+
+            class CloseFailingStream:
+                def __init__(self, handle):
+                    self.handle = handle
+
+                def __getattr__(self, name):
+                    return getattr(self.handle, name)
+
+                def close(self):
+                    self.handle.close()
+                    raise OSError("secondary artifact stream close failure")
+
+            def close_failing_fdopen(*args, **kwargs):
+                return CloseFailingStream(real_fdopen(*args, **kwargs))
+
+            with (
+                patch(
+                    "petta_memory.pipln_models.os.fsync",
+                    side_effect=fail_file_sync,
+                ),
+                patch(
+                    "petta_memory.pipln_models.os.fdopen",
+                    side_effect=close_failing_fdopen,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    OSError, "simulated file fsync failure",
+                ) as raised:
+                    write_pettachainer_derived_result_capture(
+                        failed_stream_close_path, capture,
+                    )
+            self.assertFalse(failed_stream_close_path.exists())
+            self.assertIn(
+                "artifact stream close failed: secondary artifact stream close failure",
+                raised.exception.__notes__,
+            )
+
+            successful_stream_close_path = Path(directory) / "successful-stream-close-failed.json"
+            with patch(
+                "petta_memory.pipln_models.os.fdopen",
+                side_effect=close_failing_fdopen,
+            ):
+                with self.assertRaisesRegex(
+                    OSError, "secondary artifact stream close failure",
+                ):
+                    write_pettachainer_derived_result_capture(
+                        successful_stream_close_path, capture,
+                    )
+            self.assertTrue(successful_stream_close_path.is_file())
+            self.assertEqual(
+                read_pettachainer_derived_result_capture(
+                    successful_stream_close_path, contract=contract,
+                ),
+                capture,
+            )
+            with self.assertRaises(FileExistsError):
+                write_pettachainer_derived_result_capture(
+                    successful_stream_close_path, capture,
+                )
+
             successful_close_path = Path(directory) / "successful-close-failed.json"
             real_close = os.close
 

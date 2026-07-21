@@ -891,11 +891,26 @@ def _write_create_once_durable(destination: Path, data: str) -> None:
             dir_fd=parent_descriptor,
         )
         file_created = True
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle = os.fdopen(descriptor, "w", encoding="utf-8")
+        stream_error: BaseException | None = None
+        try:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
             file_synced = True
+        except BaseException as caught_error:
+            stream_error = caught_error
+            raise
+        finally:
+            try:
+                handle.close()
+            except OSError as close_error:
+                if stream_error is None:
+                    raise
+                record_cleanup_failure(
+                    stream_error,
+                    f"artifact stream close failed: {close_error}",
+                )
         final_parent_metadata = os.fstat(parent_descriptor)
         stable_parent_fields = (
             "st_dev", "st_ino", "st_mode", "st_nlink", "st_uid", "st_gid",
