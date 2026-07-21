@@ -891,7 +891,17 @@ def _write_create_once_durable(destination: Path, data: str) -> None:
             dir_fd=parent_descriptor,
         )
         file_created = True
-        handle = os.fdopen(descriptor, "w", encoding="utf-8")
+        try:
+            handle = os.fdopen(descriptor, "w", encoding="utf-8")
+        except BaseException as stream_open_error:
+            try:
+                os.close(descriptor)
+            except OSError as close_error:
+                record_cleanup_failure(
+                    stream_open_error,
+                    f"artifact descriptor close failed: {close_error}",
+                )
+            raise
         stream_error: BaseException | None = None
         try:
             handle.write(data)

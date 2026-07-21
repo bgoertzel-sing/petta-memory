@@ -6,7 +6,7 @@ import time
 import unittest
 from dataclasses import replace
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -2496,6 +2496,79 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
             self.assertFalse(failed_stream_close_path.exists())
             self.assertIn(
                 "artifact stream close failed: secondary artifact stream close failure",
+                raised.exception.__notes__,
+            )
+
+            failed_stream_open_path = Path(directory) / "stream-open-failed.json"
+            opened_artifact_descriptor = None
+            real_open = os.open
+            real_close = os.close
+
+            def capture_artifact_descriptor(*args, **kwargs):
+                nonlocal opened_artifact_descriptor
+                descriptor = real_open(*args, **kwargs)
+                if kwargs.get("dir_fd") is not None:
+                    opened_artifact_descriptor = descriptor
+                return descriptor
+
+            with (
+                patch(
+                    "petta_memory.pipln_models.os.open",
+                    side_effect=capture_artifact_descriptor,
+                ),
+                patch(
+                    "petta_memory.pipln_models.os.fdopen",
+                    side_effect=OSError("primary artifact stream open failure"),
+                ),
+                patch(
+                    "petta_memory.pipln_models.os.close",
+                    wraps=real_close,
+                ) as close_descriptor,
+            ):
+                with self.assertRaisesRegex(
+                    OSError, "primary artifact stream open failure",
+                ):
+                    write_pettachainer_derived_result_capture(
+                        failed_stream_open_path, capture,
+                    )
+            self.assertFalse(failed_stream_open_path.exists())
+            self.assertIsNotNone(opened_artifact_descriptor)
+            self.assertIn(
+                call(opened_artifact_descriptor), close_descriptor.call_args_list,
+            )
+
+            failed_stream_open_close_path = (
+                Path(directory) / "stream-open-close-failed.json"
+            )
+            close_calls = 0
+
+            def fail_artifact_descriptor_close(descriptor):
+                nonlocal close_calls
+                close_calls += 1
+                if close_calls == 1:
+                    real_close(descriptor)
+                    raise OSError("secondary artifact descriptor close failure")
+                return real_close(descriptor)
+
+            with (
+                patch(
+                    "petta_memory.pipln_models.os.fdopen",
+                    side_effect=OSError("primary artifact stream open failure"),
+                ),
+                patch(
+                    "petta_memory.pipln_models.os.close",
+                    side_effect=fail_artifact_descriptor_close,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    OSError, "primary artifact stream open failure",
+                ) as raised:
+                    write_pettachainer_derived_result_capture(
+                        failed_stream_open_close_path, capture,
+                    )
+            self.assertFalse(failed_stream_open_close_path.exists())
+            self.assertIn(
+                "artifact descriptor close failed: secondary artifact descriptor close failure",
                 raised.exception.__notes__,
             )
 
