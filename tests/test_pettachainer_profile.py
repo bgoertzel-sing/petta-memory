@@ -464,6 +464,38 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
 
             self.assertFalse(destination.exists())
 
+    def test_create_once_parent_metadata_failure_preserves_close_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "artifact.json"
+            real_close = os.close
+
+            def close_then_fail(descriptor: int) -> None:
+                real_close(descriptor)
+                raise OSError("secondary parent close failure")
+
+            with (
+                patch.object(
+                    pipln_models.os, "fstat",
+                    side_effect=OSError("parent metadata unavailable"),
+                ),
+                patch.object(
+                    pipln_models.os, "close", side_effect=close_then_fail,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    OSError, "parent metadata unavailable",
+                ) as caught:
+                    pipln_models._write_create_once_durable(
+                        destination, '{"value":1}\n',
+                    )
+
+            self.assertFalse(destination.exists())
+            self.assertIn(
+                "parent directory descriptor close failed: "
+                "secondary parent close failure",
+                getattr(caught.exception, "__notes__", ()),
+            )
+
     def test_create_once_publication_rejects_parent_permission_drift(self):
         with tempfile.TemporaryDirectory() as directory:
             destination = Path(directory) / "artifact.json"
