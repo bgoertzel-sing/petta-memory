@@ -1983,15 +1983,7 @@ def write_episode_manifest(path: str | Path, manifest: EpisodeManifest) -> None:
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     data = json.dumps(episode_manifest_document(manifest), sort_keys=True, indent=2) + "\n"
-    descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-    except BaseException:
-        destination.unlink(missing_ok=True)
-        raise
+    _write_create_once_durable(destination, data)
 
 
 def read_episode_manifest(path: str | Path) -> EpisodeManifest:
@@ -2043,15 +2035,7 @@ def write_validated_kernel_result(path: str | Path, result: ValidatedKernelResul
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     data = json.dumps(validated_kernel_result_document(result), sort_keys=True, indent=2) + "\n"
-    descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-    except BaseException:
-        destination.unlink(missing_ok=True)
-        raise
+    _write_create_once_durable(destination, data)
 
 
 def read_validated_kernel_result(
@@ -2227,15 +2211,7 @@ def write_evidence_snapshot(path: str | Path, snapshot: EvidenceSnapshot) -> Non
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     data = json.dumps(evidence_snapshot_document(snapshot), sort_keys=True, indent=2) + "\n"
-    descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-    except BaseException:
-        destination.unlink(missing_ok=True)
-        raise
+    _write_create_once_durable(destination, data)
 
 
 def read_evidence_snapshot(path: str | Path) -> EvidenceSnapshot:
@@ -2881,15 +2857,7 @@ def write_compiled_episode_inputs(path: str | Path, compiled: CompiledEpisodeInp
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     data = json.dumps(compiled_episode_inputs_document(compiled), sort_keys=True, indent=2) + "\n"
-    descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-    except BaseException:
-        destination.unlink(missing_ok=True)
-        raise
+    _write_create_once_durable(destination, data)
 
 
 def read_compiled_episode_inputs(path: str | Path) -> CompiledEpisodeInputs:
