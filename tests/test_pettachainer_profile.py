@@ -496,6 +496,41 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
                 getattr(caught.exception, "__notes__", ()),
             )
 
+    def test_create_once_artifact_creation_failure_preserves_close_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "artifact.json"
+            real_open = os.open
+            real_close = os.close
+
+            def fail_artifact_open(path, flags, *args, **kwargs):
+                if kwargs.get("dir_fd") is not None:
+                    raise OSError("primary artifact creation failure")
+                return real_open(path, flags, *args, **kwargs)
+
+            def close_then_fail(descriptor: int) -> None:
+                real_close(descriptor)
+                raise OSError("secondary parent close failure")
+
+            with (
+                patch.object(pipln_models.os, "open", side_effect=fail_artifact_open),
+                patch.object(
+                    pipln_models.os, "close", side_effect=close_then_fail,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    OSError, "primary artifact creation failure",
+                ) as caught:
+                    pipln_models._write_create_once_durable(
+                        destination, '{"value":1}\n',
+                    )
+
+            self.assertFalse(destination.exists())
+            self.assertIn(
+                "parent directory descriptor close failed: "
+                "secondary parent close failure",
+                getattr(caught.exception, "__notes__", ()),
+            )
+
     def test_create_once_publication_rejects_parent_permission_drift(self):
         with tempfile.TemporaryDirectory() as directory:
             destination = Path(directory) / "artifact.json"
