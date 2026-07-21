@@ -147,6 +147,44 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
             self.assertTrue(notes[0].startswith("JSON artifact descriptor close failed:"))
             self.assertTrue(notes[1].startswith("JSON artifact parent descriptor close failed:"))
 
+    def test_json_artifact_success_preserves_both_descriptor_close_failures(self):
+        class CloseFailingStream:
+            def __init__(self, descriptor):
+                self.descriptor = descriptor
+
+            def read(self, size):
+                return os.read(self.descriptor, size)
+
+            def fileno(self):
+                return self.descriptor
+
+            def close(self):
+                real_close(self.descriptor)
+                raise OSError("artifact stream close failure")
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "artifact.json"
+            path.write_text('{"value":1}\n', encoding="utf-8")
+            real_close = os.close
+
+            def parent_close_then_fail(descriptor: int) -> None:
+                real_close(descriptor)
+                raise OSError("parent descriptor close failure")
+
+            with patch.object(pipln_models.os, "fdopen", side_effect=lambda descriptor, _mode: CloseFailingStream(descriptor)), patch.object(
+                pipln_models.os, "close", side_effect=parent_close_then_fail,
+            ):
+                with self.assertRaisesRegex(
+                    OSError, "artifact stream close failure",
+                ) as caught:
+                    pipln_models._load_unambiguous_json(path)
+
+            notes = getattr(caught.exception, "__notes__", ())
+            self.assertEqual(len(notes), 1)
+            self.assertTrue(notes[0].startswith(
+                "JSON artifact parent descriptor close failed:",
+            ))
+
     @unittest.skipUnless(hasattr(os, "O_NOFOLLOW"), "requires O_NOFOLLOW")
     def test_json_artifact_admission_rejects_symlinked_parent(self):
         with tempfile.TemporaryDirectory() as directory:
