@@ -123,6 +123,30 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
             ):
                 pipln_models._load_unambiguous_json(path)
 
+    def test_json_artifact_rejection_preserves_both_descriptor_close_failures(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "artifact.json"
+            path.write_text('{"value":1}\n', encoding="utf-8")
+            path.chmod(0o620)
+            real_close = os.close
+
+            def close_then_fail(descriptor: int) -> None:
+                real_close(descriptor)
+                raise OSError(f"close failure for descriptor {descriptor}")
+
+            with patch.object(
+                pipln_models.os, "close", side_effect=close_then_fail,
+            ):
+                with self.assertRaisesRegex(
+                    ValueError, "must not be group- or world-writable",
+                ) as caught:
+                    pipln_models._load_unambiguous_json(path)
+
+            notes = getattr(caught.exception, "__notes__", ())
+            self.assertEqual(len(notes), 2)
+            self.assertTrue(notes[0].startswith("JSON artifact descriptor close failed:"))
+            self.assertTrue(notes[1].startswith("JSON artifact parent descriptor close failed:"))
+
     @unittest.skipUnless(hasattr(os, "O_NOFOLLOW"), "requires O_NOFOLLOW")
     def test_json_artifact_admission_rejects_symlinked_parent(self):
         with tempfile.TemporaryDirectory() as directory:
