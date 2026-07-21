@@ -2427,6 +2427,35 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
                 raised.exception.__notes__,
             )
 
+            successful_close_path = Path(directory) / "successful-close-failed.json"
+            real_close = os.close
+
+            def close_successful_parent_then_fail(descriptor):
+                real_close(descriptor)
+                raise OSError("successful publication parent close failure")
+
+            with patch(
+                "petta_memory.pipln_models.os.close",
+                side_effect=close_successful_parent_then_fail,
+            ):
+                with self.assertRaisesRegex(
+                    OSError, "successful publication parent close failure",
+                ):
+                    write_pettachainer_derived_result_capture(
+                        successful_close_path, capture,
+                    )
+            self.assertTrue(successful_close_path.is_file())
+            self.assertEqual(
+                read_pettachainer_derived_result_capture(
+                    successful_close_path, contract=contract,
+                ),
+                capture,
+            )
+            with self.assertRaises(FileExistsError):
+                write_pettachainer_derived_result_capture(
+                    successful_close_path, capture,
+                )
+
             failed_sync_path = Path(directory) / "directory-sync-failed.json"
             real_fsync = os.fsync
             sync_calls = 0
