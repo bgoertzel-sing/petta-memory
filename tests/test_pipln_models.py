@@ -483,6 +483,8 @@ class PiPlnModelTests(unittest.TestCase):
                 write_evidence_snapshot(path, snapshot)
             path.parent.chmod(0o770)
             with self.assertRaisesRegex(ValueError, "group- or world-writable"):
+                read_evidence_snapshot(path)
+            with self.assertRaisesRegex(ValueError, "group- or world-writable"):
                 write_evidence_snapshot(path.parent / "second.json", snapshot)
             self.assertFalse((path.parent / "second.json").exists())
             safe_parent = path.parent / "safe"
@@ -831,6 +833,8 @@ class PiPlnModelTests(unittest.TestCase):
                 write_compiled_episode_inputs(path, compiled)
             Path(directory).chmod(0o770)
             with self.assertRaisesRegex(ValueError, "group- or world-writable"):
+                read_compiled_episode_inputs(path)
+            with self.assertRaisesRegex(ValueError, "group- or world-writable"):
                 write_compiled_episode_inputs(Path(directory) / "second.json", compiled)
             self.assertFalse((Path(directory) / "second.json").exists())
             safe_parent = Path(directory) / "safe"
@@ -921,6 +925,8 @@ class PiPlnModelTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 write_validated_kernel_result(path, result)
             Path(directory).chmod(0o770)
+            with self.assertRaisesRegex(ValueError, "group- or world-writable"):
+                read_validated_kernel_result(path, compiled=compiled)
             with self.assertRaisesRegex(ValueError, "group- or world-writable"):
                 write_validated_kernel_result(Path(directory) / "second.json", result)
             self.assertFalse((Path(directory) / "second.json").exists())
@@ -1204,6 +1210,8 @@ class PiPlnModelTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 write_episode_manifest(path, manifest)
             Path(directory).chmod(0o770)
+            with self.assertRaisesRegex(ValueError, "group- or world-writable"):
+                read_episode_manifest(path)
             with self.assertRaisesRegex(ValueError, "group- or world-writable"):
                 write_episode_manifest(Path(directory) / "second.json", manifest)
             self.assertFalse((Path(directory) / "second.json").exists())
