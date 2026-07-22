@@ -480,6 +480,10 @@ class PiPlnModelTests(unittest.TestCase):
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
             with self.assertRaises(FileExistsError):
                 write_evidence_snapshot(path, snapshot)
+            path.parent.chmod(0o770)
+            with self.assertRaisesRegex(ValueError, "group- or world-writable"):
+                write_evidence_snapshot(path.parent / "second.json", snapshot)
+            self.assertFalse((path.parent / "second.json").exists())
 
     def test_evidence_snapshot_persistence_rejects_tampering_and_schema_drift(self):
         packet = EvidencePacket("p1", "(S x)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")
@@ -809,6 +813,10 @@ class PiPlnModelTests(unittest.TestCase):
             self.assertEqual(read_compiled_episode_inputs(path), compiled)
             with self.assertRaises(FileExistsError):
                 write_compiled_episode_inputs(path, compiled)
+            Path(directory).chmod(0o770)
+            with self.assertRaisesRegex(ValueError, "group- or world-writable"):
+                write_compiled_episode_inputs(Path(directory) / "second.json", compiled)
+            self.assertFalse((Path(directory) / "second.json").exists())
 
     def test_kernel_result_validator_closes_numeric_output_to_episode_provenance(self):
         packets = [
@@ -881,6 +889,10 @@ class PiPlnModelTests(unittest.TestCase):
             self.assertEqual(read_validated_kernel_result(path, compiled=compiled), result)
             with self.assertRaises(FileExistsError):
                 write_validated_kernel_result(path, result)
+            Path(directory).chmod(0o770)
+            with self.assertRaisesRegex(ValueError, "group- or world-writable"):
+                write_validated_kernel_result(Path(directory) / "second.json", result)
+            self.assertFalse((Path(directory) / "second.json").exists())
 
             drifted_compiled = compile_episode_inputs(episode_id="episode-2", chart=chart, evidence_snapshot=snapshot,
                                                       packets=packets, bases=bases)
@@ -1144,6 +1156,10 @@ class PiPlnModelTests(unittest.TestCase):
             self.assertEqual(read_episode_manifest(path), manifest)
             with self.assertRaises(FileExistsError):
                 write_episode_manifest(path, manifest)
+            Path(directory).chmod(0o770)
+            with self.assertRaisesRegex(ValueError, "group- or world-writable"):
+                write_episode_manifest(Path(directory) / "second.json", manifest)
+            self.assertFalse((Path(directory) / "second.json").exists())
 
     def test_legacy_kernel_program_assembly_is_fixed_bounded_and_deterministic(self):
         packets = [
