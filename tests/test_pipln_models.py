@@ -72,6 +72,34 @@ class PiPlnModelTests(unittest.TestCase):
             assumption_fingerprint="a1", ontology_fingerprint="o1", created_at="now",
         )
 
+    def assert_persistence_rejects_foreign_ownership(
+        self, *, parent, artifact, reader, writer, value
+    ):
+        parent_metadata = os.stat(parent)
+        foreign_parent_fields = list(parent_metadata)
+        foreign_parent_fields[4] = parent_metadata.st_uid + 1
+        foreign_parent = os.stat_result(foreign_parent_fields)
+        with mock.patch("petta_memory.pipln_models.os.fstat", side_effect=[foreign_parent]):
+            with self.assertRaisesRegex(ValueError, "owned by the current user"):
+                reader(artifact)
+
+        artifact_metadata = os.stat(artifact)
+        foreign_artifact_fields = list(artifact_metadata)
+        foreign_artifact_fields[4] = artifact_metadata.st_uid + 1
+        foreign_artifact = os.stat_result(foreign_artifact_fields)
+        with mock.patch(
+            "petta_memory.pipln_models.os.fstat",
+            side_effect=[parent_metadata, foreign_artifact],
+        ):
+            with self.assertRaisesRegex(ValueError, "owned by the current user"):
+                reader(artifact)
+
+        destination = Path(parent) / "foreign-parent.json"
+        with mock.patch("petta_memory.pipln_models.os.fstat", side_effect=[foreign_parent]):
+            with self.assertRaisesRegex(ValueError, "owned by the current user"):
+                writer(destination, value)
+        self.assertFalse(destination.exists())
+
     def test_phase0_reference_artifact_closes_frozen_content_and_boundaries(self):
         source = b"(Sentence (Reference fact) (stv 1 1) (0))\n"
         semantic_result = "((stv 0.5 0.75) (0))"
@@ -497,6 +525,11 @@ class PiPlnModelTests(unittest.TestCase):
             self.assertFalse((safe_parent / "redirected.json").exists())
             safe_artifact = safe_parent / "snapshot.json"
             write_evidence_snapshot(safe_artifact, snapshot)
+            self.assert_persistence_rejects_foreign_ownership(
+                parent=safe_parent, artifact=safe_artifact,
+                reader=read_evidence_snapshot, writer=write_evidence_snapshot,
+                value=snapshot,
+            )
             with self.assertRaises(OSError):
                 read_evidence_snapshot(linked_parent / safe_artifact.name)
             hard_link = safe_parent / "snapshot-alias.json"
@@ -847,6 +880,11 @@ class PiPlnModelTests(unittest.TestCase):
             self.assertFalse((safe_parent / "redirected.json").exists())
             safe_artifact = safe_parent / "compiled.json"
             write_compiled_episode_inputs(safe_artifact, compiled)
+            self.assert_persistence_rejects_foreign_ownership(
+                parent=safe_parent, artifact=safe_artifact,
+                reader=read_compiled_episode_inputs,
+                writer=write_compiled_episode_inputs, value=compiled,
+            )
             with self.assertRaises(OSError):
                 read_compiled_episode_inputs(linked_parent / safe_artifact.name)
             hard_link = safe_parent / "compiled-alias.json"
@@ -1246,6 +1284,11 @@ class PiPlnModelTests(unittest.TestCase):
             self.assertFalse((safe_parent / "redirected.json").exists())
             safe_artifact = safe_parent / "manifest.json"
             write_episode_manifest(safe_artifact, manifest)
+            self.assert_persistence_rejects_foreign_ownership(
+                parent=safe_parent, artifact=safe_artifact,
+                reader=read_episode_manifest, writer=write_episode_manifest,
+                value=manifest,
+            )
             with self.assertRaises(OSError):
                 read_episode_manifest(linked_parent / safe_artifact.name)
             hard_link = safe_parent / "manifest-alias.json"
