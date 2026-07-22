@@ -1335,9 +1335,50 @@ class PiPlnModelTests(unittest.TestCase):
                 write_validated_kernel_result(result_path, result)
                 write_episode_manifest(manifest_path, manifest)
 
+                reference_source = b"(Sentence (Reference archived) (stv 1 1) (0))\n"
+                reference_result = "((stv 0.5 0.75) (0))"
+                reference_output = f"[{reference_result}]\n[((Passed: #t))]\n".encode()
+                reference_source_path = clean_room / "Reference.metta"
+                reference_output_path = clean_room / "reference-output.txt"
+                reference_manifest_path = clean_room / "reference-manifest.json"
+                reference_source_path.write_bytes(reference_source)
+                reference_output_path.write_bytes(reference_output)
+                reference_manifest_path.write_text(json.dumps({
+                    "schema": "petta-memory-phase0-reference-artifact-v1",
+                    "determinism": {
+                        "run1_sha256": sha256(reference_output).hexdigest(),
+                        "run2_sha256": sha256(reference_output).hexdigest(),
+                        "identical": True,
+                    },
+                    "example": {
+                        "name": "Reference",
+                        "source_sha256": sha256(reference_source).hexdigest(),
+                    },
+                    "runtime": {"metta_binary_sha256": "a" * 64},
+                    "repositories": {"patham9-pln": {"commit": "b" * 40}},
+                    "result": {
+                        "passed": True,
+                        "semantic_result": reference_result,
+                        "query_target": "(Reference archived)",
+                        "passed_marker": "#t",
+                        "output_sha256": sha256(reference_output).hexdigest(),
+                        "output_bytes": len(reference_output),
+                        "output_file": reference_output_path.name,
+                    },
+                    "boundaries": {
+                        "no_memory_write": True,
+                        "no_inferred_belief_promotion": True,
+                        "no_live_omegaclaw_goalchainer_integration": True,
+                        "no_pettachainer_compileadd": True,
+                    },
+                }), encoding="utf-8")
+
                 loaded_compiled = read_compiled_episode_inputs(compiled_path)
                 loaded_result = read_validated_kernel_result(result_path, compiled=loaded_compiled)
                 loaded_manifest = read_episode_manifest(manifest_path)
+                loaded_reference = validate_phase0_reference_artifact(
+                    reference_manifest_path, source_path=reference_source_path,
+                )
                 replayed = validate_exact_kernel_replay(
                     result_atom, expected=loaded_result, compiled=loaded_compiled,
                 )
@@ -1345,10 +1386,18 @@ class PiPlnModelTests(unittest.TestCase):
                 self.assertEqual(loaded_manifest.result_cid, replayed.result_digest)
                 identities.append((loaded_compiled.sentences[0].meta.sentence_digest,
                                    replayed.result_digest,
-                                   loaded_manifest.manifest_digest))
+                                   loaded_manifest.manifest_digest,
+                                   loaded_reference.source_sha256,
+                                   loaded_reference.output_sha256))
 
                 with self.assertRaisesRegex(ValueError, "compiled episode inputs document schema"):
                     read_compiled_episode_inputs(manifest_path)
+
+                reference_source_path.write_bytes(reference_source + b"; stale\n")
+                with self.assertRaisesRegex(ValueError, "source checksum"):
+                    validate_phase0_reference_artifact(
+                        reference_manifest_path, source_path=reference_source_path,
+                    )
 
             self.assertEqual(identities[0], identities[1])
 
