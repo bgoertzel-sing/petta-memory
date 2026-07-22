@@ -316,7 +316,7 @@ def validate_phase0_reference_artifact(
     """
     path = Path(manifest_path)
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
+        document = _load_unambiguous_json(path)
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise ValueError("invalid Phase-0 reference manifest") from error
     if not isinstance(document, dict) or document.get("schema") != "petta-memory-phase0-reference-artifact-v1":

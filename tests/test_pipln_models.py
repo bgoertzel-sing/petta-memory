@@ -154,6 +154,23 @@ class PiPlnModelTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "no_memory_write"):
                 validate_phase0_reference_artifact(manifest_path, source_path=source_path)
 
+    def test_phase0_reference_manifest_rejects_duplicate_json_members(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest_path = root / "reference_manifest.json"
+            source_path = root / "Smokes.metta"
+            source_path.write_text("(Reference)\n", encoding="utf-8")
+            manifest_path.write_text(
+                '{"schema":"petta-memory-phase0-reference-artifact-v1",'
+                '"schema":"petta-memory-phase0-reference-artifact-v1"}',
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "duplicate JSON object member: schema"):
+                validate_phase0_reference_artifact(
+                    manifest_path, source_path=source_path,
+                )
+
     def test_phase0_reference_replay_requires_exact_successful_capture(self):
         semantic_result = "((stv 0.5 0.75) (0))"
         stdout = f"[{semantic_result}]\n[((Passed: #t))]\n"
