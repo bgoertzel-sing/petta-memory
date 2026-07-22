@@ -1988,7 +1988,7 @@ def write_episode_manifest(path: str | Path, manifest: EpisodeManifest) -> None:
 
 def read_episode_manifest(path: str | Path) -> EpisodeManifest:
     """Load a checksummed manifest and reconstruct all typed invariants."""
-    document = json.loads(Path(path).read_text(encoding="utf-8"))
+    document = _load_unambiguous_json(path)
     if (not isinstance(document, dict)
             or set(document) != {"schema", "payload", "document_digest"}
             or document.get("schema") != "petta-memory-pipln-episode-manifest-v1"):
@@ -2044,7 +2044,7 @@ def read_validated_kernel_result(
     compiled: CompiledEpisodeInputs,
 ) -> ValidatedKernelResult:
     """Load a result and close its stamps and basis IDs against one episode."""
-    document = json.loads(Path(path).read_text(encoding="utf-8"))
+    document = _load_unambiguous_json(path)
     schema = "petta-memory-pipln-validated-kernel-result-v1"
     if (not isinstance(document, dict) or set(document) != {"schema", "payload", "document_digest"}
             or document.get("schema") != schema):
@@ -2216,7 +2216,7 @@ def write_evidence_snapshot(path: str | Path, snapshot: EvidenceSnapshot) -> Non
 
 def read_evidence_snapshot(path: str | Path) -> EvidenceSnapshot:
     """Load a snapshot document and fail closed on schema or checksum drift."""
-    document = json.loads(Path(path).read_text(encoding="utf-8"))
+    document = _load_unambiguous_json(path)
     if not isinstance(document, dict) or document.get("schema") != "petta-memory-pipln-evidence-snapshot-v2":
         raise ValueError("invalid evidence snapshot document schema")
     payload = document.get("payload")
@@ -2862,7 +2862,7 @@ def write_compiled_episode_inputs(path: str | Path, compiled: CompiledEpisodeInp
 
 def read_compiled_episode_inputs(path: str | Path) -> CompiledEpisodeInputs:
     """Load and fully validate an immutable compiler-output artifact."""
-    document = json.loads(Path(path).read_text(encoding="utf-8"))
+    document = _load_unambiguous_json(path)
     if not isinstance(document, dict) or document.get("schema") != "petta-memory-pipln-compiled-episode-inputs-v1":
         raise ValueError("invalid compiled episode inputs document schema")
     payload = document.get("payload")
