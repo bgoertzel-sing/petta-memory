@@ -1,5 +1,6 @@
 import math
 import json
+import os
 import tempfile
 import sys
 import time
@@ -495,6 +496,10 @@ class PiPlnModelTests(unittest.TestCase):
             write_evidence_snapshot(safe_artifact, snapshot)
             with self.assertRaises(OSError):
                 read_evidence_snapshot(linked_parent / safe_artifact.name)
+            hard_link = safe_parent / "snapshot-alias.json"
+            os.link(safe_artifact, hard_link)
+            with self.assertRaisesRegex(ValueError, "exactly one filesystem link"):
+                read_evidence_snapshot(safe_artifact)
 
     def test_evidence_snapshot_persistence_rejects_tampering_and_schema_drift(self):
         packet = EvidencePacket("p1", "(S x)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")
@@ -839,6 +844,10 @@ class PiPlnModelTests(unittest.TestCase):
             write_compiled_episode_inputs(safe_artifact, compiled)
             with self.assertRaises(OSError):
                 read_compiled_episode_inputs(linked_parent / safe_artifact.name)
+            hard_link = safe_parent / "compiled-alias.json"
+            os.link(safe_artifact, hard_link)
+            with self.assertRaisesRegex(ValueError, "exactly one filesystem link"):
+                read_compiled_episode_inputs(safe_artifact)
 
     def test_kernel_result_validator_closes_numeric_output_to_episode_provenance(self):
         packets = [
@@ -926,6 +935,10 @@ class PiPlnModelTests(unittest.TestCase):
             write_validated_kernel_result(safe_artifact, result)
             with self.assertRaises(OSError):
                 read_validated_kernel_result(linked_parent / safe_artifact.name, compiled=compiled)
+            hard_link = safe_parent / "result-alias.json"
+            os.link(safe_artifact, hard_link)
+            with self.assertRaisesRegex(ValueError, "exactly one filesystem link"):
+                read_validated_kernel_result(safe_artifact, compiled=compiled)
             Path(directory).chmod(0o700)
 
             drifted_compiled = compile_episode_inputs(episode_id="episode-2", chart=chart, evidence_snapshot=snapshot,
@@ -1205,6 +1218,10 @@ class PiPlnModelTests(unittest.TestCase):
             write_episode_manifest(safe_artifact, manifest)
             with self.assertRaises(OSError):
                 read_episode_manifest(linked_parent / safe_artifact.name)
+            hard_link = safe_parent / "manifest-alias.json"
+            os.link(safe_artifact, hard_link)
+            with self.assertRaisesRegex(ValueError, "exactly one filesystem link"):
+                read_episode_manifest(safe_artifact)
 
     def test_legacy_kernel_program_assembly_is_fixed_bounded_and_deterministic(self):
         packets = [
