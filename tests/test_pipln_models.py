@@ -484,6 +484,13 @@ class PiPlnModelTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "group- or world-writable"):
                 write_evidence_snapshot(path.parent / "second.json", snapshot)
             self.assertFalse((path.parent / "second.json").exists())
+            safe_parent = path.parent / "safe"
+            safe_parent.mkdir(mode=0o700)
+            linked_parent = path.parent / "linked"
+            linked_parent.symlink_to(safe_parent, target_is_directory=True)
+            with self.assertRaises(OSError):
+                write_evidence_snapshot(linked_parent / "redirected.json", snapshot)
+            self.assertFalse((safe_parent / "redirected.json").exists())
 
     def test_evidence_snapshot_persistence_rejects_tampering_and_schema_drift(self):
         packet = EvidencePacket("p1", "(S x)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")
@@ -817,6 +824,13 @@ class PiPlnModelTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "group- or world-writable"):
                 write_compiled_episode_inputs(Path(directory) / "second.json", compiled)
             self.assertFalse((Path(directory) / "second.json").exists())
+            safe_parent = Path(directory) / "safe"
+            safe_parent.mkdir(mode=0o700)
+            linked_parent = Path(directory) / "linked"
+            linked_parent.symlink_to(safe_parent, target_is_directory=True)
+            with self.assertRaises(OSError):
+                write_compiled_episode_inputs(linked_parent / "redirected.json", compiled)
+            self.assertFalse((safe_parent / "redirected.json").exists())
 
     def test_kernel_result_validator_closes_numeric_output_to_episode_provenance(self):
         packets = [
@@ -893,6 +907,13 @@ class PiPlnModelTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "group- or world-writable"):
                 write_validated_kernel_result(Path(directory) / "second.json", result)
             self.assertFalse((Path(directory) / "second.json").exists())
+            safe_parent = Path(directory) / "safe"
+            safe_parent.mkdir(mode=0o700)
+            linked_parent = Path(directory) / "linked"
+            linked_parent.symlink_to(safe_parent, target_is_directory=True)
+            with self.assertRaises(OSError):
+                write_validated_kernel_result(linked_parent / "redirected.json", result)
+            self.assertFalse((safe_parent / "redirected.json").exists())
 
             drifted_compiled = compile_episode_inputs(episode_id="episode-2", chart=chart, evidence_snapshot=snapshot,
                                                       packets=packets, bases=bases)
@@ -1160,6 +1181,13 @@ class PiPlnModelTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "group- or world-writable"):
                 write_episode_manifest(Path(directory) / "second.json", manifest)
             self.assertFalse((Path(directory) / "second.json").exists())
+            safe_parent = Path(directory) / "safe"
+            safe_parent.mkdir(mode=0o700)
+            linked_parent = Path(directory) / "linked"
+            linked_parent.symlink_to(safe_parent, target_is_directory=True)
+            with self.assertRaises(OSError):
+                write_episode_manifest(linked_parent / "redirected.json", manifest)
+            self.assertFalse((safe_parent / "redirected.json").exists())
 
     def test_legacy_kernel_program_assembly_is_fixed_bounded_and_deterministic(self):
         packets = [
