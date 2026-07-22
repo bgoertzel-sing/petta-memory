@@ -553,6 +553,35 @@ class PiPlnModelTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "schema"):
                 read_evidence_snapshot(path)
 
+    def test_evidence_snapshot_admission_rejects_late_parent_metadata_change(self):
+        packet = EvidencePacket(
+            "p1", "(S x)", "ctx", 1, 0, ("t1",), 1, 1,
+            "ACTIVE", "a1", "o1", "OBSERVATION",
+        )
+        snapshot = build_evidence_snapshot(
+            snapshot_id="snap", packets=[packet], context_id="ctx",
+            assumption_fingerprint="a1", ontology_fingerprint="o1", created_at="now",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "snapshot.json"
+            write_evidence_snapshot(path, snapshot)
+            parent_metadata = os.stat(directory)
+            artifact_metadata = os.stat(path)
+            changed_parent_fields = list(parent_metadata)
+            changed_parent_fields[1] = parent_metadata.st_ino + 1
+            changed_parent = os.stat_result(changed_parent_fields)
+            with mock.patch(
+                "petta_memory.pipln_models.os.fstat",
+                side_effect=[
+                    parent_metadata,
+                    artifact_metadata,
+                    artifact_metadata,
+                    changed_parent,
+                ],
+            ):
+                with self.assertRaisesRegex(ValueError, "parent changed during admission"):
+                    read_evidence_snapshot(path)
+
     def test_evidence_snapshot_persistence_rejects_checksummed_invalid_payload(self):
         packet = EvidencePacket("p1", "(S x)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")
         snapshot = build_evidence_snapshot(snapshot_id="snap", packets=[packet], context_id="ctx",
