@@ -117,6 +117,18 @@ def _load_unambiguous_json(
                 f"JSON artifact parent descriptor close failed: {close_error}"
             )
         raise admission_error
+    if parent_metadata.st_uid != os.geteuid():
+        admission_error = ValueError(
+            "JSON artifact parent must be owned by the current user"
+        )
+        try:
+            os.close(parent_descriptor)
+        except OSError as close_error:
+            _add_exception_note(
+                admission_error,
+                f"JSON artifact parent descriptor close failed: {close_error}"
+            )
+        raise admission_error
     # Open nonblocking so a caller-supplied FIFO cannot stall artifact admission
     # before the descriptor's file type is checked below.  O_NONBLOCK has no
     # effect on ordinary regular-file reads.
@@ -141,6 +153,8 @@ def _load_unambiguous_json(
             raise ValueError("JSON artifact must be a regular file")
         if metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
             raise ValueError("JSON artifact must not be group- or world-writable")
+        if metadata.st_uid != os.geteuid():
+            raise ValueError("JSON artifact must be owned by the current user")
         if metadata.st_nlink != 1:
             raise ValueError("JSON artifact must have exactly one filesystem link")
         if metadata.st_size > max_bytes:
@@ -883,6 +897,10 @@ def _write_create_once_durable(destination: Path, data: str) -> None:
         if parent_metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
             raise ValueError(
                 "artifact publication parent must not be group- or world-writable"
+            )
+        if parent_metadata.st_uid != os.geteuid():
+            raise ValueError(
+                "artifact publication parent must be owned by the current user"
             )
         descriptor = os.open(
             destination.name,

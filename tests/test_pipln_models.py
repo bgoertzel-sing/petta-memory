@@ -5,6 +5,7 @@ import tempfile
 import sys
 import time
 import unittest
+from unittest import mock
 from dataclasses import FrozenInstanceError, replace
 from hashlib import sha256
 from pathlib import Path
@@ -922,6 +923,27 @@ class PiPlnModelTests(unittest.TestCase):
             path = Path(directory) / "result.json"
             write_validated_kernel_result(path, result)
             self.assertEqual(read_validated_kernel_result(path, compiled=compiled), result)
+            parent = os.stat(directory)
+            foreign_parent_fields = list(parent)
+            foreign_parent_fields[4] = parent.st_uid + 1
+            foreign_parent = os.stat_result(foreign_parent_fields)
+            with mock.patch("petta_memory.pipln_models.os.fstat", side_effect=[foreign_parent]):
+                with self.assertRaisesRegex(ValueError, "owned by the current user"):
+                    read_validated_kernel_result(path, compiled=compiled)
+            artifact = os.stat(path)
+            foreign_artifact_fields = list(artifact)
+            foreign_artifact_fields[4] = artifact.st_uid + 1
+            foreign_artifact = os.stat_result(foreign_artifact_fields)
+            with mock.patch(
+                "petta_memory.pipln_models.os.fstat",
+                side_effect=[parent, foreign_artifact],
+            ):
+                with self.assertRaisesRegex(ValueError, "owned by the current user"):
+                    read_validated_kernel_result(path, compiled=compiled)
+            with mock.patch("petta_memory.pipln_models.os.fstat", side_effect=[foreign_parent]):
+                with self.assertRaisesRegex(ValueError, "owned by the current user"):
+                    write_validated_kernel_result(Path(directory) / "foreign-parent.json", result)
+            self.assertFalse((Path(directory) / "foreign-parent.json").exists())
             with self.assertRaises(FileExistsError):
                 write_validated_kernel_result(path, result)
             Path(directory).chmod(0o770)
