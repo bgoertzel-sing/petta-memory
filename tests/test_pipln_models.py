@@ -1279,6 +1279,86 @@ class PiPlnModelTests(unittest.TestCase):
             with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
                 build_captured_episode_manifest(capture=bad_capture, **kwargs)
 
+    def test_phase1_clean_room_reload_preserves_query_and_provenance_boundaries(self):
+        """Round-trip one frozen state without adding a new archive schema."""
+        packet = EvidencePacket(
+            "p1", "(S archived)", "ctx", 1, 0, ("t1",),
+            1, 1, "ACTIVE", "a1", "o1", "OBSERVATION",
+        )
+        token = EvidenceToken("t1", "sensor", "s1", "ctx", "observed", "minted")
+        snapshot = build_evidence_snapshot(
+            snapshot_id="snapshot", packets=[packet], context_id="ctx",
+            assumption_fingerprint="a1", ontology_fingerprint="o1", created_at="frozen",
+        )
+        context = PiContext(
+            "ctx", "lang", "world", "guard", "guard-v1", "query",
+            "assumptions", "ontology", "ontology-v1", "weak-v1", "relevance-v1",
+        )
+        chart = build_pi_chart(
+            chart_id="chart", context=context, prior_strength_p0=0.5, prior_weight_k=2,
+            prior_provenance="review",
+            policy=ChartPolicy("factor", "projection", "kernel", "rules", "v1", "v1"),
+            selected_packet_ids=["p1"], evidence_snapshot=snapshot,
+            adequacy_certificate_id="adequacy",
+        )
+        basis = evidence_basis_from_packet(
+            packet, [token], independence_status="PROVEN_DISJOINT",
+            justification_cid="review:basis",
+        )
+        compiled = compile_episode_inputs(
+            episode_id="capture-run", chart=chart, evidence_snapshot=snapshot,
+            packets=[packet], bases=[basis],
+        )
+        result_atom = "((stv 0.75 0.5) (0))"
+        result = validate_kernel_result(result_atom, query_term="(Q archived)", compiled=compiled)
+        digest = sha256(b"phase1-audit").hexdigest()
+        manifest = build_episode_manifest(
+            compiled=compiled, chart=chart, evidence_snapshot=snapshot, result=result,
+            complete_program=f"{compiled.sentences[0].atom}\n!(PLN.Query (Q archived))",
+            kernel_name="patham9-pln",
+            kernel_capabilities_cid=digest, controller_envelope_cid=digest, seed=0,
+            budget=EpisodeBudget(3, 1000, 4096),
+            started_at="2026-07-22T18:00:00Z", finished_at="2026-07-22T18:00:01Z",
+            return_code=0, stdout=result_atom, stderr="",
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            identities = []
+            for cycle in (1, 2):
+                clean_room = root / f"reload-{cycle}"
+                clean_room.mkdir(mode=0o700)
+                compiled_path = clean_room / "compiled.json"
+                result_path = clean_room / "result.json"
+                manifest_path = clean_room / "manifest.json"
+                write_compiled_episode_inputs(compiled_path, compiled)
+                write_validated_kernel_result(result_path, result)
+                write_episode_manifest(manifest_path, manifest)
+
+                loaded_compiled = read_compiled_episode_inputs(compiled_path)
+                loaded_result = read_validated_kernel_result(result_path, compiled=loaded_compiled)
+                loaded_manifest = read_episode_manifest(manifest_path)
+                replayed = validate_exact_kernel_replay(
+                    result_atom, expected=loaded_result, compiled=loaded_compiled,
+                )
+                self.assertEqual(replayed, result)
+                self.assertEqual(loaded_manifest.result_cid, replayed.result_digest)
+                identities.append((loaded_compiled.sentences[0].meta.sentence_digest,
+                                   replayed.result_digest,
+                                   loaded_manifest.manifest_digest))
+
+                with self.assertRaisesRegex(ValueError, "compiled episode inputs document schema"):
+                    read_compiled_episode_inputs(manifest_path)
+
+            self.assertEqual(identities[0], identities[1])
+
+            collision = compile_episode_inputs(
+                episode_id="reload-new-assertion", chart=chart, evidence_snapshot=snapshot,
+                packets=[packet], bases=[basis],
+            )
+            with self.assertRaisesRegex(ValueError, "compiled episode"):
+                read_validated_kernel_result(root / "reload-1" / "result.json", compiled=collision)
+
     def test_episode_manifest_closes_program_result_and_runtime_audit_identity(self):
         packet = EvidencePacket("p1", "(S a)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")
         token = EvidenceToken("t1", "sensor", "s1", "ctx", "observed", "minted")
