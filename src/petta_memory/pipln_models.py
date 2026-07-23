@@ -2067,6 +2067,16 @@ def read_episode_manifest(
                 result.episode_id != compiled.episode_id
                 or result.chart_fingerprint != compiled.chart_fingerprint):
             raise ValueError("validated result does not match compiled episode")
+        if compiled is not None:
+            basis_by_stamp = {
+                entry.stamp_int: entry.basis_id for entry in compiled.stamp_map
+            }
+            if (any(stamp not in basis_by_stamp for stamp in result.stamp_ints)
+                    or result.evidence_basis_ids
+                    != tuple(basis_by_stamp[stamp] for stamp in result.stamp_ints)):
+                raise ValueError(
+                    "validated result stamps do not match compiled episode evidence bases"
+                )
     return manifest
 
 

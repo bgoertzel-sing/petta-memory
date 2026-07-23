@@ -19,6 +19,7 @@ from petta_memory.pipln_models import (
     EvidenceSnapshotRepository,
     EvidenceToken,
     EpisodeBudget,
+    EpisodeManifest,
     KernelProcessCapture,
     Phase0ReferenceArtifact,
     ChartPolicy,
@@ -1458,6 +1459,52 @@ class PiPlnModelTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "manifest does not match validated result"):
                 read_episode_manifest(
                     root / "reload-1" / "manifest.json", result=collision_result,
+                )
+
+            forged_result = replace(
+                result,
+                evidence_basis_ids=("forged-basis",),
+                result_digest=sha256(json.dumps({
+                    "episode_id": result.episode_id,
+                    "chart_fingerprint": result.chart_fingerprint,
+                    "query_term": result.query_term,
+                    "strength": float(result.strength),
+                    "confidence": float(result.confidence),
+                    "stamp_ints": result.stamp_ints,
+                    "evidence_basis_ids": ("forged-basis",),
+                }, sort_keys=True, separators=(",", ":"),
+                    ensure_ascii=False).encode("utf-8")).hexdigest(),
+            )
+            forged_manifest_values = {
+                field: getattr(manifest, field)
+                for field in EpisodeManifest.__dataclass_fields__
+                if field != "manifest_digest"
+            }
+            forged_manifest_values["result_cid"] = forged_result.result_digest
+            forged_manifest = EpisodeManifest(
+                **forged_manifest_values,
+                manifest_digest=sha256(json.dumps({
+                    **{
+                        key: value for key, value in forged_manifest_values.items()
+                        if key != "budget"
+                    },
+                    "parent_episode_ids": list(manifest.parent_episode_ids),
+                    "projection_policy_ids": list(manifest.projection_policy_ids),
+                    "budget": {
+                        "max_steps": manifest.budget.max_steps,
+                        "max_runtime_ms": manifest.budget.max_runtime_ms,
+                        "max_output_chars": manifest.budget.max_output_chars,
+                    },
+                }, sort_keys=True, separators=(",", ":"),
+                    ensure_ascii=False).encode("utf-8")).hexdigest(),
+            )
+            forged_path = root / "reload-1" / "forged-manifest.json"
+            write_episode_manifest(forged_path, forged_manifest)
+            with self.assertRaisesRegex(
+                    ValueError, "stamps do not match compiled episode evidence bases"):
+                read_episode_manifest(
+                    forged_path, compiled=compiled, result=forged_result,
+                    complete_program=program,
                 )
 
     def test_episode_manifest_closes_program_result_and_runtime_audit_identity(self):
