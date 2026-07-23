@@ -1383,6 +1383,11 @@ class PiPlnModelTests(unittest.TestCase):
                     result_atom, expected=loaded_result, compiled=loaded_compiled,
                 )
                 self.assertEqual(replayed, result)
+                self.assertEqual(loaded_compiled.episode_id, "capture-run")
+                self.assertEqual(loaded_result.episode_id, "capture-run")
+                self.assertEqual(loaded_manifest.episode_id, "capture-run")
+                self.assertEqual(loaded_reference.query_target, "(Reference archived)")
+                self.assertNotEqual(loaded_reference.query_target, replayed.query_term)
                 self.assertEqual(loaded_manifest.result_cid, replayed.result_digest)
                 identities.append((loaded_compiled.sentences[0].meta.sentence_digest,
                                    replayed.result_digest,
@@ -1392,6 +1397,17 @@ class PiPlnModelTests(unittest.TestCase):
 
                 with self.assertRaisesRegex(ValueError, "compiled episode inputs document schema"):
                     read_compiled_episode_inputs(manifest_path)
+
+                stale_descriptor = compiled_episode_inputs_document(compiled)
+                stale_descriptor["payload"]["episode_id"] = "stale-capture-run"
+                stale_descriptor["document_digest"] = sha256(json.dumps(
+                    stale_descriptor["payload"], sort_keys=True, separators=(",", ":"),
+                    ensure_ascii=False,
+                ).encode("utf-8")).hexdigest()
+                stale_path = clean_room / "stale-compiled.json"
+                stale_path.write_text(json.dumps(stale_descriptor), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "stamp map episode mismatch"):
+                    read_compiled_episode_inputs(stale_path)
 
                 reference_source_path.write_bytes(reference_source + b"; stale\n")
                 with self.assertRaisesRegex(ValueError, "source checksum"):
