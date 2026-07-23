@@ -1375,7 +1375,9 @@ class PiPlnModelTests(unittest.TestCase):
 
                 loaded_compiled = read_compiled_episode_inputs(compiled_path)
                 loaded_result = read_validated_kernel_result(result_path, compiled=loaded_compiled)
-                loaded_manifest = read_episode_manifest(manifest_path)
+                loaded_manifest = read_episode_manifest(
+                    manifest_path, compiled=loaded_compiled, result=loaded_result,
+                )
                 loaded_reference = validate_phase0_reference_artifact(
                     reference_manifest_path, source_path=reference_source_path,
                 )
@@ -1423,6 +1425,18 @@ class PiPlnModelTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, "compiled episode"):
                 read_validated_kernel_result(root / "reload-1" / "result.json", compiled=collision)
+            with self.assertRaisesRegex(ValueError, "manifest does not match compiled episode"):
+                read_episode_manifest(
+                    root / "reload-1" / "manifest.json", compiled=collision,
+                )
+
+            collision_result = validate_kernel_result(
+                result_atom, query_term="(Q archived)", compiled=collision,
+            )
+            with self.assertRaisesRegex(ValueError, "manifest does not match validated result"):
+                read_episode_manifest(
+                    root / "reload-1" / "manifest.json", result=collision_result,
+                )
 
     def test_episode_manifest_closes_program_result_and_runtime_audit_identity(self):
         packet = EvidencePacket("p1", "(S a)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")

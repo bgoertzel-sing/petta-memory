@@ -2004,8 +2004,11 @@ def write_episode_manifest(path: str | Path, manifest: EpisodeManifest) -> None:
     _write_create_once_durable(destination, data)
 
 
-def read_episode_manifest(path: str | Path) -> EpisodeManifest:
-    """Load a checksummed manifest and reconstruct all typed invariants."""
+def read_episode_manifest(
+    path: str | Path, *, compiled: CompiledEpisodeInputs | None = None,
+    result: ValidatedKernelResult | None = None,
+) -> EpisodeManifest:
+    """Load a checksummed manifest and optionally close its replay provenance."""
     document = _load_unambiguous_json(path)
     if (not isinstance(document, dict)
             or set(document) != {"schema", "payload", "document_digest"}
@@ -2026,7 +2029,29 @@ def read_episode_manifest(path: str | Path) -> EpisodeManifest:
     values["parent_episode_ids"] = tuple(payload["parent_episode_ids"])
     values["projection_policy_ids"] = tuple(payload["projection_policy_ids"])
     values["budget"] = EpisodeBudget(**payload["budget"])
-    return EpisodeManifest(**values)
+    manifest = EpisodeManifest(**values)
+    if compiled is not None:
+        stamp_payload = [
+            {
+                "episode_id": entry.episode_id,
+                "stamp_int": entry.stamp_int,
+                "basis_id": entry.basis_id,
+                "member_token_digest": entry.member_token_digest,
+            }
+            for entry in compiled.stamp_map
+        ]
+        if (manifest.episode_id != compiled.episode_id
+                or manifest.stamp_map_cid != _canonical_hash(stamp_payload)):
+            raise ValueError("episode manifest does not match compiled episode")
+    if result is not None:
+        if (manifest.episode_id != result.episode_id
+                or manifest.result_cid != result.result_digest):
+            raise ValueError("episode manifest does not match validated result")
+        if compiled is not None and (
+                result.episode_id != compiled.episode_id
+                or result.chart_fingerprint != compiled.chart_fingerprint):
+            raise ValueError("validated result does not match compiled episode")
+    return manifest
 
 
 def validated_kernel_result_document(result: ValidatedKernelResult) -> dict[str, object]:
