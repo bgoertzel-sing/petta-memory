@@ -1419,6 +1419,12 @@ class PiPlnModelTests(unittest.TestCase):
                     validate_phase0_reference_artifact(
                         reference_manifest_path, source_path=reference_source_path,
                     )
+                reference_source_path.write_bytes(reference_source)
+                reference_output_path.write_bytes(reference_output + b"; stale\n")
+                with self.assertRaisesRegex(ValueError, "output (byte count|checksum)"):
+                    validate_phase0_reference_artifact(
+                        reference_manifest_path, source_path=reference_source_path,
+                    )
 
             self.assertEqual(identities[0], identities[1])
 
