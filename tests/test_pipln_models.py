@@ -1389,9 +1389,16 @@ class PiPlnModelTests(unittest.TestCase):
 
                 loaded_compiled = read_compiled_episode_inputs(compiled_path)
                 loaded_result = read_validated_kernel_result(result_path, compiled=loaded_compiled)
+                archived_capture = KernelProcessCapture(
+                    ("/frozen/kernel",), 0, result_atom, "",
+                    sha256(json.dumps(
+                        {"complete_program": program}, sort_keys=True,
+                        separators=(",", ":"), ensure_ascii=False,
+                    ).encode("utf-8")).hexdigest(),
+                )
                 loaded_manifest = read_episode_manifest(
                     manifest_path, compiled=loaded_compiled, result=loaded_result,
-                    complete_program=program,
+                    complete_program=program, capture=archived_capture,
                 )
                 loaded_reference = validate_phase0_reference_artifact(
                     reference_manifest_path, source_path=reference_source_path,
@@ -1410,6 +1417,18 @@ class PiPlnModelTests(unittest.TestCase):
                     {path.name for path in clean_room.iterdir()},
                     expected_artifacts,
                 )
+                with self.assertRaisesRegex(
+                        ValueError, "does not match kernel process capture"):
+                    read_episode_manifest(
+                        manifest_path,
+                        capture=replace(archived_capture, stdout=result_atom + "\n"),
+                    )
+                with self.assertRaisesRegex(
+                        ValueError, "does not match captured program"):
+                    read_episode_manifest(
+                        manifest_path,
+                        capture=replace(archived_capture, program_cid="0" * 64),
+                    )
                 identities.append((loaded_compiled.sentences[0].meta.sentence_digest,
                                    replayed.result_digest,
                                    loaded_manifest.manifest_digest,

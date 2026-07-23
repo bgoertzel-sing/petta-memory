@@ -2008,6 +2008,7 @@ def read_episode_manifest(
     path: str | Path, *, compiled: CompiledEpisodeInputs | None = None,
     result: ValidatedKernelResult | None = None,
     complete_program: str | None = None,
+    capture: KernelProcessCapture | None = None,
 ) -> EpisodeManifest:
     """Load a checksummed manifest and optionally close its replay provenance."""
     document = _load_unambiguous_json(path)
@@ -2036,6 +2037,16 @@ def read_episode_manifest(
                 or manifest.compiled_program_cid
                 != _canonical_hash({"complete_program": complete_program})):
             raise ValueError("episode manifest does not match complete program")
+    if capture is not None:
+        if not isinstance(capture, KernelProcessCapture):
+            raise ValueError("episode manifest capture must be a KernelProcessCapture")
+        if (manifest.return_code != capture.return_code
+                or manifest.stdout_cid != _canonical_hash({"stdout": capture.stdout})
+                or manifest.stderr_cid != _canonical_hash({"stderr": capture.stderr})):
+            raise ValueError("episode manifest does not match kernel process capture")
+        if (capture.program_cid is None
+                or manifest.compiled_program_cid != capture.program_cid):
+            raise ValueError("episode manifest does not match captured program")
     if compiled is not None:
         compiled_chart_ids = {sentence.meta.chart_id for sentence in compiled.sentences}
         compiled_context_ids = {sentence.meta.context_id for sentence in compiled.sentences}
