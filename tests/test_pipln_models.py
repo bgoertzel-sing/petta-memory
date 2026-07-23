@@ -1502,6 +1502,20 @@ class PiPlnModelTests(unittest.TestCase):
                     complete_program=program,
                 )
 
+            duplicate_anchor_repository = root / "duplicate-anchors"
+            duplicate_anchor_repository.mkdir(mode=0o700)
+            write_evidence_snapshot(
+                duplicate_anchor_repository / f"{snapshot.snapshot_fingerprint}.json",
+                snapshot,
+            )
+            write_evidence_snapshot(
+                duplicate_anchor_repository
+                / f"{colliding_snapshot.snapshot_fingerprint}.json",
+                colliding_snapshot,
+            )
+            with self.assertRaisesRegex(ValueError, "duplicate snapshot id"):
+                EvidenceSnapshotRepository(duplicate_anchor_repository).get(snapshot.id)
+
             forged_result = replace(
                 result,
                 evidence_basis_ids=("forged-basis",),
