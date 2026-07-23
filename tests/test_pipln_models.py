@@ -1461,6 +1461,47 @@ class PiPlnModelTests(unittest.TestCase):
                     root / "reload-1" / "manifest.json", result=collision_result,
                 )
 
+            colliding_packet = replace(packet, statement="(S cross-run)")
+            colliding_snapshot = build_evidence_snapshot(
+                snapshot_id=snapshot.id, packets=[colliding_packet], context_id="ctx",
+                assumption_fingerprint="a1", ontology_fingerprint="o1",
+                created_at="cross-run",
+            )
+            colliding_chart = build_pi_chart(
+                chart_id=chart.id, context=context, prior_strength_p0=0.5,
+                prior_weight_k=2, prior_provenance="review",
+                policy=ChartPolicy("factor", "projection", "kernel", "rules", "v1", "v1"),
+                selected_packet_ids=["p1"], evidence_snapshot=colliding_snapshot,
+                adequacy_certificate_id="adequacy",
+            )
+            colliding_basis = evidence_basis_from_packet(
+                colliding_packet, [token], independence_status="PROVEN_DISJOINT",
+                justification_cid="review:basis",
+            )
+            same_named_cross_run = compile_episode_inputs(
+                episode_id=compiled.episode_id, chart=colliding_chart,
+                evidence_snapshot=colliding_snapshot, packets=[colliding_packet],
+                bases=[colliding_basis],
+            )
+            self.assertEqual(same_named_cross_run.episode_id, compiled.episode_id)
+            self.assertNotEqual(
+                same_named_cross_run.chart_fingerprint, compiled.chart_fingerprint,
+            )
+            with self.assertRaisesRegex(
+                    ValueError, "kernel result does not match compiled episode"):
+                read_validated_kernel_result(
+                    root / "reload-1" / "result.json",
+                    compiled=same_named_cross_run,
+                )
+            with self.assertRaisesRegex(
+                    ValueError, "complete program does not match compiled episode"):
+                read_episode_manifest(
+                    root / "reload-1" / "manifest.json",
+                    compiled=same_named_cross_run,
+                    result=result,
+                    complete_program=program,
+                )
+
             forged_result = replace(
                 result,
                 evidence_basis_ids=("forged-basis",),
