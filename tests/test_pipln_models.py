@@ -1430,6 +1430,18 @@ class PiPlnModelTests(unittest.TestCase):
                     root / "reload-1" / "manifest.json", compiled=collision,
                 )
 
+            mismatched_chart = replace(
+                compiled,
+                sentences=tuple(
+                    replace(sentence, meta=replace(sentence.meta, chart_id="other-chart"))
+                    for sentence in compiled.sentences
+                ),
+            )
+            with self.assertRaisesRegex(ValueError, "manifest does not match compiled episode"):
+                read_episode_manifest(
+                    root / "reload-1" / "manifest.json", compiled=mismatched_chart,
+                )
+
             collision_result = validate_kernel_result(
                 result_atom, query_term="(Q archived)", compiled=collision,
             )

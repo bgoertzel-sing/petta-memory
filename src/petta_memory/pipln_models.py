@@ -2031,6 +2031,8 @@ def read_episode_manifest(
     values["budget"] = EpisodeBudget(**payload["budget"])
     manifest = EpisodeManifest(**values)
     if compiled is not None:
+        compiled_chart_ids = {sentence.meta.chart_id for sentence in compiled.sentences}
+        compiled_context_ids = {sentence.meta.context_id for sentence in compiled.sentences}
         stamp_payload = [
             {
                 "episode_id": entry.episode_id,
@@ -2041,6 +2043,8 @@ def read_episode_manifest(
             for entry in compiled.stamp_map
         ]
         if (manifest.episode_id != compiled.episode_id
+                or compiled_chart_ids != {manifest.chart_id}
+                or compiled_context_ids != {manifest.context_id}
                 or manifest.stamp_map_cid != _canonical_hash(stamp_payload)):
             raise ValueError("episode manifest does not match compiled episode")
     if result is not None:
