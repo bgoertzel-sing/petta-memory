@@ -2387,6 +2387,54 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 write_pettachainer_derived_result_capture(path, capture)
 
+            reload_identities = []
+            for cycle in (1, 2):
+                clean_room = Path(directory) / f"clean-room-{cycle}"
+                clean_room.mkdir(mode=0o700)
+                reloaded_capture_path = clean_room / "derived-result.json"
+                reloaded_manifest_path = clean_room / "episode-manifest.json"
+                write_pettachainer_derived_result_capture(reloaded_capture_path, capture)
+                write_pettachainer_episode_manifest(reloaded_manifest_path, manifest)
+
+                reloaded_capture = read_pettachainer_derived_result_capture(
+                    reloaded_capture_path, contract=contract,
+                )
+                reloaded_manifest = read_pettachainer_episode_manifest(
+                    reloaded_manifest_path, contract=contract, result=reloaded_capture,
+                )
+                self.assertEqual(reloaded_capture.derived_atom, capture.derived_atom)
+                self.assertEqual(reloaded_capture.query_term, "(T a)")
+                self.assertEqual(reloaded_manifest.result_classification,
+                                 "compiler-bound-one-rule-derived-result")
+                self.assertFalse(reloaded_manifest.promotion_authorized)
+                reload_identities.append((
+                    reloaded_capture.result_digest,
+                    reloaded_capture.validator_capture.capture_digest,
+                    reloaded_capture.runtime_capture.capture_digest,
+                    reloaded_manifest.manifest_digest,
+                ))
+
+                with self.assertRaisesRegex(
+                    ValueError, "derived result capture document schema",
+                ):
+                    read_pettachainer_derived_result_capture(
+                        reloaded_manifest_path, contract=contract,
+                    )
+                with self.assertRaisesRegex(
+                    ValueError, "episode manifest document schema",
+                ):
+                    read_pettachainer_episode_manifest(
+                        reloaded_capture_path, contract=contract, result=reloaded_capture,
+                    )
+                with self.assertRaisesRegex(ValueError, "input provenance mismatch"):
+                    read_pettachainer_episode_manifest(
+                        reloaded_manifest_path,
+                        contract=self.episode_contract(),
+                        result=reloaded_capture,
+                    )
+
+            self.assertEqual(reload_identities[0], reload_identities[1])
+
             failed_file_sync_path = Path(directory) / "file-sync-failed.json"
             real_fsync = os.fsync
             sync_calls = 0
