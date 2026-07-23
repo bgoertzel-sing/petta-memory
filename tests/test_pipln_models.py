@@ -1374,6 +1374,18 @@ class PiPlnModelTests(unittest.TestCase):
                         "no_pettachainer_compileadd": True,
                     },
                 }), encoding="utf-8")
+                expected_artifacts = {
+                    "Reference.metta",
+                    "compiled.json",
+                    "manifest.json",
+                    "reference-manifest.json",
+                    "reference-output.txt",
+                    "result.json",
+                }
+                self.assertEqual(
+                    {path.name for path in clean_room.iterdir()},
+                    expected_artifacts,
+                )
 
                 loaded_compiled = read_compiled_episode_inputs(compiled_path)
                 loaded_result = read_validated_kernel_result(result_path, compiled=loaded_compiled)
@@ -1394,6 +1406,10 @@ class PiPlnModelTests(unittest.TestCase):
                 self.assertEqual(loaded_reference.query_target, "(Reference archived)")
                 self.assertNotEqual(loaded_reference.query_target, replayed.query_term)
                 self.assertEqual(loaded_manifest.result_cid, replayed.result_digest)
+                self.assertEqual(
+                    {path.name for path in clean_room.iterdir()},
+                    expected_artifacts,
+                )
                 identities.append((loaded_compiled.sentences[0].meta.sentence_digest,
                                    replayed.result_digest,
                                    loaded_manifest.manifest_digest,
@@ -1411,6 +1427,7 @@ class PiPlnModelTests(unittest.TestCase):
                 ).encode("utf-8")).hexdigest()
                 stale_path = clean_room / "stale-compiled.json"
                 stale_path.write_text(json.dumps(stale_descriptor), encoding="utf-8")
+                expected_artifacts.add("stale-compiled.json")
                 with self.assertRaisesRegex(ValueError, "stamp map episode mismatch"):
                     read_compiled_episode_inputs(stale_path)
 
@@ -1425,6 +1442,10 @@ class PiPlnModelTests(unittest.TestCase):
                     validate_phase0_reference_artifact(
                         reference_manifest_path, source_path=reference_source_path,
                     )
+                self.assertEqual(
+                    {path.name for path in clean_room.iterdir()},
+                    expected_artifacts,
+                )
 
             self.assertEqual(identities[0], identities[1])
 
