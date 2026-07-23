@@ -1433,6 +1433,51 @@ class PiPlnModelTests(unittest.TestCase):
                     root / "reload-1" / "manifest.json", compiled=collision,
                 )
 
+            newly_asserted_packet = replace(
+                packet, id="p2", statement="(S asserted-after-reload)",
+            )
+            newly_asserted_snapshot = build_evidence_snapshot(
+                snapshot_id="snapshot-after-reload", packets=[newly_asserted_packet],
+                context_id="ctx", assumption_fingerprint="a1",
+                ontology_fingerprint="o1", created_at="after-reload",
+            )
+            newly_asserted_chart = build_pi_chart(
+                chart_id="chart-after-reload", context=context,
+                prior_strength_p0=0.5, prior_weight_k=2,
+                prior_provenance="new-assertion",
+                policy=ChartPolicy("factor", "projection", "kernel", "rules", "v1", "v1"),
+                selected_packet_ids=["p2"], evidence_snapshot=newly_asserted_snapshot,
+                adequacy_certificate_id="adequacy-after-reload",
+            )
+            newly_asserted_basis = evidence_basis_from_packet(
+                newly_asserted_packet, [token],
+                independence_status="PROVEN_DISJOINT",
+                justification_cid="review:new-assertion",
+            )
+            newly_asserted = compile_episode_inputs(
+                episode_id="reload-new-assertion", chart=newly_asserted_chart,
+                evidence_snapshot=newly_asserted_snapshot,
+                packets=[newly_asserted_packet], bases=[newly_asserted_basis],
+            )
+            self.assertNotEqual(
+                newly_asserted.sentences[0].meta.sentence_digest,
+                compiled.sentences[0].meta.sentence_digest,
+            )
+            self.assertNotEqual(
+                newly_asserted.chart_fingerprint, compiled.chart_fingerprint,
+            )
+            with self.assertRaisesRegex(
+                    ValueError, "kernel result does not match compiled episode"):
+                validate_exact_kernel_replay(
+                    result_atom, expected=result, compiled=newly_asserted,
+                )
+            with self.assertRaisesRegex(
+                    ValueError, "manifest does not match compiled episode"):
+                read_episode_manifest(
+                    root / "reload-1" / "manifest.json",
+                    compiled=newly_asserted,
+                )
+
             mismatched_chart = replace(
                 compiled,
                 sentences=tuple(
