@@ -1312,9 +1312,10 @@ class PiPlnModelTests(unittest.TestCase):
         result_atom = "((stv 0.75 0.5) (0))"
         result = validate_kernel_result(result_atom, query_term="(Q archived)", compiled=compiled)
         digest = sha256(b"phase1-audit").hexdigest()
+        program = f"{compiled.sentences[0].atom}\n!(PLN.Query (Q archived))"
         manifest = build_episode_manifest(
             compiled=compiled, chart=chart, evidence_snapshot=snapshot, result=result,
-            complete_program=f"{compiled.sentences[0].atom}\n!(PLN.Query (Q archived))",
+            complete_program=program,
             kernel_name="patham9-pln",
             kernel_capabilities_cid=digest, controller_envelope_cid=digest, seed=0,
             budget=EpisodeBudget(3, 1000, 4096),
@@ -1377,6 +1378,7 @@ class PiPlnModelTests(unittest.TestCase):
                 loaded_result = read_validated_kernel_result(result_path, compiled=loaded_compiled)
                 loaded_manifest = read_episode_manifest(
                     manifest_path, compiled=loaded_compiled, result=loaded_result,
+                    complete_program=program,
                 )
                 loaded_reference = validate_phase0_reference_artifact(
                     reference_manifest_path, source_path=reference_source_path,
@@ -1440,6 +1442,14 @@ class PiPlnModelTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "manifest does not match compiled episode"):
                 read_episode_manifest(
                     root / "reload-1" / "manifest.json", compiled=mismatched_chart,
+                )
+
+            with self.assertRaisesRegex(ValueError, "manifest does not match complete program"):
+                read_episode_manifest(
+                    root / "reload-1" / "manifest.json",
+                    compiled=compiled,
+                    result=result,
+                    complete_program=program + "\n; cross-run drift",
                 )
 
             collision_result = validate_kernel_result(

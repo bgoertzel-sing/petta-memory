@@ -2007,6 +2007,7 @@ def write_episode_manifest(path: str | Path, manifest: EpisodeManifest) -> None:
 def read_episode_manifest(
     path: str | Path, *, compiled: CompiledEpisodeInputs | None = None,
     result: ValidatedKernelResult | None = None,
+    complete_program: str | None = None,
 ) -> EpisodeManifest:
     """Load a checksummed manifest and optionally close its replay provenance."""
     document = _load_unambiguous_json(path)
@@ -2030,6 +2031,11 @@ def read_episode_manifest(
     values["projection_policy_ids"] = tuple(payload["projection_policy_ids"])
     values["budget"] = EpisodeBudget(**payload["budget"])
     manifest = EpisodeManifest(**values)
+    if complete_program is not None:
+        if (not isinstance(complete_program, str) or not complete_program
+                or manifest.compiled_program_cid
+                != _canonical_hash({"complete_program": complete_program})):
+            raise ValueError("episode manifest does not match complete program")
     if compiled is not None:
         compiled_chart_ids = {sentence.meta.chart_id for sentence in compiled.sentences}
         compiled_context_ids = {sentence.meta.context_id for sentence in compiled.sentences}
@@ -2047,10 +2053,16 @@ def read_episode_manifest(
                 or compiled_context_ids != {manifest.context_id}
                 or manifest.stamp_map_cid != _canonical_hash(stamp_payload)):
             raise ValueError("episode manifest does not match compiled episode")
+        if (complete_program is not None
+                and any(complete_program.count(sentence.atom) != 1
+                        for sentence in compiled.sentences)):
+            raise ValueError("complete program does not match compiled episode")
     if result is not None:
         if (manifest.episode_id != result.episode_id
                 or manifest.result_cid != result.result_digest):
             raise ValueError("episode manifest does not match validated result")
+        if complete_program is not None and result.query_term not in complete_program:
+            raise ValueError("complete program does not match validated result")
         if compiled is not None and (
                 result.episode_id != compiled.episode_id
                 or result.chart_fingerprint != compiled.chart_fingerprint):
