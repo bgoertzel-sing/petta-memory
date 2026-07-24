@@ -2347,6 +2347,22 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
             replace(attribution, runtime_trace_decoded=True)
         with self.assertRaisesRegex(ValueError, "rule proof id"):
             replace(attribution, rule_proof_id=fact.proof_id)
+        attribution_values = {
+            field: getattr(attribution, field)
+            for field in attribution.__dataclass_fields__
+            if field != "attribution_digest"
+        }
+        for field, malformed, message in (
+            ("rule_stamp_ints", (), "rule attribution stamps"),
+            ("rule_stamp_ints", (2, 1), "rule attribution stamps"),
+            ("fact_stamp_ints", (True,), "fact attribution stamps"),
+            ("rule_evidence_basis_ids", ("basis-rule", "basis-rule"), "rule attribution evidence bases"),
+            ("fact_evidence_basis_ids", (" ",), "fact attribution evidence bases"),
+        ):
+            forged = attribution_values | {field: malformed}
+            forged["attribution_digest"] = pipln_models._canonical_hash(forged)
+            with self.assertRaisesRegex(ValueError, message):
+                pipln_models.PeTTaChainerRuleAttribution(**forged)
 
         manifest_kwargs = {
             "contract": contract,

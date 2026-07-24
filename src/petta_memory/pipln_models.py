@@ -818,6 +818,18 @@ class PeTTaChainerRuleAttribution:
             _sha256_digest(digest, f"{label}_sentence_digest")
             if proof_id != f"pm-{digest}":
                 raise ValueError(f"{label} proof id does not match sentence digest")
+        for stamps, bases, label in (
+            (self.rule_stamp_ints, self.rule_evidence_basis_ids, "rule"),
+            (self.fact_stamp_ints, self.fact_evidence_basis_ids, "fact"),
+        ):
+            if not isinstance(stamps, tuple) or not stamps or tuple(sorted(set(stamps))) != stamps:
+                raise ValueError(f"{label} attribution stamps must be a non-empty sorted unique tuple")
+            if any(isinstance(stamp, bool) or not isinstance(stamp, int) or stamp < 0 for stamp in stamps):
+                raise ValueError(f"{label} attribution stamps must be non-negative integers")
+            if not isinstance(bases, tuple) or not bases or tuple(sorted(set(bases))) != bases:
+                raise ValueError(f"{label} attribution evidence bases must be a non-empty sorted unique tuple")
+            if any(not isinstance(basis, str) or not basis.strip() for basis in bases):
+                raise ValueError(f"{label} attribution evidence bases must be non-empty strings")
         expected = _canonical_hash({
             field: getattr(self, field)
             for field in self.__dataclass_fields__
