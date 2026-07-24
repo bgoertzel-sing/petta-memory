@@ -59,6 +59,27 @@ from petta_memory.pipln_models import (
 
 
 class PiPlnModelTests(unittest.TestCase):
+    def test_kernel_process_capture_rejects_malformed_provenance(self):
+        digest = "a" * 64
+        invalid = (
+            ((), 0, "", "", None, "argv"),
+            ((b"/kernel",), 0, "", "", None, "argv"),
+            (("/kernel", ""), 0, "", "", None, "argv"),
+            (("/kernel",), True, "", "", None, "return_code"),
+            (("/kernel",), "0", "", "", None, "return_code"),
+            (("/kernel",), 0, b"", "", None, "stdout and stderr"),
+            (("/kernel",), 0, "", b"", None, "stdout and stderr"),
+            (("/kernel",), 0, "", "", "short", "program_cid"),
+        )
+        for argv, return_code, stdout, stderr, program_cid, message in invalid:
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
+                KernelProcessCapture(argv, return_code, stdout, stderr, program_cid)
+
+        self.assertEqual(
+            KernelProcessCapture(("/kernel", "--quiet"), -9, "", "", digest).program_cid,
+            digest,
+        )
+
     def basis(self, basis_id, token_id):
         return EvidenceBasis(basis_id, (token_id,), (), "UNKNOWN", f"cid:{basis_id}")
 

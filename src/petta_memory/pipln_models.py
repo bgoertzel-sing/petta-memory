@@ -1570,6 +1570,17 @@ class KernelProcessCapture:
     stderr: str
     program_cid: str | None = None
 
+    def __post_init__(self) -> None:
+        if (not isinstance(self.argv, tuple) or not self.argv
+                or any(not isinstance(arg, str) or not arg for arg in self.argv)):
+            raise ValueError("argv must be a non-empty tuple of non-empty strings")
+        if isinstance(self.return_code, bool) or not isinstance(self.return_code, int):
+            raise ValueError("return_code must be an integer")
+        if not isinstance(self.stdout, str) or not isinstance(self.stderr, str):
+            raise ValueError("stdout and stderr must be strings")
+        if self.program_cid is not None:
+            _sha256_digest(self.program_cid, "program_cid")
+
 
 def validate_kernel_capture_result(
     capture: KernelProcessCapture,
