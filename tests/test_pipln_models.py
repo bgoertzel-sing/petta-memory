@@ -1236,7 +1236,11 @@ class PiPlnModelTests(unittest.TestCase):
         invalid = (
             (KernelProcessCapture(("/kernel",), 1, result_atom, ""), result_atom, "exit successfully"),
             (KernelProcessCapture(("/kernel",), 0, result_atom, "warning"), result_atom, "unexpected stderr"),
-            (KernelProcessCapture(("/kernel",), 0, "other output", ""), result_atom, "not present verbatim"),
+            (KernelProcessCapture(("/kernel",), 0, "other output", ""), result_atom, "exactly once"),
+            (KernelProcessCapture(("/kernel",), 0, f"prefix{result_atom}", ""), result_atom, "exactly once"),
+            (KernelProcessCapture(
+                ("/kernel",), 0, f"{result_atom}\n{result_atom}\n", "",
+            ), result_atom, "exactly once"),
         )
         for bad_capture, bad_atom, message in invalid:
             with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
@@ -1294,7 +1298,7 @@ class PiPlnModelTests(unittest.TestCase):
         invalid = (
             (KernelProcessCapture(("/kernel",), 1, capture.stdout, ""), "exit successfully"),
             (KernelProcessCapture(("/kernel",), 0, capture.stdout, "warning"), "unexpected stderr"),
-            (KernelProcessCapture(("/kernel",), 0, "unrelated", ""), "not present verbatim"),
+            (KernelProcessCapture(("/kernel",), 0, "unrelated", ""), "exactly once"),
             (KernelProcessCapture(("/kernel",), 0, capture.stdout, "", "0" * 64), "program does not match"),
         )
         for bad_capture, message in invalid:
