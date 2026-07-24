@@ -1592,11 +1592,11 @@ def validate_kernel_capture_result(
 ) -> ValidatedKernelResult:
     """Admit one result atom as originating in a successful raw capture.
 
-    The result atom must occur exactly once as a complete output line in
-    bounded stdout, after which the normal typed result validator closes its
-    stamps against the immutable episode inputs.  This is a non-promoting
-    process/result boundary; callers must still construct and persist an
-    ``EpisodeManifest`` separately.
+    The result atom must occur exactly once as a complete LF-delimited output
+    record in bounded stdout, after which the normal typed result validator
+    closes its stamps against the immutable episode inputs.  This is a
+    non-promoting process/result boundary; callers must still construct and
+    persist an ``EpisodeManifest`` separately.
     """
     if not isinstance(capture, KernelProcessCapture):
         raise ValueError("capture must be a bounded kernel process capture")
@@ -1606,7 +1606,10 @@ def validate_kernel_capture_result(
         raise ValueError("kernel process emitted unexpected stderr")
     if not isinstance(result_atom, str) or not result_atom:
         raise ValueError("result_atom must be a non-empty string")
-    result_lines = capture.stdout.splitlines()
+    # Kernel captures commit the exact stdout text.  Split only on the actual
+    # LF framing byte instead of treating other Unicode control characters as
+    # record boundaries through str.splitlines().
+    result_lines = capture.stdout.split("\n")
     if result_lines.count(result_atom) != 1:
         raise ValueError(
             "kernel result atom must occur exactly once as a complete captured stdout line"

@@ -1240,6 +1240,8 @@ class PiPlnModelTests(unittest.TestCase):
             (KernelProcessCapture(("/kernel",), 0, f"prefix{result_atom}", ""), result_atom, "exactly once"),
             (KernelProcessCapture(("/kernel",), 0, f" {result_atom}\n", ""), result_atom, "exactly once"),
             (KernelProcessCapture(("/kernel",), 0, f"{result_atom} \n", ""), result_atom, "exactly once"),
+            (KernelProcessCapture(("/kernel",), 0, f"trace\v{result_atom}\v", ""), result_atom, "exactly once"),
+            (KernelProcessCapture(("/kernel",), 0, f"trace\u2028{result_atom}\u2028", ""), result_atom, "exactly once"),
             (KernelProcessCapture(
                 ("/kernel",), 0, f"{result_atom}\n{result_atom}\n", "",
             ), result_atom, "exactly once"),
