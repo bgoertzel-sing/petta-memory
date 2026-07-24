@@ -830,6 +830,8 @@ class PeTTaChainerRuleAttribution:
                 raise ValueError(f"{label} attribution evidence bases must be a non-empty sorted unique tuple")
             if any(not isinstance(basis, str) or not basis.strip() for basis in bases):
                 raise ValueError(f"{label} attribution evidence bases must be non-empty strings")
+            if len(bases) != len(stamps):
+                raise ValueError(f"{label} attribution evidence bases must close every stamp")
         expected = _canonical_hash({
             field: getattr(self, field)
             for field in self.__dataclass_fields__

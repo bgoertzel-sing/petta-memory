@@ -2358,6 +2358,7 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
             ("fact_stamp_ints", (True,), "fact attribution stamps"),
             ("rule_evidence_basis_ids", ("basis-rule", "basis-rule"), "rule attribution evidence bases"),
             ("fact_evidence_basis_ids", (" ",), "fact attribution evidence bases"),
+            ("fact_evidence_basis_ids", ("basis-fact", "basis-z"), "fact attribution evidence bases must close every stamp"),
         ):
             forged = attribution_values | {field: malformed}
             forged["attribution_digest"] = pipln_models._canonical_hash(forged)
