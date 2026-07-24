@@ -18,6 +18,7 @@ from petta_memory.pipln_models import (
     PeTTaChainerEpisodeContract,
     PeTTaChainerInputStatement,
     build_pettachainer_episode_manifest,
+    build_pettachainer_rule_attribution,
     read_pettachainer_episode_manifest,
     read_pettachainer_derived_result_capture,
     write_pettachainer_derived_result_capture,
@@ -2333,6 +2334,19 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         self.assertEqual(capture.runtime_capture.stdout_bytes, 120)
         self.assertRegex(capture.runtime_capture.capture_digest, r"^[0-9a-f]{64}$")
         self.assertRegex(capture.result_digest, r"^[0-9a-f]{64}$")
+        attribution = build_pettachainer_rule_attribution(capture)
+        self.assertEqual(attribution.inference_rule, "TotalMP")
+        self.assertEqual(attribution.rule_proof_id, rule.proof_id)
+        self.assertEqual(attribution.rule_evidence_basis_ids, ("basis-rule",))
+        self.assertEqual(attribution.fact_proof_id, fact.proof_id)
+        self.assertEqual(attribution.fact_evidence_basis_ids, ("basis-fact",))
+        self.assertEqual(attribution.attribution_kind, "compiler-bound-single-rule")
+        self.assertFalse(attribution.runtime_trace_decoded)
+        self.assertRegex(attribution.attribution_digest, r"^[0-9a-f]{64}$")
+        with self.assertRaisesRegex(ValueError, "decoded runtime trace"):
+            replace(attribution, runtime_trace_decoded=True)
+        with self.assertRaisesRegex(ValueError, "rule proof id"):
+            replace(attribution, rule_proof_id=fact.proof_id)
 
         manifest_kwargs = {
             "contract": contract,

@@ -780,6 +780,78 @@ class PeTTaChainerDerivedResultCapture:
             raise ValueError("PeTTaChainer derived result digest does not match typed content")
 
 
+@dataclass(frozen=True)
+class PeTTaChainerRuleAttribution:
+    """Compiler-bound attribution for the admitted one-rule derivation.
+
+    This identifies the sole rule and fact permitted by the episode contract.
+    It deliberately does not claim that opaque runtime diagnostics constitute
+    a decoded execution trace.
+    """
+
+    result_digest: str
+    inference_rule: str
+    rule_sentence_digest: str
+    rule_proof_id: str
+    rule_stamp_ints: tuple[int, ...]
+    rule_evidence_basis_ids: tuple[str, ...]
+    fact_sentence_digest: str
+    fact_proof_id: str
+    fact_stamp_ints: tuple[int, ...]
+    fact_evidence_basis_ids: tuple[str, ...]
+    attribution_kind: str
+    runtime_trace_decoded: bool
+    attribution_digest: str
+
+    def __post_init__(self) -> None:
+        _sha256_digest(self.result_digest, "result_digest")
+        if self.inference_rule != "TotalMP":
+            raise ValueError("PeTTaChainer attribution requires the admitted TotalMP rule")
+        if self.attribution_kind != "compiler-bound-single-rule":
+            raise ValueError("PeTTaChainer attribution kind is not compiler-bound-single-rule")
+        if self.runtime_trace_decoded is not False:
+            raise ValueError("PeTTaChainer attribution cannot claim a decoded runtime trace")
+        for digest, proof_id, label in (
+            (self.rule_sentence_digest, self.rule_proof_id, "rule"),
+            (self.fact_sentence_digest, self.fact_proof_id, "fact"),
+        ):
+            _sha256_digest(digest, f"{label}_sentence_digest")
+            if proof_id != f"pm-{digest}":
+                raise ValueError(f"{label} proof id does not match sentence digest")
+        expected = _canonical_hash({
+            field: getattr(self, field)
+            for field in self.__dataclass_fields__
+            if field != "attribution_digest"
+        })
+        if self.attribution_digest != expected:
+            raise ValueError("PeTTaChainer attribution digest does not match typed content")
+
+
+def build_pettachainer_rule_attribution(
+    result: PeTTaChainerDerivedResultCapture,
+) -> PeTTaChainerRuleAttribution:
+    """Attribute the admitted result to its sole compiler-bound TotalMP rule."""
+    if not isinstance(result, PeTTaChainerDerivedResultCapture):
+        raise ValueError("rule attribution requires a typed PeTTaChainer derived result")
+    values = {
+        "result_digest": result.result_digest,
+        "inference_rule": "TotalMP",
+        "rule_sentence_digest": result.rule_sentence_digest,
+        "rule_proof_id": result.rule_proof_id,
+        "rule_stamp_ints": result.rule_stamp_ints,
+        "rule_evidence_basis_ids": result.rule_evidence_basis_ids,
+        "fact_sentence_digest": result.fact_sentence_digest,
+        "fact_proof_id": result.fact_proof_id,
+        "fact_stamp_ints": result.fact_stamp_ints,
+        "fact_evidence_basis_ids": result.fact_evidence_basis_ids,
+        "attribution_kind": "compiler-bound-single-rule",
+        "runtime_trace_decoded": False,
+    }
+    return PeTTaChainerRuleAttribution(
+        **values, attribution_digest=_canonical_hash(values),
+    )
+
+
 def _pettachainer_derived_result_payload(result: PeTTaChainerDerivedResultCapture) -> dict[str, object]:
     return {
         field: getattr(result, field)
