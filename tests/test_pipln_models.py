@@ -1424,6 +1424,18 @@ class PiPlnModelTests(unittest.TestCase):
                         capture=replace(archived_capture, stdout=result_atom + "\n"),
                     )
                 with self.assertRaisesRegex(
+                        ValueError, "does not match kernel process capture"):
+                    read_episode_manifest(
+                        manifest_path,
+                        capture=replace(archived_capture, stderr="archived diagnostic\n"),
+                    )
+                with self.assertRaisesRegex(
+                        ValueError, "does not match kernel process capture"):
+                    read_episode_manifest(
+                        manifest_path,
+                        capture=replace(archived_capture, return_code=1),
+                    )
+                with self.assertRaisesRegex(
                         ValueError, "does not match captured program"):
                     read_episode_manifest(
                         manifest_path,
