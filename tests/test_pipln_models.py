@@ -1238,6 +1238,8 @@ class PiPlnModelTests(unittest.TestCase):
             (KernelProcessCapture(("/kernel",), 0, result_atom, "warning"), result_atom, "unexpected stderr"),
             (KernelProcessCapture(("/kernel",), 0, "other output", ""), result_atom, "exactly once"),
             (KernelProcessCapture(("/kernel",), 0, f"prefix{result_atom}", ""), result_atom, "exactly once"),
+            (KernelProcessCapture(("/kernel",), 0, f" {result_atom}\n", ""), result_atom, "exactly once"),
+            (KernelProcessCapture(("/kernel",), 0, f"{result_atom} \n", ""), result_atom, "exactly once"),
             (KernelProcessCapture(
                 ("/kernel",), 0, f"{result_atom}\n{result_atom}\n", "",
             ), result_atom, "exactly once"),

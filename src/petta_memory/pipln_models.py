@@ -1606,7 +1606,7 @@ def validate_kernel_capture_result(
         raise ValueError("kernel process emitted unexpected stderr")
     if not isinstance(result_atom, str) or not result_atom:
         raise ValueError("result_atom must be a non-empty string")
-    result_lines = [line.strip() for line in capture.stdout.splitlines()]
+    result_lines = capture.stdout.splitlines()
     if result_lines.count(result_atom) != 1:
         raise ValueError(
             "kernel result atom must occur exactly once as a complete captured stdout line"
