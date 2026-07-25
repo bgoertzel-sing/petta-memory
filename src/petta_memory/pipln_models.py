@@ -775,6 +775,10 @@ class PeTTaChainerDerivedResultCapture:
                 raise ValueError(f"{label} evidence bases must be non-empty strings")
             if len(bases) != len(stamps):
                 raise ValueError(f"{label} evidence bases must close every stamp")
+        if set(self.fact_stamp_ints) & set(self.rule_stamp_ints):
+            raise ValueError("fact and rule stamps must be disjoint")
+        if set(self.fact_evidence_basis_ids) & set(self.rule_evidence_basis_ids):
+            raise ValueError("fact and rule evidence bases must be disjoint")
         if not isinstance(self.validator_capture, PeTTaChainerStageCapture) or not isinstance(self.runtime_capture, PeTTaChainerStageCapture):
             raise ValueError("derived result requires typed validator and runtime captures")
         expected_digest = _canonical_hash(_pettachainer_derived_result_payload(self))
@@ -834,6 +838,10 @@ class PeTTaChainerRuleAttribution:
                 raise ValueError(f"{label} attribution evidence bases must be non-empty strings")
             if len(bases) != len(stamps):
                 raise ValueError(f"{label} attribution evidence bases must close every stamp")
+        if set(self.fact_stamp_ints) & set(self.rule_stamp_ints):
+            raise ValueError("fact and rule attribution stamps must be disjoint")
+        if set(self.fact_evidence_basis_ids) & set(self.rule_evidence_basis_ids):
+            raise ValueError("fact and rule attribution evidence bases must be disjoint")
         expected = _canonical_hash({
             field: getattr(self, field)
             for field in self.__dataclass_fields__

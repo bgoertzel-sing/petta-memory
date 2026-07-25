@@ -2365,6 +2365,31 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
                 **list_capture_values,
                 result_digest=pipln_models._canonical_hash(list_capture_payload),
             )
+        for field, malformed, message in (
+            ("rule_stamp_ints", capture.fact_stamp_ints, "fact and rule stamps must be disjoint"),
+            (
+                "rule_evidence_basis_ids",
+                capture.fact_evidence_basis_ids,
+                "fact and rule evidence bases must be disjoint",
+            ),
+        ):
+            forged = malformed_capture_values | {
+                "fact_evidence_basis_ids": capture.fact_evidence_basis_ids,
+                field: malformed,
+            }
+            payload = {
+                key: value
+                for key, value in forged.items()
+                if key not in {"validator_capture", "runtime_capture"}
+            } | {
+                "validator_capture_digest": capture.validator_capture.capture_digest,
+                "runtime_capture_digest": capture.runtime_capture.capture_digest,
+            }
+            with self.assertRaisesRegex(ValueError, message):
+                pipln_models.PeTTaChainerDerivedResultCapture(
+                    **forged,
+                    result_digest=pipln_models._canonical_hash(payload),
+                )
         attribution = build_pettachainer_rule_attribution(capture)
         self.assertEqual(attribution.inference_rule, "TotalMP")
         self.assertEqual(attribution.rule_proof_id, rule.proof_id)
@@ -2390,6 +2415,12 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
             ("rule_evidence_basis_ids", ("basis-rule", "basis-rule"), "rule attribution evidence bases"),
             ("fact_evidence_basis_ids", (" ",), "fact attribution evidence bases"),
             ("fact_evidence_basis_ids", ("basis-fact", "basis-z"), "fact attribution evidence bases must close every stamp"),
+            ("rule_stamp_ints", attribution.fact_stamp_ints, "fact and rule attribution stamps must be disjoint"),
+            (
+                "rule_evidence_basis_ids",
+                attribution.fact_evidence_basis_ids,
+                "fact and rule attribution evidence bases must be disjoint",
+            ),
         ):
             forged = attribution_values | {field: malformed}
             forged["attribution_digest"] = pipln_models._canonical_hash(forged)
