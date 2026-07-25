@@ -773,6 +773,8 @@ class PeTTaChainerDerivedResultCapture:
                 raise ValueError(f"{label} evidence bases must be non-empty, unique, and sorted")
             if any(not isinstance(basis, str) or not basis.strip() for basis in bases):
                 raise ValueError(f"{label} evidence bases must be non-empty strings")
+            if len(bases) != len(stamps):
+                raise ValueError(f"{label} evidence bases must close every stamp")
         if not isinstance(self.validator_capture, PeTTaChainerStageCapture) or not isinstance(self.runtime_capture, PeTTaChainerStageCapture):
             raise ValueError("derived result requires typed validator and runtime captures")
         expected_digest = _canonical_hash(_pettachainer_derived_result_payload(self))

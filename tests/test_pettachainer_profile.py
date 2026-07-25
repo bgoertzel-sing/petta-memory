@@ -2334,6 +2334,24 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         self.assertEqual(capture.runtime_capture.stdout_bytes, 120)
         self.assertRegex(capture.runtime_capture.capture_digest, r"^[0-9a-f]{64}$")
         self.assertRegex(capture.result_digest, r"^[0-9a-f]{64}$")
+        malformed_capture_values = {
+            field: getattr(capture, field)
+            for field in capture.__dataclass_fields__
+            if field != "result_digest"
+        } | {"fact_evidence_basis_ids": ("basis-fact", "basis-z")}
+        malformed_capture_payload = {
+            field: value
+            for field, value in malformed_capture_values.items()
+            if field not in {"validator_capture", "runtime_capture"}
+        } | {
+            "validator_capture_digest": capture.validator_capture.capture_digest,
+            "runtime_capture_digest": capture.runtime_capture.capture_digest,
+        }
+        with self.assertRaisesRegex(ValueError, "fact evidence bases must close every stamp"):
+            pipln_models.PeTTaChainerDerivedResultCapture(
+                **malformed_capture_values,
+                result_digest=pipln_models._canonical_hash(malformed_capture_payload),
+            )
         attribution = build_pettachainer_rule_attribution(capture)
         self.assertEqual(attribution.inference_rule, "TotalMP")
         self.assertEqual(attribution.rule_proof_id, rule.proof_id)
