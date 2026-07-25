@@ -765,12 +765,12 @@ class PeTTaChainerDerivedResultCapture:
             (self.fact_stamp_ints, self.fact_evidence_basis_ids, "fact"),
             (self.rule_stamp_ints, self.rule_evidence_basis_ids, "rule"),
         ):
-            if not stamps or tuple(sorted(set(stamps))) != stamps:
-                raise ValueError(f"{label} stamps must be non-empty, unique, and sorted")
+            if not isinstance(stamps, tuple) or not stamps or tuple(sorted(set(stamps))) != stamps:
+                raise ValueError(f"{label} stamps must be a non-empty sorted unique tuple")
             if any(isinstance(stamp, bool) or not isinstance(stamp, int) or stamp < 0 for stamp in stamps):
                 raise ValueError(f"{label} stamps must be non-negative integers")
-            if not bases or tuple(sorted(set(bases))) != bases:
-                raise ValueError(f"{label} evidence bases must be non-empty, unique, and sorted")
+            if not isinstance(bases, tuple) or not bases or tuple(sorted(set(bases))) != bases:
+                raise ValueError(f"{label} evidence bases must be a non-empty sorted unique tuple")
             if any(not isinstance(basis, str) or not basis.strip() for basis in bases):
                 raise ValueError(f"{label} evidence bases must be non-empty strings")
             if len(bases) != len(stamps):

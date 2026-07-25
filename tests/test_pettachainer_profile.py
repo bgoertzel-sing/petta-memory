@@ -2352,6 +2352,19 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
                 **malformed_capture_values,
                 result_digest=pipln_models._canonical_hash(malformed_capture_payload),
             )
+        list_capture_values = malformed_capture_values | {
+            "fact_evidence_basis_ids": list(capture.fact_evidence_basis_ids),
+        }
+        list_capture_payload = malformed_capture_payload | {
+            "fact_evidence_basis_ids": list(capture.fact_evidence_basis_ids),
+        }
+        with self.assertRaisesRegex(
+            ValueError, "fact evidence bases must be a non-empty sorted unique tuple"
+        ):
+            pipln_models.PeTTaChainerDerivedResultCapture(
+                **list_capture_values,
+                result_digest=pipln_models._canonical_hash(list_capture_payload),
+            )
         attribution = build_pettachainer_rule_attribution(capture)
         self.assertEqual(attribution.inference_rule, "TotalMP")
         self.assertEqual(attribution.rule_proof_id, rule.proof_id)
