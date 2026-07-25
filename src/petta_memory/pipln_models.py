@@ -785,6 +785,10 @@ class PeTTaChainerDerivedResultCapture:
             raise ValueError("fact and rule evidence bases must be disjoint")
         if not isinstance(self.validator_capture, PeTTaChainerStageCapture) or not isinstance(self.runtime_capture, PeTTaChainerStageCapture):
             raise ValueError("derived result requires typed validator and runtime captures")
+        if self.validator_capture.label != "validate_repaired_one_rule_derivation":
+            raise ValueError("derived result validator capture has the wrong stage label")
+        if self.runtime_capture.label != "repaired_one_rule_derivation":
+            raise ValueError("derived result runtime capture has the wrong stage label")
         expected_digest = _canonical_hash(_pettachainer_derived_result_payload(self))
         if self.result_digest != expected_digest:
             raise ValueError("PeTTaChainer derived result digest does not match typed content")

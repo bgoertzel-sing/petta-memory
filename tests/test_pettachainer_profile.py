@@ -2365,6 +2365,44 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
                 **list_capture_values,
                 result_digest=pipln_models._canonical_hash(list_capture_payload),
             )
+        for field, label, message in (
+            (
+                "validator_capture",
+                capture.runtime_capture.label,
+                "validator capture has the wrong stage label",
+            ),
+            (
+                "runtime_capture",
+                capture.validator_capture.label,
+                "runtime capture has the wrong stage label",
+            ),
+        ):
+            original = getattr(capture, field)
+            forged_capture = pipln_models.build_pettachainer_stage_capture(
+                label=label,
+                elapsed_seconds=original.elapsed_seconds,
+                stdout_bytes=original.stdout_bytes,
+                stdout_sha256=original.stdout_sha256,
+                stderr_bytes=original.stderr_bytes,
+                stderr_sha256=original.stderr_sha256,
+            )
+            forged = malformed_capture_values | {
+                "fact_evidence_basis_ids": capture.fact_evidence_basis_ids,
+                field: forged_capture,
+            }
+            payload = {
+                key: value
+                for key, value in forged.items()
+                if key not in {"validator_capture", "runtime_capture"}
+            } | {
+                "validator_capture_digest": forged["validator_capture"].capture_digest,
+                "runtime_capture_digest": forged["runtime_capture"].capture_digest,
+            }
+            with self.assertRaisesRegex(ValueError, message):
+                pipln_models.PeTTaChainerDerivedResultCapture(
+                    **forged,
+                    result_digest=pipln_models._canonical_hash(payload),
+                )
         same_sentence_capture = malformed_capture_values | {
             "fact_evidence_basis_ids": capture.fact_evidence_basis_ids,
             "rule_sentence_digest": capture.fact_sentence_digest,
