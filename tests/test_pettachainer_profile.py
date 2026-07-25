@@ -2580,8 +2580,12 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
                 clean_room.mkdir(mode=0o700)
                 reloaded_capture_path = clean_room / "derived-result.json"
                 reloaded_manifest_path = clean_room / "episode-manifest.json"
+                reloaded_attribution_path = clean_room / "rule-attribution.json"
                 write_pettachainer_derived_result_capture(reloaded_capture_path, capture)
                 write_pettachainer_episode_manifest(reloaded_manifest_path, manifest)
+                write_pettachainer_rule_attribution(
+                    reloaded_attribution_path, attribution,
+                )
 
                 reloaded_capture = read_pettachainer_derived_result_capture(
                     reloaded_capture_path, contract=contract,
@@ -2589,16 +2593,22 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
                 reloaded_manifest = read_pettachainer_episode_manifest(
                     reloaded_manifest_path, contract=contract, result=reloaded_capture,
                 )
+                reloaded_attribution = read_pettachainer_rule_attribution(
+                    reloaded_attribution_path, result=reloaded_capture,
+                )
                 self.assertEqual(reloaded_capture.derived_atom, capture.derived_atom)
                 self.assertEqual(reloaded_capture.query_term, "(T a)")
                 self.assertEqual(reloaded_manifest.result_classification,
                                  "compiler-bound-one-rule-derived-result")
                 self.assertFalse(reloaded_manifest.promotion_authorized)
+                self.assertEqual(reloaded_attribution.inference_rule, "TotalMP")
+                self.assertFalse(reloaded_attribution.runtime_trace_decoded)
                 reload_identities.append((
                     reloaded_capture.result_digest,
                     reloaded_capture.validator_capture.capture_digest,
                     reloaded_capture.runtime_capture.capture_digest,
                     reloaded_manifest.manifest_digest,
+                    reloaded_attribution.attribution_digest,
                 ))
 
                 with self.assertRaisesRegex(
@@ -2612,6 +2622,18 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
                 ):
                     read_pettachainer_episode_manifest(
                         reloaded_capture_path, contract=contract, result=reloaded_capture,
+                    )
+                with self.assertRaisesRegex(
+                    ValueError, "rule attribution document schema",
+                ):
+                    read_pettachainer_rule_attribution(
+                        reloaded_manifest_path, result=reloaded_capture,
+                    )
+                with self.assertRaisesRegex(
+                    ValueError, "derived result capture document schema",
+                ):
+                    read_pettachainer_derived_result_capture(
+                        reloaded_attribution_path, contract=contract,
                     )
                 with self.assertRaisesRegex(ValueError, "input provenance mismatch"):
                     read_pettachainer_episode_manifest(
