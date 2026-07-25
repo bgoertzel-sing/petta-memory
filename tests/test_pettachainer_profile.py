@@ -2365,6 +2365,24 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
                 **list_capture_values,
                 result_digest=pipln_models._canonical_hash(list_capture_payload),
             )
+        same_sentence_capture = malformed_capture_values | {
+            "fact_evidence_basis_ids": capture.fact_evidence_basis_ids,
+            "rule_sentence_digest": capture.fact_sentence_digest,
+            "rule_proof_id": capture.fact_proof_id,
+        }
+        same_sentence_payload = {
+            key: value
+            for key, value in same_sentence_capture.items()
+            if key not in {"validator_capture", "runtime_capture"}
+        } | {
+            "validator_capture_digest": capture.validator_capture.capture_digest,
+            "runtime_capture_digest": capture.runtime_capture.capture_digest,
+        }
+        with self.assertRaisesRegex(ValueError, "fact and rule sentence digests must be distinct"):
+            pipln_models.PeTTaChainerDerivedResultCapture(
+                **same_sentence_capture,
+                result_digest=pipln_models._canonical_hash(same_sentence_payload),
+            )
         for field, malformed, message in (
             ("rule_stamp_ints", capture.fact_stamp_ints, "fact and rule stamps must be disjoint"),
             (
@@ -2408,6 +2426,17 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
             for field in attribution.__dataclass_fields__
             if field != "attribution_digest"
         }
+        same_sentence_attribution = attribution_values | {
+            "rule_sentence_digest": attribution.fact_sentence_digest,
+            "rule_proof_id": attribution.fact_proof_id,
+        }
+        same_sentence_attribution["attribution_digest"] = pipln_models._canonical_hash(
+            same_sentence_attribution
+        )
+        with self.assertRaisesRegex(
+            ValueError, "fact and rule attribution sentence digests must be distinct"
+        ):
+            pipln_models.PeTTaChainerRuleAttribution(**same_sentence_attribution)
         for field, malformed, message in (
             ("rule_stamp_ints", (), "rule attribution stamps"),
             ("rule_stamp_ints", (2, 1), "rule attribution stamps"),

@@ -750,6 +750,10 @@ class PeTTaChainerDerivedResultCapture:
             raise ValueError("fact proof id does not match its sentence digest")
         if self.rule_proof_id != f"pm-{self.rule_sentence_digest}":
             raise ValueError("rule proof id does not match its sentence digest")
+        if self.fact_sentence_digest == self.rule_sentence_digest:
+            raise ValueError("fact and rule sentence digests must be distinct")
+        if self.fact_proof_id == self.rule_proof_id:
+            raise ValueError("fact and rule proof ids must be distinct")
         if _canonical_kernel_term(self.query_term) != self.query_term:
             raise ValueError("PeTTaChainer derived query term is not canonical")
         expected_proof = f"(rule-proof {self.rule_proof_id} {self.fact_proof_id})"
@@ -824,6 +828,10 @@ class PeTTaChainerRuleAttribution:
             _sha256_digest(digest, f"{label}_sentence_digest")
             if proof_id != f"pm-{digest}":
                 raise ValueError(f"{label} proof id does not match sentence digest")
+        if self.fact_sentence_digest == self.rule_sentence_digest:
+            raise ValueError("fact and rule attribution sentence digests must be distinct")
+        if self.fact_proof_id == self.rule_proof_id:
+            raise ValueError("fact and rule attribution proof ids must be distinct")
         for stamps, bases, label in (
             (self.rule_stamp_ints, self.rule_evidence_basis_ids, "rule"),
             (self.fact_stamp_ints, self.fact_evidence_basis_ids, "fact"),
