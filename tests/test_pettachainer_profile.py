@@ -19,10 +19,12 @@ from petta_memory.pipln_models import (
     PeTTaChainerInputStatement,
     build_pettachainer_episode_manifest,
     build_pettachainer_rule_attribution,
+    read_pettachainer_rule_attribution,
     read_pettachainer_episode_manifest,
     read_pettachainer_derived_result_capture,
     write_pettachainer_derived_result_capture,
     write_pettachainer_episode_manifest,
+    write_pettachainer_rule_attribution,
 )
 from petta_memory.pettachainer_profile import _run_isolated_stage, build_profile_store, build_promoted_cluster
 
@@ -2522,6 +2524,31 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "derived-result.json"
             manifest_path = Path(directory) / "episode-manifest.json"
+            attribution_path = Path(directory) / "rule-attribution.json"
+            write_pettachainer_rule_attribution(attribution_path, attribution)
+            self.assertEqual(
+                read_pettachainer_rule_attribution(
+                    attribution_path, result=capture,
+                ),
+                attribution,
+            )
+            with self.assertRaises(FileExistsError):
+                write_pettachainer_rule_attribution(attribution_path, attribution)
+            changed_gate = json.loads(json.dumps(gate))
+            changed_gate["runtime_gate"]["runtime_event"]["query_answer_items"] = [
+                f"(: {proof} (T a) (STV 0.5 0.52))"
+            ]
+            changed_gate["runtime_gate"]["runtime_event"]["expected_truth_value"] = [
+                0.5, 0.52,
+            ]
+            changed_capture = profile.build_repaired_pettachainer_rule_episode_capture(
+                contract, changed_gate,
+            )
+            with self.assertRaisesRegex(ValueError, "does not match derived result"):
+                read_pettachainer_rule_attribution(
+                    attribution_path,
+                    result=changed_capture,
+                )
             with (patch("petta_memory.pipln_models.os.fsync", wraps=os.fsync) as fsync,
                   patch("petta_memory.pipln_models.os.open", wraps=os.open) as open_file):
                 write_pettachainer_episode_manifest(manifest_path, manifest)

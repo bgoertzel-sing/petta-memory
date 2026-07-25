@@ -888,6 +888,78 @@ def build_pettachainer_rule_attribution(
     )
 
 
+def pettachainer_rule_attribution_document(
+    attribution: PeTTaChainerRuleAttribution,
+) -> dict[str, object]:
+    """Return a checksummed persistence envelope for compiler-bound attribution."""
+    if not isinstance(attribution, PeTTaChainerRuleAttribution):
+        raise ValueError("rule attribution document requires typed attribution")
+    payload = {
+        field: getattr(attribution, field)
+        for field in attribution.__dataclass_fields__
+    }
+    for field in (
+        "rule_stamp_ints", "rule_evidence_basis_ids",
+        "fact_stamp_ints", "fact_evidence_basis_ids",
+    ):
+        payload[field] = list(payload[field])
+    return {
+        "schema": "petta-memory-pettachainer-rule-attribution-v1",
+        "payload": payload,
+        "document_digest": _canonical_hash(payload),
+    }
+
+
+def write_pettachainer_rule_attribution(
+    path: str | Path,
+    attribution: PeTTaChainerRuleAttribution,
+) -> None:
+    """Create one immutable rule-attribution artifact; never replace it."""
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    data = json.dumps(
+        pettachainer_rule_attribution_document(attribution),
+        sort_keys=True,
+        indent=2,
+    ) + "\n"
+    _write_create_once_durable(destination, data)
+
+
+def read_pettachainer_rule_attribution(
+    path: str | Path,
+    *,
+    result: PeTTaChainerDerivedResultCapture,
+) -> PeTTaChainerRuleAttribution:
+    """Reload attribution and close it against one admitted derived capture."""
+    if not isinstance(result, PeTTaChainerDerivedResultCapture):
+        raise ValueError("rule attribution reload requires a typed derived result")
+    document = _load_unambiguous_json(path)
+    schema = "petta-memory-pettachainer-rule-attribution-v1"
+    if (not isinstance(document, dict)
+            or set(document) != {"schema", "payload", "document_digest"}
+            or document.get("schema") != schema):
+        raise ValueError("invalid PeTTaChainer rule attribution document schema")
+    payload = document.get("payload")
+    if not isinstance(payload, dict) or document.get("document_digest") != _canonical_hash(payload):
+        raise ValueError("PeTTaChainer rule attribution document checksum mismatch")
+    expected_fields = set(PeTTaChainerRuleAttribution.__dataclass_fields__)
+    list_fields = {
+        "rule_stamp_ints", "rule_evidence_basis_ids",
+        "fact_stamp_ints", "fact_evidence_basis_ids",
+    }
+    if (set(payload) != expected_fields
+            or any(not isinstance(payload[field], list) for field in list_fields)):
+        raise ValueError("invalid PeTTaChainer rule attribution payload")
+    values = dict(payload)
+    for field in list_fields:
+        values[field] = tuple(payload[field])
+    attribution = PeTTaChainerRuleAttribution(**values)
+    expected = build_pettachainer_rule_attribution(result)
+    if attribution != expected:
+        raise ValueError("PeTTaChainer rule attribution does not match derived result")
+    return attribution
+
+
 def _pettachainer_derived_result_payload(result: PeTTaChainerDerivedResultCapture) -> dict[str, object]:
     return {
         field: getattr(result, field)
