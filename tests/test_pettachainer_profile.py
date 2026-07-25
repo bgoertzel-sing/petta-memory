@@ -2499,6 +2499,7 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         manifest_kwargs = {
             "contract": contract,
             "result": capture,
+            "attribution": attribution,
             "kernel_name": "PeTTaChainer",
             "kernel_version": "e4db5ca+single-import-repair",
             "kernel_capabilities_cid": "1" * 64,
@@ -2512,6 +2513,7 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         }
         manifest = build_pettachainer_episode_manifest(**manifest_kwargs)
         self.assertEqual(manifest.result_cid, capture.result_digest)
+        self.assertEqual(manifest.attribution_cid, attribution.attribution_digest)
         self.assertEqual(manifest.runtime_capture_cid, capture.runtime_capture.capture_digest)
         self.assertFalse(manifest.promotion_authorized)
         self.assertEqual(
@@ -2559,9 +2561,17 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
             self.assertEqual(
                 read_pettachainer_episode_manifest(
                     manifest_path, contract=contract, result=capture,
+                    attribution=attribution,
                 ),
                 manifest,
             )
+            with self.assertRaisesRegex(ValueError, "input provenance mismatch"):
+                read_pettachainer_episode_manifest(
+                    manifest_path,
+                    contract=contract,
+                    result=changed_capture,
+                    attribution=build_pettachainer_rule_attribution(changed_capture),
+                )
             with self.assertRaises(FileExistsError):
                 write_pettachainer_episode_manifest(manifest_path, manifest)
             with patch("petta_memory.pipln_models.os.fsync", wraps=os.fsync) as fsync:
@@ -2590,11 +2600,12 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
                 reloaded_capture = read_pettachainer_derived_result_capture(
                     reloaded_capture_path, contract=contract,
                 )
-                reloaded_manifest = read_pettachainer_episode_manifest(
-                    reloaded_manifest_path, contract=contract, result=reloaded_capture,
-                )
                 reloaded_attribution = read_pettachainer_rule_attribution(
                     reloaded_attribution_path, result=reloaded_capture,
+                )
+                reloaded_manifest = read_pettachainer_episode_manifest(
+                    reloaded_manifest_path, contract=contract, result=reloaded_capture,
+                    attribution=reloaded_attribution,
                 )
                 self.assertEqual(reloaded_capture.derived_atom, capture.derived_atom)
                 self.assertEqual(reloaded_capture.query_term, "(T a)")
@@ -2622,6 +2633,7 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
                 ):
                     read_pettachainer_episode_manifest(
                         reloaded_capture_path, contract=contract, result=reloaded_capture,
+                        attribution=reloaded_attribution,
                     )
                 with self.assertRaisesRegex(
                     ValueError, "rule attribution document schema",
@@ -2640,6 +2652,7 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
                         reloaded_manifest_path,
                         contract=self.episode_contract(),
                         result=reloaded_capture,
+                        attribution=reloaded_attribution,
                     )
 
             self.assertEqual(reload_identities[0], reload_identities[1])
@@ -2989,6 +3002,7 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "duplicate JSON object member: schema"):
                 read_pettachainer_episode_manifest(
                     manifest_path, contract=contract, result=capture,
+                    attribution=attribution,
                 )
             manifest_path.write_text(manifest_text, encoding="utf-8")
 
@@ -3009,6 +3023,7 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "exceeds 1000000 byte limit"):
                 read_pettachainer_episode_manifest(
                     manifest_path, contract=contract, result=capture,
+                    attribution=attribution,
                 )
             manifest_path.write_text(manifest_text, encoding="utf-8")
 
@@ -3022,6 +3037,7 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
             with self.assertRaises(OSError):
                 read_pettachainer_episode_manifest(
                     manifest_link, contract=contract, result=capture,
+                    attribution=attribution,
                 )
             capture_link = Path(directory) / "derived-result-link.json"
             capture_link.symlink_to(path)
@@ -3085,6 +3101,7 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "input provenance mismatch"):
                 read_pettachainer_episode_manifest(
                     manifest_path, contract=drifted_contract, result=capture,
+                    attribution=attribution,
                 )
 
             manifest_document = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -3093,6 +3110,7 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "checksum mismatch"):
                 read_pettachainer_episode_manifest(
                     manifest_path, contract=contract, result=capture,
+                    attribution=attribution,
                 )
 
             document = json.loads(path.read_text(encoding="utf-8"))

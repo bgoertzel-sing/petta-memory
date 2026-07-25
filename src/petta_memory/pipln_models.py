@@ -1237,6 +1237,7 @@ class PeTTaChainerEpisodeManifest:
     chart_fingerprint: str
     contract_cid: str
     result_cid: str
+    attribution_cid: str
     validator_capture_cid: str
     runtime_capture_cid: str
     kernel_name: str
@@ -1261,6 +1262,7 @@ class PeTTaChainerEpisodeManifest:
             _nonempty(getattr(self, field), field)
         for field in (
             "chart_fingerprint", "contract_cid", "result_cid",
+            "attribution_cid",
             "validator_capture_cid", "runtime_capture_cid",
             "kernel_capabilities_cid", "repaired_source_cid",
             "controller_envelope_cid", "manifest_digest",
@@ -1323,6 +1325,7 @@ def _pettachainer_episode_manifest_payload(
 def build_pettachainer_episode_manifest(
     *, contract: PeTTaChainerEpisodeContract,
     result: PeTTaChainerDerivedResultCapture,
+    attribution: PeTTaChainerRuleAttribution,
     kernel_name: str,
     kernel_version: str,
     kernel_capabilities_cid: str,
@@ -1339,6 +1342,10 @@ def build_pettachainer_episode_manifest(
         raise ValueError("contract must be an immutable PeTTaChainer episode contract")
     if not isinstance(result, PeTTaChainerDerivedResultCapture):
         raise ValueError("result must be a typed PeTTaChainer derived capture")
+    if (not isinstance(attribution, PeTTaChainerRuleAttribution)
+            or attribution.result_digest != result.result_digest
+            or attribution != build_pettachainer_rule_attribution(result)):
+        raise ValueError("attribution must close against the PeTTaChainer derived capture")
     statements = {statement.sentence_digest: statement for statement in contract.statements}
     fact = statements.get(result.fact_sentence_digest)
     rule = statements.get(result.rule_sentence_digest)
@@ -1362,6 +1369,7 @@ def build_pettachainer_episode_manifest(
         "chart_fingerprint": contract.chart_fingerprint,
         "contract_cid": _canonical_hash(_pettachainer_contract_payload(contract)),
         "result_cid": result.result_digest,
+        "attribution_cid": attribution.attribution_digest,
         "validator_capture_cid": result.validator_capture.capture_digest,
         "runtime_capture_cid": result.runtime_capture.capture_digest,
         "kernel_name": kernel_name,
@@ -1392,7 +1400,7 @@ def pettachainer_episode_manifest_document(
     """Return a checksummed document for one non-promoting manifest."""
     payload = _pettachainer_episode_manifest_payload(manifest)
     return {
-        "schema": "petta-memory-pettachainer-episode-manifest-v1",
+        "schema": "petta-memory-pettachainer-episode-manifest-v2",
         "payload": payload,
         "document_digest": _canonical_hash(payload),
     }
@@ -1413,13 +1421,14 @@ def write_pettachainer_episode_manifest(
 def read_pettachainer_episode_manifest(
     path: str | Path, *, contract: PeTTaChainerEpisodeContract,
     result: PeTTaChainerDerivedResultCapture,
+    attribution: PeTTaChainerRuleAttribution,
 ) -> PeTTaChainerEpisodeManifest:
     """Reload a checksummed manifest and close it against its typed inputs."""
     document = _load_unambiguous_json(path)
     if (not isinstance(document, dict)
             or set(document) != {"schema", "payload", "document_digest"}
             or document.get("schema")
-            != "petta-memory-pettachainer-episode-manifest-v1"):
+            != "petta-memory-pettachainer-episode-manifest-v2"):
         raise ValueError("invalid PeTTaChainer episode manifest document schema")
     payload = document.get("payload")
     if not isinstance(payload, dict) or document.get("document_digest") != _canonical_hash(payload):
@@ -1434,11 +1443,16 @@ def read_pettachainer_episode_manifest(
         raise ValueError("contract must be an immutable PeTTaChainer episode contract")
     if not isinstance(result, PeTTaChainerDerivedResultCapture):
         raise ValueError("result must be a typed PeTTaChainer derived capture")
+    if (not isinstance(attribution, PeTTaChainerRuleAttribution)
+            or attribution.result_digest != result.result_digest
+            or attribution != build_pettachainer_rule_attribution(result)):
+        raise ValueError("attribution must close against the PeTTaChainer derived capture")
     expected_contract_cid = _canonical_hash(_pettachainer_contract_payload(contract))
     if (payload["episode_id"] != contract.episode_id
             or payload["chart_fingerprint"] != contract.chart_fingerprint
             or payload["contract_cid"] != expected_contract_cid
             or payload["result_cid"] != result.result_digest
+            or payload["attribution_cid"] != attribution.attribution_digest
             or payload["validator_capture_cid"] != result.validator_capture.capture_digest
             or payload["runtime_capture_cid"] != result.runtime_capture.capture_digest):
         raise ValueError("PeTTaChainer episode manifest input provenance mismatch")
