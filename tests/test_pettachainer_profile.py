@@ -2551,6 +2551,31 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
                     attribution_path,
                     result=changed_capture,
                 )
+            original_attribution_text = attribution_path.read_text(encoding="utf-8")
+            attribution_document = json.loads(original_attribution_text)
+            attribution_payload = attribution_document["payload"]
+            attribution_payload["result_digest"] = changed_capture.result_digest
+            attribution_digest_payload = {
+                key: value
+                for key, value in attribution_payload.items()
+                if key != "attribution_digest"
+            }
+            attribution_payload["attribution_digest"] = pipln_models._canonical_hash(
+                attribution_digest_payload
+            )
+            attribution_document["document_digest"] = pipln_models._canonical_hash(
+                attribution_payload
+            )
+            attribution_path.write_text(
+                json.dumps(attribution_document, sort_keys=True, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "does not match derived result"):
+                read_pettachainer_rule_attribution(
+                    attribution_path,
+                    result=capture,
+                )
+            attribution_path.write_text(original_attribution_text, encoding="utf-8")
             with (patch("petta_memory.pipln_models.os.fsync", wraps=os.fsync) as fsync,
                   patch("petta_memory.pipln_models.os.open", wraps=os.open) as open_file):
                 write_pettachainer_episode_manifest(manifest_path, manifest)
