@@ -2650,6 +2650,32 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
                     attribution=attribution,
                 )
             manifest_path.write_text(original_manifest_text, encoding="utf-8")
+            manifest_document = json.loads(original_manifest_text)
+            manifest_document["payload"]["contract_cid"] = "5" * 64
+            manifest_payload = manifest_document["payload"]
+            digest_payload = {
+                key: value
+                for key, value in manifest_payload.items()
+                if key != "manifest_digest"
+            }
+            manifest_payload["manifest_digest"] = pipln_models._canonical_hash(
+                digest_payload
+            )
+            manifest_document["document_digest"] = pipln_models._canonical_hash(
+                manifest_payload
+            )
+            manifest_path.write_text(
+                json.dumps(manifest_document, sort_keys=True, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "input provenance mismatch"):
+                read_pettachainer_episode_manifest(
+                    manifest_path,
+                    contract=contract,
+                    result=capture,
+                    attribution=attribution,
+                )
+            manifest_path.write_text(original_manifest_text, encoding="utf-8")
             with self.assertRaises(FileExistsError):
                 write_pettachainer_episode_manifest(manifest_path, manifest)
             with patch("petta_memory.pipln_models.os.fsync", wraps=os.fsync) as fsync:
