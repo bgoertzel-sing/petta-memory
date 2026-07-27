@@ -96,8 +96,20 @@ python3 - "$output_dir" <<'PY'
 import hashlib, json, sys
 from pathlib import Path
 root = Path(sys.argv[1])
-names = ["journal.metta", "index.metta", "retrieval.metta", "inference.json", "read_only_canary.metta"]
+names = [
+    "journal.metta",
+    "index.metta",
+    "retrieval.metta",
+    "retrieval.after-restart.metta",
+    "inference.json",
+    "read_only_canary.metta",
+]
 summary = {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in names}
+inference = json.loads((root / "inference.json").read_text(encoding="utf-8"))
+summary["inference_status"] = inference["status"]
+summary["retrieval_restart_byte_identical"] = (
+    summary["retrieval.metta"] == summary["retrieval.after-restart.metta"]
+)
 summary["journal_unchanged_by_canary"] = True
 (root / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY

@@ -1,4 +1,5 @@
 import os
+import json
 import subprocess
 import tempfile
 import unittest
@@ -38,6 +39,16 @@ class ProviderFreeUsabilityGateTests(unittest.TestCase):
                         0o600,
                         artifact.name,
                     )
+            summary = json.loads(
+                (output / "summary.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(summary["inference_status"], "passed")
+            self.assertTrue(summary["retrieval_restart_byte_identical"])
+            self.assertTrue(summary["journal_unchanged_by_canary"])
+            self.assertEqual(
+                summary["retrieval.metta"],
+                summary["retrieval.after-restart.metta"],
+            )
 
     def test_existing_output_directory_is_rejected_without_mutation(self):
         with tempfile.TemporaryDirectory() as td:
