@@ -106,6 +106,13 @@ names = [
 ]
 summary = {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in names}
 inference = json.loads((root / "inference.json").read_text(encoding="utf-8"))
+summary["schema_version"] = "petta-memory-provider-free-usability-summary-v1"
+summary["artifact_names"] = names + [
+    "journal.metta.lock",
+    "journal.after-ingest.sha256",
+    "journal.after-canary.sha256",
+    "summary.json",
+]
 summary["inference_status"] = inference["status"]
 summary["retrieval_restart_byte_identical"] = (
     summary["retrieval.metta"] == summary["retrieval.after-restart.metta"]

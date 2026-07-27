@@ -42,6 +42,27 @@ class ProviderFreeUsabilityGateTests(unittest.TestCase):
             summary = json.loads(
                 (output / "summary.json").read_text(encoding="utf-8")
             )
+            expected_artifacts = [
+                "journal.metta",
+                "index.metta",
+                "retrieval.metta",
+                "retrieval.after-restart.metta",
+                "inference.json",
+                "read_only_canary.metta",
+                "journal.metta.lock",
+                "journal.after-ingest.sha256",
+                "journal.after-canary.sha256",
+                "summary.json",
+            ]
+            self.assertEqual(
+                summary["schema_version"],
+                "petta-memory-provider-free-usability-summary-v1",
+            )
+            self.assertEqual(summary["artifact_names"], expected_artifacts)
+            self.assertEqual(
+                set(output.iterdir()),
+                {output / name for name in expected_artifacts},
+            )
             self.assertEqual(summary["inference_status"], "passed")
             self.assertTrue(summary["retrieval_restart_byte_identical"])
             self.assertTrue(summary["journal_unchanged_by_canary"])
