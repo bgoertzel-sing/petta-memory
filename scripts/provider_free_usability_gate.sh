@@ -4,7 +4,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 output_dir="${1:?usage: provider_free_usability_gate.sh OUTPUT_DIR}"
-if [[ -e "$output_dir" ]]; then
+if [[ -e "$output_dir" || -L "$output_dir" ]]; then
   echo "refusing to overwrite existing output directory: $output_dir" >&2
   exit 2
 fi
