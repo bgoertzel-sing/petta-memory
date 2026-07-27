@@ -111,6 +111,28 @@ class ProviderFreeUsabilityGateTests(unittest.TestCase):
             self.assertFalse(output.exists())
             self.assertEqual(list(target_parent.iterdir()), [])
 
+    def test_missing_output_parent_is_rejected_without_creating_it(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            missing_parent = root / "must-not-be-created"
+            output = missing_parent / "new-output"
+
+            result = subprocess.run(
+                [os.fspath(GATE), os.fspath(output)],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(result.stdout, "")
+            self.assertIn(
+                "refusing missing or non-directory output parent",
+                result.stderr,
+            )
+            self.assertFalse(missing_parent.exists())
+            self.assertEqual(list(root.iterdir()), [])
+
 
 if __name__ == "__main__":
     unittest.main()

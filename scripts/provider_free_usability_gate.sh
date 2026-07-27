@@ -19,8 +19,14 @@ for parent in output.parents:
     if parent.is_symlink():
         print(f"refusing symlinked output parent: {parent}", file=sys.stderr)
         raise SystemExit(2)
+if not output.parent.is_dir():
+    print(
+        f"refusing missing or non-directory output parent: {output.parent}",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
 PY
-mkdir -p "$output_dir"
+mkdir -- "$output_dir"
 export PYTHONPATH="$repo_root/src"
 
 python3 - "$repo_root" "$output_dir" <<'PY'
