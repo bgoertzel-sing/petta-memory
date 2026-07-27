@@ -45,6 +45,9 @@ class ProviderFreeUsabilityGateTests(unittest.TestCase):
             self.assertEqual(summary["inference_status"], "passed")
             self.assertTrue(summary["retrieval_restart_byte_identical"])
             self.assertTrue(summary["journal_unchanged_by_canary"])
+            self.assertEqual(summary["canary_mode"], "read-only")
+            self.assertIs(summary["autonomous_writes_enabled"], False)
+            self.assertIs(summary["promotion_authorized"], False)
             self.assertEqual(
                 summary["retrieval.metta"],
                 summary["retrieval.after-restart.metta"],

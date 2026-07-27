@@ -111,5 +111,8 @@ summary["retrieval_restart_byte_identical"] = (
     summary["retrieval.metta"] == summary["retrieval.after-restart.metta"]
 )
 summary["journal_unchanged_by_canary"] = True
+summary["canary_mode"] = "read-only"
+summary["autonomous_writes_enabled"] = False
+summary["promotion_authorized"] = False
 (root / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
