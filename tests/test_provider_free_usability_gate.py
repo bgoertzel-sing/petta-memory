@@ -59,6 +59,29 @@ class ProviderFreeUsabilityGateTests(unittest.TestCase):
             self.assertEqual(os.readlink(output), before_link)
             self.assertFalse(missing_target.exists())
 
+    def test_symlinked_output_parent_is_rejected_without_mutation(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            target_parent = root / "operator-selected-parent"
+            target_parent.mkdir()
+            parent_alias = root / "parent-alias"
+            parent_alias.symlink_to(target_parent, target_is_directory=True)
+            output = parent_alias / "new-output"
+
+            result = subprocess.run(
+                [os.fspath(GATE), os.fspath(output)],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(result.stdout, "")
+            self.assertIn("refusing symlinked output parent", result.stderr)
+            self.assertTrue(parent_alias.is_symlink())
+            self.assertFalse(output.exists())
+            self.assertEqual(list(target_parent.iterdir()), [])
+
 
 if __name__ == "__main__":
     unittest.main()

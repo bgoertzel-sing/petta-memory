@@ -8,6 +8,17 @@ if [[ -e "$output_dir" || -L "$output_dir" ]]; then
   echo "refusing to overwrite existing output directory: $output_dir" >&2
   exit 2
 fi
+python3 - "$output_dir" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+output = Path(os.path.abspath(sys.argv[1]))
+for parent in output.parents:
+    if parent.is_symlink():
+        print(f"refusing symlinked output parent: {parent}", file=sys.stderr)
+        raise SystemExit(2)
+PY
 mkdir -p "$output_dir"
 export PYTHONPATH="$repo_root/src"
 
