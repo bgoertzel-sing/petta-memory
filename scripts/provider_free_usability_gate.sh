@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Provider-free, non-live usability gate.  All writes stay below OUTPUT_DIR.
 set -euo pipefail
+umask 077
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 output_dir="${1:?usage: provider_free_usability_gate.sh OUTPUT_DIR}"

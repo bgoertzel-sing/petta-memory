@@ -10,6 +10,35 @@ GATE = ROOT / "scripts" / "provider_free_usability_gate.sh"
 
 
 class ProviderFreeUsabilityGateTests(unittest.TestCase):
+    def test_new_output_directory_is_private_despite_permissive_caller_umask(self):
+        with tempfile.TemporaryDirectory() as td:
+            output = Path(td) / "private-output"
+
+            result = subprocess.run(
+                [
+                    "/bin/sh",
+                    "-c",
+                    'umask 000; exec "$1" "$2"',
+                    "provider-free-usability-test",
+                    os.fspath(GATE),
+                    os.fspath(output),
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(output.is_dir())
+            self.assertEqual(output.stat().st_mode & 0o777, 0o700)
+            for artifact in output.iterdir():
+                if artifact.is_file():
+                    self.assertEqual(
+                        artifact.stat().st_mode & 0o777,
+                        0o600,
+                        artifact.name,
+                    )
+
     def test_existing_output_directory_is_rejected_without_mutation(self):
         with tempfile.TemporaryDirectory() as td:
             output = Path(td) / "existing"
