@@ -1,4 +1,5 @@
 import os
+import hashlib
 import json
 import subprocess
 import tempfile
@@ -56,9 +57,20 @@ class ProviderFreeUsabilityGateTests(unittest.TestCase):
             ]
             self.assertEqual(
                 summary["schema_version"],
-                "petta-memory-provider-free-usability-summary-v1",
+                "petta-memory-provider-free-usability-summary-v2",
             )
             self.assertEqual(summary["artifact_names"], expected_artifacts)
+            digest_bound_artifacts = set(expected_artifacts) - {"summary.json"}
+            self.assertEqual(
+                digest_bound_artifacts,
+                digest_bound_artifacts & summary.keys(),
+            )
+            for name in digest_bound_artifacts:
+                self.assertEqual(
+                    summary[name],
+                    hashlib.sha256((output / name).read_bytes()).hexdigest(),
+                    name,
+                )
             self.assertEqual(
                 set(output.iterdir()),
                 {output / name for name in expected_artifacts},
