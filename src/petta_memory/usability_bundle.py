@@ -124,9 +124,12 @@ def validate_provider_free_usability_bundle(root: Path | str) -> dict[str, Any]:
         or classification["error_markers"] != 0
         or not isinstance(semantic_markers, dict)
         or semantic_markers.get("semantic_passed") is not True
+        or type(semantic_markers.get("passed_true_count")) is not int
         or semantic_markers.get("passed_true_count")
         != classification["passed_true_count"]
+        or type(semantic_markers.get("passed_false_count")) is not int
         or semantic_markers.get("passed_false_count") != 0
+        or type(semantic_markers.get("error_markers")) is not int
         or semantic_markers.get("error_markers") != 0
     ):
         raise ValueError("inference result does not prove a passed derivation")
