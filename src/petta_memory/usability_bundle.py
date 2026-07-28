@@ -48,6 +48,19 @@ def _read_regular_file(path: Path) -> bytes:
     return path.read_bytes()
 
 
+def _read_unambiguous_json_object(path: Path, *, label: str) -> dict[str, Any]:
+    try:
+        value = json.loads(
+            _read_regular_file(path).decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_members,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"bundle {label} is not unambiguous UTF-8 JSON") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"bundle {label} must be a JSON object")
+    return value
+
+
 def validate_provider_free_usability_bundle(root: Path | str) -> dict[str, Any]:
     """Validate and return the frozen schema-v2 summary without writing."""
 
@@ -58,15 +71,9 @@ def validate_provider_free_usability_bundle(root: Path | str) -> dict[str, Any]:
     if actual_names != tuple(sorted(ARTIFACT_NAMES)):
         raise ValueError("bundle artifact inventory does not match schema v2")
 
-    try:
-        summary = json.loads(
-            _read_regular_file(bundle / "summary.json").decode("utf-8"),
-            object_pairs_hook=_reject_duplicate_members,
-        )
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError("bundle summary is not unambiguous UTF-8 JSON") from exc
-    if not isinstance(summary, dict):
-        raise ValueError("bundle summary must be a JSON object")
+    summary = _read_unambiguous_json_object(
+        bundle / "summary.json", label="summary"
+    )
     if summary.keys() != _SUMMARY_NAMES:
         raise ValueError("bundle summary members do not match schema v2")
     if summary.get("schema_version") != SCHEMA_VERSION:
@@ -93,6 +100,11 @@ def validate_provider_free_usability_bundle(root: Path | str) -> dict[str, Any]:
     for key, value in required_claims.items():
         if summary.get(key) != value or type(summary.get(key)) is not type(value):
             raise ValueError(f"unsafe or unsupported bundle claim: {key}")
+    inference = _read_unambiguous_json_object(
+        bundle / "inference.json", label="inference result"
+    )
+    if inference.get("status") != summary["inference_status"]:
+        raise ValueError("inference result status does not match summary")
     if summary["retrieval.metta"] != summary["retrieval.after-restart.metta"]:
         raise ValueError("restart retrieval digests differ")
     journal_digest = summary["journal.metta"]
