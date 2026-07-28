@@ -42,6 +42,15 @@ _INFERENCE_SCHEMA = "petta-memory-patham9-pln-derivation-smoke-result-v1"
 _INFERENCE_TEST = "patham9-pln-handoff-derivation-smoke"
 _PROGRAM_SCHEMA = "petta-memory-patham9-pln-derivation-smoke-program-v1"
 _PROGRAM_MODE = "read-only-two-premise-derivation-smoke"
+_PROGRAM_BOUNDARY = (
+    "loads one generated Sentence plus one synthetic bridge implication into local "
+    "patham9/PLN for a bounded derivation smoke; no memory append, no inferred-belief "
+    "promotion, no OmegaClaw/GoalChainer live path"
+)
+_RUNTIME_STAMP_POLICY = (
+    "numeric patham9/PLN stamps used for chainer compatibility; source evidence and "
+    "synthetic bridge provenance preserved in sidecar"
+)
 _INFERENCE_NAMES = frozenset(
     (
         "classification",
@@ -168,6 +177,8 @@ def validate_provider_free_usability_bundle(root: Path | str) -> dict[str, Any]:
         or program.keys() != _PROGRAM_NAMES
         or program.get("schema") != _PROGRAM_SCHEMA
         or program.get("mode") != _PROGRAM_MODE
+        or program.get("boundary") != _PROGRAM_BOUNDARY
+        or program.get("runtime_stamp_policy") != _RUNTIME_STAMP_POLICY
         or not isinstance(classification, dict)
         or classification.keys() != _CLASSIFICATION_NAMES
         or classification.get("test") != _INFERENCE_TEST
