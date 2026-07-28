@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,9 @@ _CLAIM_NAMES = (
 )
 _SUMMARY_NAMES = frozenset(
     (*_DIGEST_NAMES, "schema_version", "artifact_names", *_CLAIM_NAMES)
+)
+_SHA256_SIDECAR = re.compile(
+    rb"^(?P<digest>[0-9a-f]{64})  (?P<path>(?:[^\r\n]*/)?)journal\.metta\n$"
 )
 
 
@@ -91,6 +95,11 @@ def validate_provider_free_usability_bundle(root: Path | str) -> dict[str, Any]:
             raise ValueError(f"unsafe or unsupported bundle claim: {key}")
     if summary["retrieval.metta"] != summary["retrieval.after-restart.metta"]:
         raise ValueError("restart retrieval digests differ")
+    journal_digest = summary["journal.metta"]
+    for name in ("journal.after-ingest.sha256", "journal.after-canary.sha256"):
+        match = _SHA256_SIDECAR.fullmatch(_read_regular_file(bundle / name))
+        if match is None or match.group("digest").decode("ascii") != journal_digest:
+            raise ValueError(f"journal checksum sidecar does not match journal: {name}")
     return summary
 
 

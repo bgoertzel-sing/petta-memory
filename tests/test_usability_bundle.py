@@ -17,6 +17,12 @@ class UsabilityBundleTests(unittest.TestCase):
         bundle.mkdir()
         for name in ARTIFACT_NAMES[:-1]:
             (bundle / name).write_bytes((name + "\n").encode())
+        journal_digest = hashlib.sha256(
+            (bundle / "journal.metta").read_bytes()
+        ).hexdigest()
+        sidecar = f"{journal_digest}  {bundle / 'journal.metta'}\n".encode()
+        (bundle / "journal.after-ingest.sha256").write_bytes(sidecar)
+        (bundle / "journal.after-canary.sha256").write_bytes(sidecar)
         summary = {
             name: hashlib.sha256((bundle / name).read_bytes()).hexdigest()
             for name in ARTIFACT_NAMES[:-1]
@@ -88,6 +94,23 @@ class UsabilityBundleTests(unittest.TestCase):
             summary_path.write_text(json.dumps(summary), encoding="utf-8")
 
             with self.assertRaisesRegex(ValueError, "summary members"):
+                validate_provider_free_usability_bundle(bundle)
+
+    def test_rehashed_false_journal_checksum_sidecars_fail_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            bundle = self._bundle(Path(td))
+            false_sidecar = f"{'0' * 64}  {bundle / 'journal.metta'}\n".encode()
+            summary_path = bundle / "summary.json"
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            for name in (
+                "journal.after-ingest.sha256",
+                "journal.after-canary.sha256",
+            ):
+                (bundle / name).write_bytes(false_sidecar)
+                summary[name] = hashlib.sha256(false_sidecar).hexdigest()
+            summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "does not match journal"):
                 validate_provider_free_usability_bundle(bundle)
 
 
