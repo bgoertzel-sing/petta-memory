@@ -31,7 +31,18 @@ class UsabilityBundleTests(unittest.TestCase):
                 "error_markers": 0,
                 "test": "patham9-pln-handoff-derivation-smoke",
             },
-            "program": {},
+            "program": {
+                "boundary": "non-live fixture",
+                "derived_term": "(Derived fact)",
+                "expected_result": "((stv 0.9 0.6) (0 1))",
+                "mode": "read-only-two-premise-derivation-smoke",
+                "program": "!(Test derived expected)\n",
+                "runtime_sentences": ["fact", "rule"],
+                "runtime_stamp_policy": "fixture",
+                "schema": "petta-memory-patham9-pln-derivation-smoke-program-v1",
+                "source_term": "(fact)",
+                "stamp_sidecar": {"(0)": {}, "(1)": {}},
+            },
             "semantic_markers": {
                 "diagnostic_lines": [],
                 "semantic_passed": True,
@@ -218,6 +229,22 @@ class UsabilityBundleTests(unittest.TestCase):
             inference_path = bundle / "inference.json"
             inference = json.loads(inference_path.read_text(encoding="utf-8"))
             inference["classification"]["test"] = "unreviewed-pass-classifier"
+            inference_bytes = json.dumps(inference).encode()
+            inference_path.write_bytes(inference_bytes)
+            summary_path = bundle / "summary.json"
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            summary["inference.json"] = hashlib.sha256(inference_bytes).hexdigest()
+            summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "does not prove"):
+                validate_provider_free_usability_bundle(bundle)
+
+    def test_rehashed_wrong_program_identity_fails_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            bundle = self._bundle(Path(td))
+            inference_path = bundle / "inference.json"
+            inference = json.loads(inference_path.read_text(encoding="utf-8"))
+            inference["program"]["schema"] = "unreviewed-program-v1"
             inference_bytes = json.dumps(inference).encode()
             inference_path.write_bytes(inference_bytes)
             summary_path = bundle / "summary.json"

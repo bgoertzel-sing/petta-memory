@@ -40,6 +40,8 @@ _SHA256_SIDECAR = re.compile(
 )
 _INFERENCE_SCHEMA = "petta-memory-patham9-pln-derivation-smoke-result-v1"
 _INFERENCE_TEST = "patham9-pln-handoff-derivation-smoke"
+_PROGRAM_SCHEMA = "petta-memory-patham9-pln-derivation-smoke-program-v1"
+_PROGRAM_MODE = "read-only-two-premise-derivation-smoke"
 _INFERENCE_NAMES = frozenset(
     (
         "classification",
@@ -71,6 +73,20 @@ _SEMANTIC_MARKER_NAMES = frozenset(
         "passed_false_count",
         "passed_true_count",
         "semantic_passed",
+    )
+)
+_PROGRAM_NAMES = frozenset(
+    (
+        "boundary",
+        "derived_term",
+        "expected_result",
+        "mode",
+        "program",
+        "runtime_sentences",
+        "runtime_stamp_policy",
+        "schema",
+        "source_term",
+        "stamp_sidecar",
     )
 )
 
@@ -141,12 +157,17 @@ def validate_provider_free_usability_bundle(root: Path | str) -> dict[str, Any]:
     if inference.get("status") != summary["inference_status"]:
         raise ValueError("inference result status does not match summary")
     classification = inference.get("classification")
+    program = inference.get("program")
     semantic_markers = inference.get("semantic_markers")
     if (
         inference.keys() != _INFERENCE_NAMES
         or inference.get("schema") != _INFERENCE_SCHEMA
         or type(inference.get("returncode")) is not int
         or inference["returncode"] != 0
+        or not isinstance(program, dict)
+        or program.keys() != _PROGRAM_NAMES
+        or program.get("schema") != _PROGRAM_SCHEMA
+        or program.get("mode") != _PROGRAM_MODE
         or not isinstance(classification, dict)
         or classification.keys() != _CLASSIFICATION_NAMES
         or classification.get("test") != _INFERENCE_TEST
