@@ -39,6 +39,39 @@ _SHA256_SIDECAR = re.compile(
     rb"^(?P<digest>[0-9a-f]{64})  (?P<path>(?:[^\r\n]*/)?)journal\.metta\n$"
 )
 _INFERENCE_SCHEMA = "petta-memory-patham9-pln-derivation-smoke-result-v1"
+_INFERENCE_NAMES = frozenset(
+    (
+        "classification",
+        "program",
+        "returncode",
+        "schema",
+        "semantic_markers",
+        "status",
+        "stderr_tail",
+        "stdout_tail",
+    )
+)
+_CLASSIFICATION_NAMES = frozenset(
+    (
+        "error_markers",
+        "log",
+        "passed_false_count",
+        "passed_true_count",
+        "reasons",
+        "returncode",
+        "status",
+        "test",
+    )
+)
+_SEMANTIC_MARKER_NAMES = frozenset(
+    (
+        "diagnostic_lines",
+        "error_markers",
+        "passed_false_count",
+        "passed_true_count",
+        "semantic_passed",
+    )
+)
 
 
 def _read_regular_file(path: Path) -> bytes:
@@ -109,10 +142,12 @@ def validate_provider_free_usability_bundle(root: Path | str) -> dict[str, Any]:
     classification = inference.get("classification")
     semantic_markers = inference.get("semantic_markers")
     if (
-        inference.get("schema") != _INFERENCE_SCHEMA
+        inference.keys() != _INFERENCE_NAMES
+        or inference.get("schema") != _INFERENCE_SCHEMA
         or type(inference.get("returncode")) is not int
         or inference["returncode"] != 0
         or not isinstance(classification, dict)
+        or classification.keys() != _CLASSIFICATION_NAMES
         or classification.get("status") != "passed"
         or type(classification.get("returncode")) is not int
         or classification["returncode"] != 0
@@ -123,6 +158,7 @@ def validate_provider_free_usability_bundle(root: Path | str) -> dict[str, Any]:
         or type(classification.get("error_markers")) is not int
         or classification["error_markers"] != 0
         or not isinstance(semantic_markers, dict)
+        or semantic_markers.keys() != _SEMANTIC_MARKER_NAMES
         or semantic_markers.get("semantic_passed") is not True
         or type(semantic_markers.get("passed_true_count")) is not int
         or semantic_markers.get("passed_true_count")

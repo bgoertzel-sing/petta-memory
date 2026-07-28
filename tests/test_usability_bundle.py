@@ -22,18 +22,25 @@ class UsabilityBundleTests(unittest.TestCase):
             "status": "passed",
             "returncode": 0,
             "classification": {
+                "log": None,
+                "reasons": [],
                 "status": "passed",
                 "returncode": 0,
                 "passed_true_count": 1,
                 "passed_false_count": 0,
                 "error_markers": 0,
+                "test": "patham9-pln-handoff-derivation-smoke",
             },
+            "program": {},
             "semantic_markers": {
+                "diagnostic_lines": [],
                 "semantic_passed": True,
                 "passed_true_count": 1,
                 "passed_false_count": 0,
                 "error_markers": 0,
             },
+            "stderr_tail": "",
+            "stdout_tail": "",
         }), encoding="utf-8")
         journal_digest = hashlib.sha256(
             (bundle / "journal.metta").read_bytes()
@@ -163,6 +170,38 @@ class UsabilityBundleTests(unittest.TestCase):
             inference_path = bundle / "inference.json"
             inference = json.loads(inference_path.read_text(encoding="utf-8"))
             inference["semantic_markers"]["passed_true_count"] = True
+            inference_bytes = json.dumps(inference).encode()
+            inference_path.write_bytes(inference_bytes)
+            summary_path = bundle / "summary.json"
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            summary["inference.json"] = hashlib.sha256(inference_bytes).hexdigest()
+            summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "does not prove"):
+                validate_provider_free_usability_bundle(bundle)
+
+    def test_rehashed_undeclared_inference_authority_fails_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            bundle = self._bundle(Path(td))
+            inference_path = bundle / "inference.json"
+            inference = json.loads(inference_path.read_text(encoding="utf-8"))
+            inference["promotion_authorized"] = True
+            inference_bytes = json.dumps(inference).encode()
+            inference_path.write_bytes(inference_bytes)
+            summary_path = bundle / "summary.json"
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            summary["inference.json"] = hashlib.sha256(inference_bytes).hexdigest()
+            summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "does not prove"):
+                validate_provider_free_usability_bundle(bundle)
+
+    def test_rehashed_undeclared_nested_inference_authority_fails_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            bundle = self._bundle(Path(td))
+            inference_path = bundle / "inference.json"
+            inference = json.loads(inference_path.read_text(encoding="utf-8"))
+            inference["classification"]["live_integration_authorized"] = True
             inference_bytes = json.dumps(inference).encode()
             inference_path.write_bytes(inference_bytes)
             summary_path = bundle / "summary.json"
