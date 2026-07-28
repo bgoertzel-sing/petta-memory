@@ -38,6 +38,7 @@ _SUMMARY_NAMES = frozenset(
 _SHA256_SIDECAR = re.compile(
     rb"^(?P<digest>[0-9a-f]{64})  (?P<path>(?:[^\r\n]*/)?)journal\.metta\n$"
 )
+_INFERENCE_SCHEMA = "petta-memory-patham9-pln-derivation-smoke-result-v1"
 
 
 def _read_regular_file(path: Path) -> bytes:
@@ -105,6 +106,30 @@ def validate_provider_free_usability_bundle(root: Path | str) -> dict[str, Any]:
     )
     if inference.get("status") != summary["inference_status"]:
         raise ValueError("inference result status does not match summary")
+    classification = inference.get("classification")
+    semantic_markers = inference.get("semantic_markers")
+    if (
+        inference.get("schema") != _INFERENCE_SCHEMA
+        or type(inference.get("returncode")) is not int
+        or inference["returncode"] != 0
+        or not isinstance(classification, dict)
+        or classification.get("status") != "passed"
+        or type(classification.get("returncode")) is not int
+        or classification["returncode"] != 0
+        or type(classification.get("passed_true_count")) is not int
+        or classification["passed_true_count"] < 1
+        or type(classification.get("passed_false_count")) is not int
+        or classification["passed_false_count"] != 0
+        or type(classification.get("error_markers")) is not int
+        or classification["error_markers"] != 0
+        or not isinstance(semantic_markers, dict)
+        or semantic_markers.get("semantic_passed") is not True
+        or semantic_markers.get("passed_true_count")
+        != classification["passed_true_count"]
+        or semantic_markers.get("passed_false_count") != 0
+        or semantic_markers.get("error_markers") != 0
+    ):
+        raise ValueError("inference result does not prove a passed derivation")
     if summary["retrieval.metta"] != summary["retrieval.after-restart.metta"]:
         raise ValueError("restart retrieval digests differ")
     journal_digest = summary["journal.metta"]

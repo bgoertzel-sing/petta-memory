@@ -17,9 +17,24 @@ class UsabilityBundleTests(unittest.TestCase):
         bundle.mkdir()
         for name in ARTIFACT_NAMES[:-1]:
             (bundle / name).write_bytes((name + "\n").encode())
-        (bundle / "inference.json").write_text(
-            json.dumps({"status": "passed"}), encoding="utf-8"
-        )
+        (bundle / "inference.json").write_text(json.dumps({
+            "schema": "petta-memory-patham9-pln-derivation-smoke-result-v1",
+            "status": "passed",
+            "returncode": 0,
+            "classification": {
+                "status": "passed",
+                "returncode": 0,
+                "passed_true_count": 1,
+                "passed_false_count": 0,
+                "error_markers": 0,
+            },
+            "semantic_markers": {
+                "semantic_passed": True,
+                "passed_true_count": 1,
+                "passed_false_count": 0,
+                "error_markers": 0,
+            },
+        }), encoding="utf-8")
         journal_digest = hashlib.sha256(
             (bundle / "journal.metta").read_bytes()
         ).hexdigest()
@@ -127,6 +142,19 @@ class UsabilityBundleTests(unittest.TestCase):
             summary_path.write_text(json.dumps(summary), encoding="utf-8")
 
             with self.assertRaisesRegex(ValueError, "status does not match summary"):
+                validate_provider_free_usability_bundle(bundle)
+
+    def test_rehashed_bare_passed_inference_result_fails_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            bundle = self._bundle(Path(td))
+            inference = json.dumps({"status": "passed"}).encode()
+            (bundle / "inference.json").write_bytes(inference)
+            summary_path = bundle / "summary.json"
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            summary["inference.json"] = hashlib.sha256(inference).hexdigest()
+            summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "does not prove"):
                 validate_provider_free_usability_bundle(bundle)
 
 
