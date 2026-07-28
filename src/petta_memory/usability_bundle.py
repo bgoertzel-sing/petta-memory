@@ -98,6 +98,42 @@ _PROGRAM_NAMES = frozenset(
         "stamp_sidecar",
     )
 )
+_SOURCE_STAMP_NAMES = frozenset(("kind", "source_evidence_id", "source_item"))
+_BRIDGE_STAMP_NAMES = frozenset(("kind", "source_item_index", "rule"))
+
+
+def _valid_derivation_provenance(program: dict[str, Any]) -> bool:
+    source_term = program.get("source_term")
+    derived_term = program.get("derived_term")
+    sidecar = program.get("stamp_sidecar")
+    if (
+        not isinstance(source_term, str)
+        or not source_term
+        or derived_term != f"(PMDerivedFromHandoff {source_term})"
+        or not isinstance(sidecar, dict)
+        or sidecar.keys() != {"(0)", "(1)"}
+    ):
+        return False
+    source = sidecar["(0)"]
+    bridge = sidecar["(1)"]
+    if (
+        not isinstance(source, dict)
+        or source.keys() != _SOURCE_STAMP_NAMES
+        or source.get("kind") != "petta-memory-source-sentence"
+        or not isinstance(source.get("source_evidence_id"), str)
+        or not isinstance(source.get("source_item"), dict)
+        or source["source_item"].get("term") != source_term
+        or source["source_item"].get("evidence_id")
+        != source["source_evidence_id"]
+        or not isinstance(bridge, dict)
+        or bridge.keys() != _BRIDGE_STAMP_NAMES
+        or bridge.get("kind") != "synthetic-non-live-bridge-implication"
+        or type(bridge.get("source_item_index")) is not int
+        or bridge["source_item_index"] != 0
+        or bridge.get("rule") != "PMDerivedFromHandoff implication smoke"
+    ):
+        return False
+    return True
 
 
 def _expected_derivation_program(program: dict[str, Any]) -> str | None:
@@ -208,6 +244,7 @@ def validate_provider_free_usability_bundle(root: Path | str) -> dict[str, Any]:
         or program.get("mode") != _PROGRAM_MODE
         or program.get("boundary") != _PROGRAM_BOUNDARY
         or program.get("runtime_stamp_policy") != _RUNTIME_STAMP_POLICY
+        or not _valid_derivation_provenance(program)
         or program.get("program") != _expected_derivation_program(program)
         or not isinstance(classification, dict)
         or classification.keys() != _CLASSIFICATION_NAMES

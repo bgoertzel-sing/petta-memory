@@ -33,7 +33,7 @@ class UsabilityBundleTests(unittest.TestCase):
             },
             "program": {
                 "boundary": "loads one generated Sentence plus one synthetic bridge implication into local patham9/PLN for a bounded derivation smoke; no memory append, no inferred-belief promotion, no OmegaClaw/GoalChainer live path",
-                "derived_term": "(Derived fact)",
+                "derived_term": "(PMDerivedFromHandoff fact)",
                 "expected_result": "((stv 0.9 0.6) (0 1))",
                 "mode": "read-only-two-premise-derivation-smoke",
                 "program": "\n".join([
@@ -41,7 +41,7 @@ class UsabilityBundleTests(unittest.TestCase):
                     "!(PLN.Init ())",
                     "!(Test (PLN.Query (fact",
                     "                   rule)",
-                    "                  (Derived fact)",
+                    "                  (PMDerivedFromHandoff fact)",
                     "                  2 5 8)",
                     "       ((stv 0.9 0.6) (0 1)))",
                     "",
@@ -49,8 +49,22 @@ class UsabilityBundleTests(unittest.TestCase):
                 "runtime_sentences": ["fact", "rule"],
                 "runtime_stamp_policy": "numeric patham9/PLN stamps used for chainer compatibility; source evidence and synthetic bridge provenance preserved in sidecar",
                 "schema": "petta-memory-patham9-pln-derivation-smoke-program-v1",
-                "source_term": "(fact)",
-                "stamp_sidecar": {"(0)": {}, "(1)": {}},
+                "source_term": "fact",
+                "stamp_sidecar": {
+                    "(0)": {
+                        "kind": "petta-memory-source-sentence",
+                        "source_evidence_id": "evidence-1",
+                        "source_item": {
+                            "term": "fact",
+                            "evidence_id": "evidence-1",
+                        },
+                    },
+                    "(1)": {
+                        "kind": "synthetic-non-live-bridge-implication",
+                        "source_item_index": 0,
+                        "rule": "PMDerivedFromHandoff implication smoke",
+                    },
+                },
             },
             "semantic_markers": {
                 "diagnostic_lines": [],
@@ -206,6 +220,22 @@ class UsabilityBundleTests(unittest.TestCase):
             inference_path = bundle / "inference.json"
             inference = json.loads(inference_path.read_text(encoding="utf-8"))
             inference["promotion_authorized"] = True
+            inference_bytes = json.dumps(inference).encode()
+            inference_path.write_bytes(inference_bytes)
+            summary_path = bundle / "summary.json"
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            summary["inference.json"] = hashlib.sha256(inference_bytes).hexdigest()
+            summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "does not prove"):
+                validate_provider_free_usability_bundle(bundle)
+
+    def test_rehashed_relabelled_source_provenance_fails_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            bundle = self._bundle(Path(td))
+            inference_path = bundle / "inference.json"
+            inference = json.loads(inference_path.read_text(encoding="utf-8"))
+            inference["program"]["source_term"] = "unrelated-fact"
             inference_bytes = json.dumps(inference).encode()
             inference_path.write_bytes(inference_bytes)
             summary_path = bundle / "summary.json"
