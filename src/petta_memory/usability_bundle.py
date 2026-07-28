@@ -100,6 +100,35 @@ _PROGRAM_NAMES = frozenset(
 )
 
 
+def _expected_derivation_program(program: dict[str, Any]) -> str | None:
+    runtime_sentences = program.get("runtime_sentences")
+    derived_term = program.get("derived_term")
+    expected_result = program.get("expected_result")
+    if (
+        not isinstance(runtime_sentences, list)
+        or len(runtime_sentences) != 2
+        or any(not isinstance(sentence, str) or not sentence for sentence in runtime_sentences)
+        or not isinstance(derived_term, str)
+        or not derived_term
+        or not isinstance(expected_result, str)
+        or not expected_result
+    ):
+        return None
+    source_sentence, bridge_sentence = runtime_sentences
+    return "\n".join(
+        [
+            "!(import! &self PLN)",
+            "!(PLN.Init ())",
+            f"!(Test (PLN.Query ({source_sentence}",
+            f"                   {bridge_sentence})",
+            f"                  {derived_term}",
+            "                  2 5 8)",
+            f"       {expected_result})",
+            "",
+        ]
+    )
+
+
 def _read_regular_file(path: Path) -> bytes:
     if path.is_symlink() or not path.is_file():
         raise ValueError(f"bundle artifact is not a regular non-symlink file: {path.name}")
@@ -179,6 +208,7 @@ def validate_provider_free_usability_bundle(root: Path | str) -> dict[str, Any]:
         or program.get("mode") != _PROGRAM_MODE
         or program.get("boundary") != _PROGRAM_BOUNDARY
         or program.get("runtime_stamp_policy") != _RUNTIME_STAMP_POLICY
+        or program.get("program") != _expected_derivation_program(program)
         or not isinstance(classification, dict)
         or classification.keys() != _CLASSIFICATION_NAMES
         or classification.get("test") != _INFERENCE_TEST

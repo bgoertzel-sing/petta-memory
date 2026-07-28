@@ -36,7 +36,16 @@ class UsabilityBundleTests(unittest.TestCase):
                 "derived_term": "(Derived fact)",
                 "expected_result": "((stv 0.9 0.6) (0 1))",
                 "mode": "read-only-two-premise-derivation-smoke",
-                "program": "!(Test derived expected)\n",
+                "program": "\n".join([
+                    "!(import! &self PLN)",
+                    "!(PLN.Init ())",
+                    "!(Test (PLN.Query (fact",
+                    "                   rule)",
+                    "                  (Derived fact)",
+                    "                  2 5 8)",
+                    "       ((stv 0.9 0.6) (0 1)))",
+                    "",
+                ]),
                 "runtime_sentences": ["fact", "rule"],
                 "runtime_stamp_policy": "numeric patham9/PLN stamps used for chainer compatibility; source evidence and synthetic bridge provenance preserved in sidecar",
                 "schema": "petta-memory-patham9-pln-derivation-smoke-program-v1",
@@ -279,6 +288,22 @@ class UsabilityBundleTests(unittest.TestCase):
             inference["program"]["runtime_stamp_policy"] = (
                 "discard source evidence and provenance"
             )
+            inference_bytes = json.dumps(inference).encode()
+            inference_path.write_bytes(inference_bytes)
+            summary_path = bundle / "summary.json"
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            summary["inference.json"] = hashlib.sha256(inference_bytes).hexdigest()
+            summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "does not prove"):
+                validate_provider_free_usability_bundle(bundle)
+
+    def test_rehashed_program_text_drift_fails_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            bundle = self._bundle(Path(td))
+            inference_path = bundle / "inference.json"
+            inference = json.loads(inference_path.read_text(encoding="utf-8"))
+            inference["program"]["program"] = "!(Test True True)\n"
             inference_bytes = json.dumps(inference).encode()
             inference_path.write_bytes(inference_bytes)
             summary_path = bundle / "summary.json"
