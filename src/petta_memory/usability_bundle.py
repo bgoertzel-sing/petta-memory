@@ -23,6 +23,17 @@ ARTIFACT_NAMES = (
 )
 _DIGEST_NAMES = ARTIFACT_NAMES[:-1]
 _MAX_ARTIFACT_BYTES = 4 * 1024 * 1024
+_CLAIM_NAMES = (
+    "inference_status",
+    "retrieval_restart_byte_identical",
+    "journal_unchanged_by_canary",
+    "canary_mode",
+    "autonomous_writes_enabled",
+    "promotion_authorized",
+)
+_SUMMARY_NAMES = frozenset(
+    (*_DIGEST_NAMES, "schema_version", "artifact_names", *_CLAIM_NAMES)
+)
 
 
 def _read_regular_file(path: Path) -> bytes:
@@ -52,6 +63,8 @@ def validate_provider_free_usability_bundle(root: Path | str) -> dict[str, Any]:
         raise ValueError("bundle summary is not unambiguous UTF-8 JSON") from exc
     if not isinstance(summary, dict):
         raise ValueError("bundle summary must be a JSON object")
+    if summary.keys() != _SUMMARY_NAMES:
+        raise ValueError("bundle summary members do not match schema v2")
     if summary.get("schema_version") != SCHEMA_VERSION:
         raise ValueError("unsupported bundle summary schema")
     if summary.get("artifact_names") != list(ARTIFACT_NAMES):

@@ -79,6 +79,17 @@ class UsabilityBundleTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "inventory"):
                 validate_provider_free_usability_bundle(bundle)
 
+    def test_undeclared_summary_member_fails_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            bundle = self._bundle(Path(td))
+            summary_path = bundle / "summary.json"
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            summary["runtime_invocation_authorized"] = True
+            summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "summary members"):
+                validate_provider_free_usability_bundle(bundle)
+
 
 if __name__ == "__main__":
     unittest.main()
