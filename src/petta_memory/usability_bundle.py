@@ -101,6 +101,22 @@ _PROGRAM_NAMES = frozenset(
 )
 _SOURCE_STAMP_NAMES = frozenset(("kind", "source_evidence_id", "source_item"))
 _BRIDGE_STAMP_NAMES = frozenset(("kind", "source_item_index", "rule"))
+_SOURCE_ITEM_NAMES = frozenset(
+    (
+        "atom",
+        "belief_id",
+        "cluster_id",
+        "evidence_id",
+        "kind",
+        "pi_pln_extension",
+        "promotion_domain",
+        "promotion_event",
+        "promotion_rule",
+        "source_status",
+        "stv",
+        "term",
+    )
+)
 
 
 def _valid_derivation_provenance(program: dict[str, Any]) -> bool:
@@ -137,7 +153,8 @@ def _valid_derivation_provenance(program: dict[str, Any]) -> bool:
     source_item = source["source_item"]
     stv = source_item.get("stv")
     if (
-        not isinstance(stv, dict)
+        source_item.keys() != _SOURCE_ITEM_NAMES
+        or not isinstance(stv, dict)
         or stv.keys() != {"strength", "confidence"}
         or type(stv.get("strength")) not in (int, float)
         or type(stv.get("confidence")) not in (int, float)

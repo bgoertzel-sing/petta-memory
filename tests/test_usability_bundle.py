@@ -58,8 +58,21 @@ class UsabilityBundleTests(unittest.TestCase):
                         "kind": "petta-memory-source-sentence",
                         "source_evidence_id": "evidence-1",
                         "source_item": {
+                            "atom": "(Sentence fact (stv 0.9 0.7) (evidence-1))",
+                            "belief_id": "belief-1",
+                            "cluster_id": "cluster-1",
                             "term": "fact",
                             "evidence_id": "evidence-1",
+                            "kind": "patham9-pln-sentence-input",
+                            "pi_pln_extension": {
+                                "context_selection": "not-run",
+                                "contextual_evidence_packets": [],
+                                "ec_projection_policy": "preserve packets",
+                            },
+                            "promotion_domain": "test",
+                            "promotion_event": "promotion-1",
+                            "promotion_rule": "test-rule",
+                            "source_status": "pln-ready-input-not-inferred-belief",
                             "stv": {"strength": 0.9, "confidence": 0.7},
                         },
                     },
@@ -301,6 +314,24 @@ class UsabilityBundleTests(unittest.TestCase):
             inference_path = bundle / "inference.json"
             inference = json.loads(inference_path.read_text(encoding="utf-8"))
             inference["classification"]["live_integration_authorized"] = True
+            inference_bytes = json.dumps(inference).encode()
+            inference_path.write_bytes(inference_bytes)
+            summary_path = bundle / "summary.json"
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            summary["inference.json"] = hashlib.sha256(inference_bytes).hexdigest()
+            summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "does not prove"):
+                validate_provider_free_usability_bundle(bundle)
+
+    def test_rehashed_undeclared_source_item_authority_fails_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            bundle = self._bundle(Path(td))
+            inference_path = bundle / "inference.json"
+            inference = json.loads(inference_path.read_text(encoding="utf-8"))
+            inference["program"]["stamp_sidecar"]["(0)"]["source_item"][
+                "promotion_authorized"
+            ] = True
             inference_bytes = json.dumps(inference).encode()
             inference_path.write_bytes(inference_bytes)
             summary_path = bundle / "summary.json"
