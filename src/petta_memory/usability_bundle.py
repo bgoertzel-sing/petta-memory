@@ -363,6 +363,11 @@ def validate_provider_free_usability_bundle(root: Path | str) -> dict[str, Any]:
             not isinstance(line, str)
             for line in semantic_markers["diagnostic_lines"]
         )
+        or any(
+            line not in inference["stdout_tail"]
+            and line not in inference["stderr_tail"]
+            for line in semantic_markers["diagnostic_lines"]
+        )
         or type(semantic_markers.get("passed_true_count")) is not int
         or semantic_markers.get("passed_true_count")
         != classification["passed_true_count"]
