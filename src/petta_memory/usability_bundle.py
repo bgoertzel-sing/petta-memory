@@ -9,6 +9,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from .sexpr import SExpressionSyntaxError, parse_one_list, to_source
+
 
 SCHEMA_VERSION = "petta-memory-provider-free-usability-summary-v2"
 ARTIFACT_NAMES = (
@@ -128,6 +130,14 @@ _PI_PLN_EXTENSION = {
 }
 
 
+def _is_canonical_term(value: str) -> bool:
+    try:
+        wrapped = parse_one_list(f"({value})")
+    except SExpressionSyntaxError:
+        return False
+    return len(wrapped) == 1 and to_source(wrapped[0]) == value
+
+
 def _valid_derivation_provenance(program: dict[str, Any]) -> bool:
     source_term = program.get("source_term")
     derived_term = program.get("derived_term")
@@ -135,6 +145,7 @@ def _valid_derivation_provenance(program: dict[str, Any]) -> bool:
     if (
         not isinstance(source_term, str)
         or not source_term
+        or not _is_canonical_term(source_term)
         or derived_term != f"(PMDerivedFromHandoff {source_term})"
         or not isinstance(sidecar, dict)
         or sidecar.keys() != {"(0)", "(1)"}

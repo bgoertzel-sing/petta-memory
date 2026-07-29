@@ -280,6 +280,46 @@ class UsabilityBundleTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "does not prove"):
                 validate_provider_free_usability_bundle(bundle)
 
+    def test_rehashed_executable_source_term_injection_fails_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            bundle = self._bundle(Path(td))
+            inference_path = bundle / "inference.json"
+            inference = json.loads(inference_path.read_text(encoding="utf-8"))
+            program = inference["program"]
+            source = program["stamp_sidecar"]["(0)"]["source_item"]
+            injected_term = "fact)\n!(Test True True)\n("
+            derived_term = f"(PMDerivedFromHandoff {injected_term})"
+            source["term"] = injected_term
+            source["atom"] = (
+                f"(Sentence {injected_term} (stv 0.9 0.7) (evidence-1))"
+            )
+            program["source_term"] = injected_term
+            program["derived_term"] = derived_term
+            program["runtime_sentences"] = [
+                f"(Sentence ({injected_term} (stv 0.9 0.7)) (0))",
+                f"(Sentence ((Implication {injected_term} {derived_term}) "
+                "(stv 1.0 0.90)) (1))",
+            ]
+            program["program"] = "\n".join([
+                "!(import! &self PLN)",
+                "!(PLN.Init ())",
+                f"!(Test (PLN.Query ({program['runtime_sentences'][0]}",
+                f"                   {program['runtime_sentences'][1]})",
+                f"                  {derived_term}",
+                "                  2 5 8)",
+                f"       {program['expected_result']})",
+                "",
+            ])
+            inference_bytes = json.dumps(inference).encode()
+            inference_path.write_bytes(inference_bytes)
+            summary_path = bundle / "summary.json"
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            summary["inference.json"] = hashlib.sha256(inference_bytes).hexdigest()
+            summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "does not prove"):
+                validate_provider_free_usability_bundle(bundle)
+
     def test_rehashed_runtime_sentences_detached_from_source_fail_closed(self):
         with tempfile.TemporaryDirectory() as td:
             bundle = self._bundle(Path(td))
