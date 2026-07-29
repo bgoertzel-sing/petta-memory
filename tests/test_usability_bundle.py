@@ -454,6 +454,29 @@ class UsabilityBundleTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "does not prove"):
                 validate_provider_free_usability_bundle(bundle)
 
+    def test_rehashed_source_with_injected_evidence_identity_fails_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            bundle = self._bundle(Path(td))
+            inference_path = bundle / "inference.json"
+            inference = json.loads(inference_path.read_text(encoding="utf-8"))
+            source_stamp = inference["program"]["stamp_sidecar"]["(0)"]
+            source_item = source_stamp["source_item"]
+            injected_id = "evidence-1)\n!(Test True True)\n("
+            source_stamp["source_evidence_id"] = injected_id
+            source_item["evidence_id"] = injected_id
+            source_item["atom"] = (
+                f"(Sentence fact (stv 0.9 0.7) ({injected_id}))"
+            )
+            inference_bytes = json.dumps(inference).encode()
+            inference_path.write_bytes(inference_bytes)
+            summary_path = bundle / "summary.json"
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            summary["inference.json"] = hashlib.sha256(inference_bytes).hexdigest()
+            summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "does not prove"):
+                validate_provider_free_usability_bundle(bundle)
+
     def test_rehashed_wrong_classifier_identity_fails_closed(self):
         with tempfile.TemporaryDirectory() as td:
             bundle = self._bundle(Path(td))

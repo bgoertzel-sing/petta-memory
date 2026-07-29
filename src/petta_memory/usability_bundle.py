@@ -178,7 +178,9 @@ def _valid_derivation_provenance(program: dict[str, Any]) -> bool:
         or source_item.get("source_status") != _SOURCE_STATUS
         or source_item.get("pi_pln_extension") != _PI_PLN_EXTENSION
         or any(
-            not isinstance(source_item.get(name), str) or not source_item[name]
+            not isinstance(source_item.get(name), str)
+            or not source_item[name]
+            or not _is_canonical_term(source_item[name])
             for name in (
                 "belief_id",
                 "cluster_id",
