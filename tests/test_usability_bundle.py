@@ -364,6 +364,25 @@ class UsabilityBundleTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "does not prove"):
                 validate_provider_free_usability_bundle(bundle)
 
+    def test_rehashed_structured_diagnostics_fail_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            bundle = self._bundle(Path(td))
+            inference_path = bundle / "inference.json"
+            inference = json.loads(inference_path.read_text(encoding="utf-8"))
+            inference["stderr_tail"] = {"promotion_authorized": True}
+            inference["semantic_markers"]["diagnostic_lines"] = [
+                {"live_integration_authorized": True}
+            ]
+            inference_bytes = json.dumps(inference).encode()
+            inference_path.write_bytes(inference_bytes)
+            summary_path = bundle / "summary.json"
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            summary["inference.json"] = hashlib.sha256(inference_bytes).hexdigest()
+            summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "does not prove"):
+                validate_provider_free_usability_bundle(bundle)
+
     def test_rehashed_undeclared_source_item_authority_fails_closed(self):
         with tempfile.TemporaryDirectory() as td:
             bundle = self._bundle(Path(td))

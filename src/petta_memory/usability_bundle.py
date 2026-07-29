@@ -328,6 +328,8 @@ def validate_provider_free_usability_bundle(root: Path | str) -> dict[str, Any]:
         or inference.get("schema") != _INFERENCE_SCHEMA
         or type(inference.get("returncode")) is not int
         or inference["returncode"] != 0
+        or not isinstance(inference.get("stderr_tail"), str)
+        or not isinstance(inference.get("stdout_tail"), str)
         or not isinstance(program, dict)
         or program.keys() != _PROGRAM_NAMES
         or program.get("schema") != _PROGRAM_SCHEMA
@@ -353,6 +355,11 @@ def validate_provider_free_usability_bundle(root: Path | str) -> dict[str, Any]:
         or not isinstance(semantic_markers, dict)
         or semantic_markers.keys() != _SEMANTIC_MARKER_NAMES
         or semantic_markers.get("semantic_passed") is not True
+        or not isinstance(semantic_markers.get("diagnostic_lines"), list)
+        or any(
+            not isinstance(line, str)
+            for line in semantic_markers["diagnostic_lines"]
+        )
         or type(semantic_markers.get("passed_true_count")) is not int
         or semantic_markers.get("passed_true_count")
         != classification["passed_true_count"]
