@@ -118,6 +118,14 @@ _SOURCE_ITEM_NAMES = frozenset(
         "term",
     )
 )
+_PI_PLN_EXTENSION = {
+    "context_selection": "not-run; no generated contexts in this handoff gate",
+    "contextual_evidence_packets": [],
+    "ec_projection_policy": (
+        "preserve packets first; later project EC support/opposition through "
+        "reviewed pi-PLN truth-value formulas"
+    ),
+}
 
 
 def _valid_derivation_provenance(program: dict[str, Any]) -> bool:
@@ -157,6 +165,7 @@ def _valid_derivation_provenance(program: dict[str, Any]) -> bool:
         source_item.keys() != _SOURCE_ITEM_NAMES
         or source_item.get("kind") != "patham9-pln-sentence-input"
         or source_item.get("source_status") != _SOURCE_STATUS
+        or source_item.get("pi_pln_extension") != _PI_PLN_EXTENSION
         or not isinstance(stv, dict)
         or stv.keys() != {"strength", "confidence"}
         or type(stv.get("strength")) not in (int, float)

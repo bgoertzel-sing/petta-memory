@@ -65,9 +65,9 @@ class UsabilityBundleTests(unittest.TestCase):
                             "evidence_id": "evidence-1",
                             "kind": "patham9-pln-sentence-input",
                             "pi_pln_extension": {
-                                "context_selection": "not-run",
+                                "context_selection": "not-run; no generated contexts in this handoff gate",
                                 "contextual_evidence_packets": [],
-                                "ec_projection_policy": "preserve packets",
+                                "ec_projection_policy": "preserve packets first; later project EC support/opposition through reviewed pi-PLN truth-value formulas",
                             },
                             "promotion_domain": "test",
                             "promotion_event": "promotion-1",
@@ -368,6 +368,24 @@ class UsabilityBundleTests(unittest.TestCase):
             inference["program"]["stamp_sidecar"]["(0)"]["source_item"][
                 "source_status"
             ] = "inferred-belief"
+            inference_bytes = json.dumps(inference).encode()
+            inference_path.write_bytes(inference_bytes)
+            summary_path = bundle / "summary.json"
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            summary["inference.json"] = hashlib.sha256(inference_bytes).hexdigest()
+            summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "does not prove"):
+                validate_provider_free_usability_bundle(bundle)
+
+    def test_rehashed_source_claiming_context_selection_fails_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            bundle = self._bundle(Path(td))
+            inference_path = bundle / "inference.json"
+            inference = json.loads(inference_path.read_text(encoding="utf-8"))
+            inference["program"]["stamp_sidecar"]["(0)"]["source_item"][
+                "pi_pln_extension"
+            ]["context_selection"] = "run; generated contexts admitted"
             inference_bytes = json.dumps(inference).encode()
             inference_path.write_bytes(inference_bytes)
             summary_path = bundle / "summary.json"
