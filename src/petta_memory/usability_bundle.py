@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -131,6 +132,36 @@ def _valid_derivation_provenance(program: dict[str, Any]) -> bool:
         or type(bridge.get("source_item_index")) is not int
         or bridge["source_item_index"] != 0
         or bridge.get("rule") != "PMDerivedFromHandoff implication smoke"
+    ):
+        return False
+    source_item = source["source_item"]
+    stv = source_item.get("stv")
+    if (
+        not isinstance(stv, dict)
+        or stv.keys() != {"strength", "confidence"}
+        or type(stv.get("strength")) not in (int, float)
+        or type(stv.get("confidence")) not in (int, float)
+        or not math.isfinite(stv["strength"])
+        or not math.isfinite(stv["confidence"])
+        or not 0.0 <= stv["strength"] <= 1.0
+        or not 0.0 <= stv["confidence"] <= 1.0
+    ):
+        return False
+    source_sentence = (
+        f"(Sentence ({source_term} (stv {stv['strength']} {stv['confidence']})) (0))"
+    )
+    bridge_sentence = (
+        f"(Sentence ((Implication {source_term} {derived_term}) "
+        "(stv 1.0 0.90)) (1))"
+    )
+    expected_strength = str(
+        float(stv["strength"]) * 1.0 + 0.02 * (1.0 - float(stv["strength"]))
+    )
+    expected_confidence = str(float(stv["confidence"]) * 0.90)
+    if (
+        program.get("runtime_sentences") != [source_sentence, bridge_sentence]
+        or program.get("expected_result")
+        != f"((stv {expected_strength} {expected_confidence}) (0 1))"
     ):
         return False
     return True
