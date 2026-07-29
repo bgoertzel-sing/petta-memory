@@ -27,6 +27,7 @@ ARTIFACT_NAMES = (
 )
 _DIGEST_NAMES = ARTIFACT_NAMES[:-1]
 _MAX_ARTIFACT_BYTES = 4 * 1024 * 1024
+_MAX_RUNTIME_TAIL_CHARS = 4000
 _CLAIM_NAMES = (
     "inference_status",
     "retrieval_restart_byte_identical",
@@ -329,7 +330,9 @@ def validate_provider_free_usability_bundle(root: Path | str) -> dict[str, Any]:
         or type(inference.get("returncode")) is not int
         or inference["returncode"] != 0
         or not isinstance(inference.get("stderr_tail"), str)
+        or len(inference["stderr_tail"]) > _MAX_RUNTIME_TAIL_CHARS
         or not isinstance(inference.get("stdout_tail"), str)
+        or len(inference["stdout_tail"]) > _MAX_RUNTIME_TAIL_CHARS
         or not isinstance(program, dict)
         or program.keys() != _PROGRAM_NAMES
         or program.get("schema") != _PROGRAM_SCHEMA
