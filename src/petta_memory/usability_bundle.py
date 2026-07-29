@@ -52,6 +52,7 @@ _RUNTIME_STAMP_POLICY = (
     "numeric patham9/PLN stamps used for chainer compatibility; source evidence and "
     "synthetic bridge provenance preserved in sidecar"
 )
+_SOURCE_STATUS = "pln-ready-input-not-inferred-belief"
 _INFERENCE_NAMES = frozenset(
     (
         "classification",
@@ -155,6 +156,7 @@ def _valid_derivation_provenance(program: dict[str, Any]) -> bool:
     if (
         source_item.keys() != _SOURCE_ITEM_NAMES
         or source_item.get("kind") != "patham9-pln-sentence-input"
+        or source_item.get("source_status") != _SOURCE_STATUS
         or not isinstance(stv, dict)
         or stv.keys() != {"strength", "confidence"}
         or type(stv.get("strength")) not in (int, float)
