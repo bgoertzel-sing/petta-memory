@@ -286,7 +286,7 @@ def validate_provider_free_usability_bundle(root: Path | str) -> dict[str, Any]:
         or type(classification.get("returncode")) is not int
         or classification["returncode"] != 0
         or type(classification.get("passed_true_count")) is not int
-        or classification["passed_true_count"] < 1
+        or classification["passed_true_count"] != 1
         or type(classification.get("passed_false_count")) is not int
         or classification["passed_false_count"] != 0
         or type(classification.get("error_markers")) is not int
