@@ -166,6 +166,17 @@ def _valid_derivation_provenance(program: dict[str, Any]) -> bool:
         or source_item.get("kind") != "patham9-pln-sentence-input"
         or source_item.get("source_status") != _SOURCE_STATUS
         or source_item.get("pi_pln_extension") != _PI_PLN_EXTENSION
+        or any(
+            not isinstance(source_item.get(name), str) or not source_item[name]
+            for name in (
+                "belief_id",
+                "cluster_id",
+                "evidence_id",
+                "promotion_domain",
+                "promotion_event",
+                "promotion_rule",
+            )
+        )
         or not isinstance(stv, dict)
         or stv.keys() != {"strength", "confidence"}
         or type(stv.get("strength")) not in (int, float)
