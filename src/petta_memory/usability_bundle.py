@@ -154,6 +154,7 @@ def _valid_derivation_provenance(program: dict[str, Any]) -> bool:
     stv = source_item.get("stv")
     if (
         source_item.keys() != _SOURCE_ITEM_NAMES
+        or source_item.get("kind") != "patham9-pln-sentence-input"
         or not isinstance(stv, dict)
         or stv.keys() != {"strength", "confidence"}
         or type(stv.get("strength")) not in (int, float)
@@ -163,6 +164,12 @@ def _valid_derivation_provenance(program: dict[str, Any]) -> bool:
         or not 0.0 <= stv["strength"] <= 1.0
         or not 0.0 <= stv["confidence"] <= 1.0
     ):
+        return False
+    expected_source_atom = (
+        f"(Sentence {source_term} (stv {stv['strength']} {stv['confidence']}) "
+        f"({source['source_evidence_id']}))"
+    )
+    if source_item.get("atom") != expected_source_atom:
         return False
     source_sentence = (
         f"(Sentence ({source_term} (stv {stv['strength']} {stv['confidence']})) (0))"
