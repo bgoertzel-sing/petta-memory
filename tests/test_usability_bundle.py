@@ -208,6 +208,26 @@ class UsabilityBundleTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "not byte-identical"):
                 validate_provider_free_usability_bundle(bundle)
 
+    def test_rehashed_identical_wrong_path_checksum_sidecars_fail_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            bundle = self._bundle(Path(td))
+            journal_digest = hashlib.sha256(
+                (bundle / "journal.metta").read_bytes()
+            ).hexdigest()
+            sidecar = f"{journal_digest}  relocated/journal.metta\n".encode()
+            summary_path = bundle / "summary.json"
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            for name in (
+                "journal.after-ingest.sha256",
+                "journal.after-canary.sha256",
+            ):
+                (bundle / name).write_bytes(sidecar)
+                summary[name] = hashlib.sha256(sidecar).hexdigest()
+            summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "does not match journal"):
+                validate_provider_free_usability_bundle(bundle)
+
     def test_rehashed_failed_inference_result_fails_closed(self):
         with tempfile.TemporaryDirectory() as td:
             bundle = self._bundle(Path(td))

@@ -394,16 +394,26 @@ def validate_provider_free_usability_bundle(root: Path | str) -> dict[str, Any]:
         raise ValueError("inference result does not prove a passed derivation")
     if summary["retrieval.metta"] != summary["retrieval.after-restart.metta"]:
         raise ValueError("restart retrieval digests differ")
-    journal_digest = summary["journal.metta"]
-    checksum_sidecars: list[bytes] = []
-    for name in ("journal.after-ingest.sha256", "journal.after-canary.sha256"):
-        sidecar = _read_regular_file(bundle / name)
-        checksum_sidecars.append(sidecar)
-        match = _SHA256_SIDECAR.fullmatch(sidecar)
-        if match is None or match.group("digest").decode("ascii") != journal_digest:
-            raise ValueError(f"journal checksum sidecar does not match journal: {name}")
+    checksum_sidecars = [
+        _read_regular_file(bundle / name)
+        for name in ("journal.after-ingest.sha256", "journal.after-canary.sha256")
+    ]
     if checksum_sidecars[0] != checksum_sidecars[1]:
         raise ValueError("journal checksum sidecars are not byte-identical")
+
+    expected_journal_path = str(bundle / "journal.metta").encode()
+    journal_digest = summary["journal.metta"]
+    for name, sidecar in zip(
+        ("journal.after-ingest.sha256", "journal.after-canary.sha256"),
+        checksum_sidecars,
+    ):
+        match = _SHA256_SIDECAR.fullmatch(sidecar)
+        if (
+            match is None
+            or match.group("digest").decode("ascii") != journal_digest
+            or match.group("path") + b"journal.metta" != expected_journal_path
+        ):
+            raise ValueError(f"journal checksum sidecar does not match journal: {name}")
     return summary
 
 
