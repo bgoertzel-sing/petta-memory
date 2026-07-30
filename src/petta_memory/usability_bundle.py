@@ -395,10 +395,15 @@ def validate_provider_free_usability_bundle(root: Path | str) -> dict[str, Any]:
     if summary["retrieval.metta"] != summary["retrieval.after-restart.metta"]:
         raise ValueError("restart retrieval digests differ")
     journal_digest = summary["journal.metta"]
+    checksum_sidecars: list[bytes] = []
     for name in ("journal.after-ingest.sha256", "journal.after-canary.sha256"):
-        match = _SHA256_SIDECAR.fullmatch(_read_regular_file(bundle / name))
+        sidecar = _read_regular_file(bundle / name)
+        checksum_sidecars.append(sidecar)
+        match = _SHA256_SIDECAR.fullmatch(sidecar)
         if match is None or match.group("digest").decode("ascii") != journal_digest:
             raise ValueError(f"journal checksum sidecar does not match journal: {name}")
+    if checksum_sidecars[0] != checksum_sidecars[1]:
+        raise ValueError("journal checksum sidecars are not byte-identical")
     return summary
 
 
