@@ -1857,6 +1857,7 @@ class KernelProcessCapture:
     stderr: str
     program_cid: str | None = None
     executable_sha256: str | None = None
+    program_sha256: str | None = None
 
     def __post_init__(self) -> None:
         if (not isinstance(self.argv, tuple) or not self.argv
@@ -1870,6 +1871,8 @@ class KernelProcessCapture:
             _sha256_digest(self.program_cid, "program_cid")
         if self.executable_sha256 is not None:
             _sha256_digest(self.executable_sha256, "executable_sha256")
+        if self.program_sha256 is not None:
+            _sha256_digest(self.program_sha256, "program_sha256")
 
 
 def validate_kernel_capture_result(
@@ -1982,6 +1985,8 @@ def validate_phase0_reference_replay(
         raise ValueError("Phase-0 reference replay emitted unexpected stderr")
     if capture.executable_sha256 != reference.runtime_executable_sha256:
         raise ValueError("Phase-0 reference replay executable checksum mismatch")
+    if capture.program_sha256 != reference.source_sha256:
+        raise ValueError("Phase-0 reference replay program checksum mismatch")
     stdout = capture.stdout.encode("utf-8")
     if len(stdout) != reference.output_bytes:
         raise ValueError("Phase-0 reference replay output byte count mismatch")
@@ -2180,6 +2185,7 @@ def run_kernel_subprocess(
         stderr,
         _canonical_hash({"complete_program": program}),
         executable_sha256,
+        sha256(program.encode("utf-8")).hexdigest(),
     )
 
 

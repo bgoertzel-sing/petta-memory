@@ -209,6 +209,7 @@ class PiPlnModelTests(unittest.TestCase):
         capture = KernelProcessCapture(
             ("/runtime", "Reference.metta"), 0, stdout, "",
             executable_sha256=reference.runtime_executable_sha256,
+            program_sha256=reference.source_sha256,
         )
         self.assertIs(validate_phase0_reference_replay(reference, capture), capture)
 
@@ -218,10 +219,17 @@ class PiPlnModelTests(unittest.TestCase):
             (KernelProcessCapture(
                 capture.argv, 0, stdout + "x", "",
                 executable_sha256=reference.runtime_executable_sha256,
+                program_sha256=reference.source_sha256,
             ), "byte count"),
             (KernelProcessCapture(
                 capture.argv, 0, stdout, "", executable_sha256="d" * 64,
+                program_sha256=reference.source_sha256,
             ), "executable checksum"),
+            (KernelProcessCapture(
+                capture.argv, 0, stdout, "",
+                executable_sha256=reference.runtime_executable_sha256,
+                program_sha256="d" * 64,
+            ), "program checksum"),
         ):
             with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
                 validate_phase0_reference_replay(reference, bad_capture)
@@ -426,6 +434,9 @@ class PiPlnModelTests(unittest.TestCase):
         self.assertEqual(capture.stdout, "pinned\n")
         self.assertEqual(capture.argv[0], str(Path(sys.executable).resolve(strict=True)))
         self.assertEqual(capture.executable_sha256, executable_digest)
+        self.assertEqual(
+            capture.program_sha256, sha256("program".encode()).hexdigest(),
+        )
 
         marker = Path(tempfile.gettempdir()) / "petta-memory-digest-must-not-launch"
         marker.unlink(missing_ok=True)
