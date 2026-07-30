@@ -1478,6 +1478,21 @@ class PiPlnModelTests(unittest.TestCase):
                         duplicate_pass_manifest_path,
                         source_path=reference_source_path,
                     )
+                relabeled_manifest = json.loads(
+                    reference_manifest_path.read_text(encoding="utf-8")
+                )
+                relabeled_manifest["result"]["semantic_result"] = "(Passed: #t)"
+                relabeled_manifest_path = clean_room / "relabeled-result-manifest.json"
+                relabeled_manifest_path.write_text(
+                    json.dumps(relabeled_manifest), encoding="utf-8"
+                )
+                expected_artifacts.add("relabeled-result-manifest.json")
+                with self.assertRaisesRegex(
+                        ValueError, "canonical kernel result"):
+                    validate_phase0_reference_artifact(
+                        relabeled_manifest_path,
+                        source_path=reference_source_path,
+                    )
                 replayed = validate_exact_kernel_replay(
                     result_atom, expected=loaded_result, compiled=loaded_compiled,
                 )

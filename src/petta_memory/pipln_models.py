@@ -399,8 +399,60 @@ def validate_phase0_reference_artifact(
 
     semantic_result = result.get("semantic_result")
     query_target = result.get("query_target")
-    if not isinstance(semantic_result, str) or not semantic_result:
-        raise ValueError("Phase-0 reference semantic_result must be non-empty")
+    if (
+        not isinstance(semantic_result, str)
+        or len(semantic_result) > DEFAULT_MAX_KERNEL_RESULT_CHARS
+    ):
+        raise ValueError("Phase-0 reference semantic_result must be bounded")
+    try:
+        parsed_result = parse_one_list(semantic_result)
+    except SExpressionSyntaxError as error:
+        raise ValueError(
+            "Phase-0 reference semantic_result must be one valid result atom"
+        ) from error
+    if (
+        to_source(parsed_result) != semantic_result
+        or len(parsed_result) != 2
+        or not isinstance(parsed_result[0], tuple)
+        or len(parsed_result[0]) != 3
+        or symbol_text(parsed_result[0][0]) != "stv"
+        or not isinstance(parsed_result[1], tuple)
+        or not parsed_result[1]
+    ):
+        raise ValueError(
+            "Phase-0 reference semantic_result must be one canonical kernel result"
+        )
+    numeric_tokens = (
+        symbol_text(parsed_result[0][1]), symbol_text(parsed_result[0][2]),
+    )
+    try:
+        truth_values = tuple(float(value) for value in numeric_tokens)
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            "Phase-0 reference semantic_result truth values must be numeric"
+        ) from error
+    if not all(math.isfinite(value) and 0 <= value <= 1 for value in truth_values):
+        raise ValueError(
+            "Phase-0 reference semantic_result truth values must be finite and in [0, 1]"
+        )
+    stamps: list[int] = []
+    for expression in parsed_result[1]:
+        token = symbol_text(expression)
+        try:
+            stamp = int(token) if token is not None else -1
+        except ValueError as error:
+            raise ValueError(
+                "Phase-0 reference semantic_result stamps must be canonical"
+            ) from error
+        if token != str(stamp) or stamp < 0:
+            raise ValueError(
+                "Phase-0 reference semantic_result stamps must be canonical"
+            )
+        stamps.append(stamp)
+    if tuple(sorted(set(stamps))) != tuple(stamps):
+        raise ValueError(
+            "Phase-0 reference semantic_result stamps must be unique and sorted"
+        )
     if not isinstance(query_target, str) or _canonical_kernel_term(query_target) != query_target:
         raise ValueError("Phase-0 reference query_target must be canonical declarative data")
     try:
