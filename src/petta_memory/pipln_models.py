@@ -1856,6 +1856,7 @@ class KernelProcessCapture:
     stdout: str
     stderr: str
     program_cid: str | None = None
+    executable_sha256: str | None = None
 
     def __post_init__(self) -> None:
         if (not isinstance(self.argv, tuple) or not self.argv
@@ -1867,6 +1868,8 @@ class KernelProcessCapture:
             raise ValueError("stdout and stderr must be strings")
         if self.program_cid is not None:
             _sha256_digest(self.program_cid, "program_cid")
+        if self.executable_sha256 is not None:
+            _sha256_digest(self.executable_sha256, "executable_sha256")
 
 
 def validate_kernel_capture_result(
@@ -1977,6 +1980,8 @@ def validate_phase0_reference_replay(
         raise ValueError("Phase-0 reference replay process did not exit successfully")
     if capture.stderr:
         raise ValueError("Phase-0 reference replay emitted unexpected stderr")
+    if capture.executable_sha256 != reference.runtime_executable_sha256:
+        raise ValueError("Phase-0 reference replay executable checksum mismatch")
     stdout = capture.stdout.encode("utf-8")
     if len(stdout) != reference.output_bytes:
         raise ValueError("Phase-0 reference replay output byte count mismatch")
@@ -2026,6 +2031,7 @@ def run_kernel_subprocess(
 
     if argv_size_bytes(command) > max_argv_bytes:
         raise ValueError("argv exceeds max_argv_bytes")
+    executable_sha256: str | None = None
     if expected_executable_sha256 is not None:
         if (not isinstance(expected_executable_sha256, str)
                 or len(expected_executable_sha256) != 64
@@ -2050,6 +2056,7 @@ def run_kernel_subprocess(
             raise ValueError("pinned executable could not be read") from error
         if digest.hexdigest() != expected_executable_sha256:
             raise ValueError("kernel executable SHA-256 does not match expected_executable_sha256")
+        executable_sha256 = expected_executable_sha256
     _positive_int(max_cwd_bytes, "max_cwd_bytes")
     normalized_cwd: str | None = None
     if cwd is not None:
@@ -2172,6 +2179,7 @@ def run_kernel_subprocess(
         stdout,
         stderr,
         _canonical_hash({"complete_program": program}),
+        executable_sha256,
     )
 
 
