@@ -332,6 +332,11 @@ def validate_provider_free_usability_bundle(root: Path | str) -> dict[str, Any]:
     runtime_tail = (
         f"{inference.get('stdout_tail', '')}\n{inference.get('stderr_tail', '')}"
     )
+    runtime_diagnostic_lines = [
+        line.strip()
+        for line in runtime_tail.splitlines()
+        if "Passed:" in line or "(Error" in line or "Exception caught" in line
+    ]
     if (
         inference.keys() != _INFERENCE_NAMES
         or inference.get("schema") != _INFERENCE_SCHEMA
@@ -371,11 +376,7 @@ def validate_provider_free_usability_bundle(root: Path | str) -> dict[str, Any]:
             not isinstance(line, str)
             for line in semantic_markers["diagnostic_lines"]
         )
-        or any(
-            line not in inference["stdout_tail"]
-            and line not in inference["stderr_tail"]
-            for line in semantic_markers["diagnostic_lines"]
-        )
+        or semantic_markers["diagnostic_lines"] != runtime_diagnostic_lines
         or type(semantic_markers.get("passed_true_count")) is not int
         or semantic_markers.get("passed_true_count")
         != classification["passed_true_count"]
