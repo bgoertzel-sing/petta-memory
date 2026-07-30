@@ -321,21 +321,47 @@ def validate_phase0_reference_artifact(
         raise ValueError("invalid Phase-0 reference manifest") from error
     if not isinstance(document, dict) or document.get("schema") != "petta-memory-phase0-reference-artifact-v1":
         raise ValueError("invalid Phase-0 reference manifest schema")
+    expected_members = {
+        "schema",
+        "determinism",
+        "example",
+        "runtime",
+        "repositories",
+        "result",
+        "boundaries",
+    }
+    if document.keys() != expected_members:
+        raise ValueError("Phase-0 reference manifest members do not match schema")
 
-    def record(name: str) -> dict[str, object]:
+    def record(name: str, members: set[str]) -> dict[str, object]:
         value = document.get(name)
         if not isinstance(value, dict):
             raise ValueError(f"Phase-0 reference {name} must be an object")
+        if value.keys() != members:
+            raise ValueError(f"Phase-0 reference {name} members do not match schema")
         return value
 
-    determinism = record("determinism")
-    example = record("example")
-    runtime = record("runtime")
-    repositories = record("repositories")
-    result = record("result")
-    boundaries = record("boundaries")
+    determinism = record("determinism", {"run1_sha256", "run2_sha256", "identical"})
+    example = record("example", {"name", "source_sha256"})
+    runtime = record("runtime", {"metta_binary_sha256"})
+    repositories = record("repositories", {"patham9-pln"})
+    result = record("result", {
+        "passed",
+        "semantic_result",
+        "query_target",
+        "passed_marker",
+        "output_sha256",
+        "output_bytes",
+        "output_file",
+    })
+    boundaries = record("boundaries", {
+        "no_memory_write",
+        "no_inferred_belief_promotion",
+        "no_live_omegaclaw_goalchainer_integration",
+        "no_pettachainer_compileadd",
+    })
     patham9 = repositories.get("patham9-pln")
-    if not isinstance(patham9, dict):
+    if not isinstance(patham9, dict) or patham9.keys() != {"commit"}:
         raise ValueError("Phase-0 reference must identify patham9-pln")
 
     digest_fields = {

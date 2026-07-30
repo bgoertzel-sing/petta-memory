@@ -1434,6 +1434,20 @@ class PiPlnModelTests(unittest.TestCase):
                 loaded_reference = validate_phase0_reference_artifact(
                     reference_manifest_path, source_path=reference_source_path,
                 )
+                authority_manifest = json.loads(
+                    reference_manifest_path.read_text(encoding="utf-8")
+                )
+                authority_manifest["boundaries"]["promotion_authorized"] = True
+                authority_path = clean_room / "authority-reference-manifest.json"
+                authority_path.write_text(
+                    json.dumps(authority_manifest), encoding="utf-8"
+                )
+                expected_artifacts.add("authority-reference-manifest.json")
+                with self.assertRaisesRegex(
+                        ValueError, "boundaries members do not match schema"):
+                    validate_phase0_reference_artifact(
+                        authority_path, source_path=reference_source_path,
+                    )
                 replayed = validate_exact_kernel_replay(
                     result_atom, expected=loaded_result, compiled=loaded_compiled,
                 )
