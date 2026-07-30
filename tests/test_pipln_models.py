@@ -199,6 +199,7 @@ class PiPlnModelTests(unittest.TestCase):
         reference = Phase0ReferenceArtifact(
             example_name="Reference",
             source_sha256="a" * 64,
+            source_cid="c" * 64,
             runtime_executable_sha256="b" * 64,
             kernel_commit="c" * 40,
             semantic_result=semantic_result,
@@ -208,6 +209,7 @@ class PiPlnModelTests(unittest.TestCase):
         )
         capture = KernelProcessCapture(
             ("/runtime", "Reference.metta"), 0, stdout, "",
+            program_cid=reference.source_cid,
             executable_sha256=reference.runtime_executable_sha256,
             program_sha256=reference.source_sha256,
         )
@@ -218,18 +220,26 @@ class PiPlnModelTests(unittest.TestCase):
             (KernelProcessCapture(capture.argv, 0, stdout, "warning"), "stderr"),
             (KernelProcessCapture(
                 capture.argv, 0, stdout + "x", "",
+                program_cid=reference.source_cid,
                 executable_sha256=reference.runtime_executable_sha256,
                 program_sha256=reference.source_sha256,
             ), "byte count"),
             (KernelProcessCapture(
-                capture.argv, 0, stdout, "", executable_sha256="d" * 64,
+                capture.argv, 0, stdout, "", program_cid=reference.source_cid,
+                executable_sha256="d" * 64,
                 program_sha256=reference.source_sha256,
             ), "executable checksum"),
             (KernelProcessCapture(
                 capture.argv, 0, stdout, "",
+                program_cid=reference.source_cid,
                 executable_sha256=reference.runtime_executable_sha256,
                 program_sha256="d" * 64,
             ), "program checksum"),
+            (KernelProcessCapture(
+                capture.argv, 0, stdout, "", program_cid="d" * 64,
+                executable_sha256=reference.runtime_executable_sha256,
+                program_sha256=reference.source_sha256,
+            ), "program CID"),
         ):
             with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
                 validate_phase0_reference_replay(reference, bad_capture)

@@ -298,6 +298,7 @@ class Phase0ReferenceArtifact:
 
     example_name: str
     source_sha256: str
+    source_cid: str
     runtime_executable_sha256: str
     kernel_commit: str
     semantic_result: str
@@ -396,6 +397,10 @@ def validate_phase0_reference_artifact(
         raise ValueError("Phase-0 reference output byte count mismatch")
     if sha256(source).hexdigest() != digest_fields["source_sha256"]:
         raise ValueError("Phase-0 reference source checksum mismatch")
+    try:
+        source_text = source.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError("Phase-0 reference source must be valid UTF-8") from error
 
     semantic_result = result.get("semantic_result")
     query_target = result.get("query_target")
@@ -496,6 +501,9 @@ def validate_phase0_reference_artifact(
     return Phase0ReferenceArtifact(
         example_name=example_name,
         source_sha256=digest_fields["source_sha256"],
+        source_cid=_canonical_hash({
+            "complete_program": source_text,
+        }),
         runtime_executable_sha256=digest_fields["runtime_executable_sha256"],
         kernel_commit=kernel_commit,
         semantic_result=semantic_result,
@@ -1987,6 +1995,8 @@ def validate_phase0_reference_replay(
         raise ValueError("Phase-0 reference replay executable checksum mismatch")
     if capture.program_sha256 != reference.source_sha256:
         raise ValueError("Phase-0 reference replay program checksum mismatch")
+    if capture.program_cid != reference.source_cid:
+        raise ValueError("Phase-0 reference replay program CID mismatch")
     stdout = capture.stdout.encode("utf-8")
     if len(stdout) != reference.output_bytes:
         raise ValueError("Phase-0 reference replay output byte count mismatch")
