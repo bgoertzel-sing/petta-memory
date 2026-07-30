@@ -409,8 +409,14 @@ def validate_phase0_reference_artifact(
         raise ValueError("Phase-0 reference output must be valid UTF-8") from error
     if result.get("passed") is not True or result.get("passed_marker") != "#t":
         raise ValueError("Phase-0 reference must record one passing semantic marker")
-    if semantic_result not in output_text or "(Passed: #t)" not in output_text:
-        raise ValueError("Phase-0 reference semantic result is not present in output")
+    if output_text.count(semantic_result) != 1:
+        raise ValueError(
+            "Phase-0 reference output must contain exactly one semantic result"
+        )
+    if output_text.count("(Passed: #t)") != 1:
+        raise ValueError(
+            "Phase-0 reference output must contain exactly one passing semantic marker"
+        )
     for field in (
         "no_memory_write", "no_inferred_belief_promotion",
         "no_live_omegaclaw_goalchainer_integration", "no_pettachainer_compileadd",
