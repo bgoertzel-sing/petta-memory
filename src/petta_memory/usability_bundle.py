@@ -28,6 +28,11 @@ ARTIFACT_NAMES = (
 _DIGEST_NAMES = ARTIFACT_NAMES[:-1]
 _MAX_ARTIFACT_BYTES = 4 * 1024 * 1024
 _MAX_RUNTIME_TAIL_CHARS = 4000
+_PASSED_TRUE_RE = re.compile(r"\(Passed:\s*(?:#t|True|true)\)")
+_PASSED_FALSE_RE = re.compile(r"\(Passed:\s*(?:#f|False|false)\)")
+_ERROR_RE = re.compile(
+    r"\(Error\b|Exception caught|Traceback \(most recent call last\)"
+)
 _CLAIM_NAMES = (
     "inference_status",
     "retrieval_restart_byte_identical",
@@ -324,6 +329,9 @@ def validate_provider_free_usability_bundle(root: Path | str) -> dict[str, Any]:
     classification = inference.get("classification")
     program = inference.get("program")
     semantic_markers = inference.get("semantic_markers")
+    runtime_tail = (
+        f"{inference.get('stdout_tail', '')}\n{inference.get('stderr_tail', '')}"
+    )
     if (
         inference.keys() != _INFERENCE_NAMES
         or inference.get("schema") != _INFERENCE_SCHEMA
@@ -371,10 +379,16 @@ def validate_provider_free_usability_bundle(root: Path | str) -> dict[str, Any]:
         or type(semantic_markers.get("passed_true_count")) is not int
         or semantic_markers.get("passed_true_count")
         != classification["passed_true_count"]
+        or semantic_markers.get("passed_true_count")
+        != len(_PASSED_TRUE_RE.findall(runtime_tail))
         or type(semantic_markers.get("passed_false_count")) is not int
         or semantic_markers.get("passed_false_count") != 0
+        or semantic_markers.get("passed_false_count")
+        != len(_PASSED_FALSE_RE.findall(runtime_tail))
         or type(semantic_markers.get("error_markers")) is not int
         or semantic_markers.get("error_markers") != 0
+        or semantic_markers.get("error_markers")
+        != len(_ERROR_RE.findall(runtime_tail))
     ):
         raise ValueError("inference result does not prove a passed derivation")
     if summary["retrieval.metta"] != summary["retrieval.after-restart.metta"]:

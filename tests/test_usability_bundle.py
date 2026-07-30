@@ -84,14 +84,14 @@ class UsabilityBundleTests(unittest.TestCase):
                 },
             },
             "semantic_markers": {
-                "diagnostic_lines": [],
+                "diagnostic_lines": ["(Passed: true)"],
                 "semantic_passed": True,
                 "passed_true_count": 1,
                 "passed_false_count": 0,
                 "error_markers": 0,
             },
             "stderr_tail": "",
-            "stdout_tail": "",
+            "stdout_tail": "(Passed: true)\n",
         }), encoding="utf-8")
         journal_digest = hashlib.sha256(
             (bundle / "journal.metta").read_bytes()
@@ -407,6 +407,23 @@ class UsabilityBundleTests(unittest.TestCase):
             inference["semantic_markers"]["diagnostic_lines"] = [
                 "live integration authorized"
             ]
+            inference_bytes = json.dumps(inference).encode()
+            inference_path.write_bytes(inference_bytes)
+            summary_path = bundle / "summary.json"
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            summary["inference.json"] = hashlib.sha256(inference_bytes).hexdigest()
+            summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "does not prove"):
+                validate_provider_free_usability_bundle(bundle)
+
+    def test_rehashed_semantic_count_without_runtime_marker_fails_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            bundle = self._bundle(Path(td))
+            inference_path = bundle / "inference.json"
+            inference = json.loads(inference_path.read_text(encoding="utf-8"))
+            inference["stdout_tail"] = "runtime completed without a Test marker\n"
+            inference["semantic_markers"]["diagnostic_lines"] = []
             inference_bytes = json.dumps(inference).encode()
             inference_path.write_bytes(inference_bytes)
             summary_path = bundle / "summary.json"
