@@ -461,14 +461,22 @@ def validate_phase0_reference_artifact(
         raise ValueError("Phase-0 reference output must be valid UTF-8") from error
     if result.get("passed") is not True or result.get("passed_marker") != "#t":
         raise ValueError("Phase-0 reference must record one passing semantic marker")
-    output_lines = tuple(line.strip() for line in output_text.splitlines())
-    if output_lines.count(f"[{semantic_result}]") != 1:
+    output_lines = tuple(line.strip() for line in output_text.splitlines() if line.strip())
+    expected_output_lines = (
+        f"[{semantic_result}]",
+        "[((Passed: #t))]",
+    )
+    if output_lines.count(expected_output_lines[0]) != 1:
         raise ValueError(
             "Phase-0 reference output must contain exactly one semantic result as a standalone line"
         )
-    if output_lines.count("[((Passed: #t))]") != 1:
+    if output_lines.count(expected_output_lines[1]) != 1:
         raise ValueError(
             "Phase-0 reference output must contain exactly one passing semantic marker as a standalone line"
+        )
+    if output_lines != expected_output_lines:
+        raise ValueError(
+            "Phase-0 reference output must contain only the ordered producer result and pass lines"
         )
     for field in (
         "no_memory_write", "no_inferred_belief_promotion",

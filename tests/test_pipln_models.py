@@ -1525,6 +1525,38 @@ class PiPlnModelTests(unittest.TestCase):
                         embedded_result_manifest_path,
                         source_path=reference_source_path,
                     )
+                extra_line_output = (
+                    reference_output + b"[((promotion-authorized #t))]\n"
+                )
+                extra_line_manifest = json.loads(
+                    reference_manifest_path.read_text(encoding="utf-8")
+                )
+                extra_line_digest = sha256(extra_line_output).hexdigest()
+                extra_line_manifest["determinism"].update({
+                    "run1_sha256": extra_line_digest,
+                    "run2_sha256": extra_line_digest,
+                })
+                extra_line_manifest["result"].update({
+                    "output_sha256": extra_line_digest,
+                    "output_bytes": len(extra_line_output),
+                    "output_file": "extra-line-output.txt",
+                })
+                extra_line_output_path = clean_room / "extra-line-output.txt"
+                extra_line_manifest_path = clean_room / "extra-line-manifest.json"
+                extra_line_output_path.write_bytes(extra_line_output)
+                extra_line_manifest_path.write_text(
+                    json.dumps(extra_line_manifest), encoding="utf-8"
+                )
+                expected_artifacts.update({
+                    "extra-line-output.txt",
+                    "extra-line-manifest.json",
+                })
+                with self.assertRaisesRegex(
+                        ValueError, "only the ordered producer result and pass lines"):
+                    validate_phase0_reference_artifact(
+                        extra_line_manifest_path,
+                        source_path=reference_source_path,
+                    )
                 replayed = validate_exact_kernel_replay(
                     result_atom, expected=loaded_result, compiled=loaded_compiled,
                 )
