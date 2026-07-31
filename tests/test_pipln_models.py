@@ -459,12 +459,32 @@ class PiPlnModelTests(unittest.TestCase):
                 cwd="é", max_cwd_bytes=1,
             )
         self.assertFalse(marker.exists())
+
         with self.assertRaisesRegex(ValueError, "cwd must be valid UTF-8"):
             run_kernel_subprocess(
                 "program", argv=(sys.executable, "-c", launch), timeout_ms=1000,
                 cwd="bad\ud800cwd",
             )
         self.assertFalse(marker.exists())
+
+    def test_kernel_subprocess_records_exact_resolved_cwd(self):
+        with tempfile.TemporaryDirectory() as directory:
+            requested = Path(directory) / "child" / ".."
+            (Path(directory) / "child").mkdir()
+            capture = run_kernel_subprocess(
+                "program",
+                argv=(sys.executable, "-c", "import os; print(os.getcwd())"),
+                timeout_ms=1000,
+                cwd=requested,
+            )
+        self.assertEqual(capture.cwd, str(Path(directory).resolve()))
+        self.assertEqual(capture.stdout, f"{capture.cwd}\n")
+
+        with self.assertRaisesRegex(ValueError, "absolute normalized"):
+            KernelProcessCapture((sys.executable,), 0, "", "", cwd=".")
+        marker = Path(tempfile.gettempdir()) / "petta-memory-cwd-must-not-launch"
+        marker.unlink(missing_ok=True)
+        launch = f"from pathlib import Path; Path({str(marker)!r}).touch()"
         with self.assertRaisesRegex(ValueError, "NUL"):
             run_kernel_subprocess(
                 "program", argv=(sys.executable, "-c", launch), timeout_ms=1000,

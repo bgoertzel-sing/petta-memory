@@ -1904,6 +1904,9 @@ class KernelProcessCapture:
             raise ValueError("cwd must be a non-empty string without NUL bytes")
         if self.cwd is not None:
             require_utf8(self.cwd, "cwd")
+            cwd_path = Path(self.cwd)
+            if not cwd_path.is_absolute() or cwd_path != cwd_path.resolve(strict=False):
+                raise ValueError("cwd must be an absolute normalized path")
         if self.env is not None and (
             not isinstance(self.env, tuple)
             or any(
@@ -2160,6 +2163,17 @@ def run_kernel_subprocess(
             raise ValueError("cwd must be valid UTF-8 text") from error
         if cwd_bytes > max_cwd_bytes:
             raise ValueError("cwd exceeds max_cwd_bytes")
+        try:
+            cwd_path = Path(normalized_cwd).resolve(strict=True)
+        except OSError as error:
+            raise ValueError("cwd could not be resolved") from error
+        if not cwd_path.is_dir():
+            raise ValueError("cwd must resolve to a directory")
+        normalized_cwd = str(cwd_path)
+        # Resolution can expand a relative path or symlink, so bind the limit
+        # to the exact path retained in the capture and delivered to Popen.
+        if len(normalized_cwd.encode("utf-8")) + 1 > max_cwd_bytes:
+            raise ValueError("resolved cwd exceeds max_cwd_bytes")
     _positive_int(max_env_bytes, "max_env_bytes")
     normalized_env: dict[str, str] | None = None
     if env is not None:
