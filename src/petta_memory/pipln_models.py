@@ -2165,7 +2165,7 @@ def run_kernel_subprocess(
             raise ValueError("cwd exceeds max_cwd_bytes")
         try:
             cwd_path = Path(normalized_cwd).resolve(strict=True)
-        except OSError as error:
+        except (OSError, RuntimeError) as error:
             raise ValueError("cwd could not be resolved") from error
         if not cwd_path.is_dir():
             raise ValueError("cwd must resolve to a directory")

@@ -491,6 +491,16 @@ class PiPlnModelTests(unittest.TestCase):
                 cwd="bad\0cwd",
             )
         self.assertFalse(marker.exists())
+
+        with tempfile.TemporaryDirectory() as directory:
+            loop = Path(directory) / "loop"
+            loop.symlink_to(loop)
+            with self.assertRaisesRegex(ValueError, "cwd could not be resolved"):
+                run_kernel_subprocess(
+                    "program", argv=(sys.executable, "-c", launch), timeout_ms=1000,
+                    cwd=loop,
+                )
+        self.assertFalse(marker.exists())
         with self.assertRaisesRegex(ValueError, "positive integer"):
             run_kernel_subprocess(
                 "program", argv=(sys.executable, "-c", "pass"), timeout_ms=1000,
