@@ -274,6 +274,19 @@ class PiPlnModelTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "without NUL bytes"):
             KernelProcessCapture(("/runtime\0unreviewed",), 0, "", "")
 
+    def test_kernel_process_capture_rejects_non_utf8_text(self):
+        invalid = (
+            (("/runtime\ud800",), 0, "", "", None, "argv entries"),
+            (("/runtime",), 0, "output\ud800", "", None, "stdout"),
+            (("/runtime",), 0, "", "error\ud800", None, "stderr"),
+            (("/runtime",), 0, "", "", "/work\ud800", "cwd"),
+        )
+        for argv, return_code, stdout, stderr, cwd, message in invalid:
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
+                KernelProcessCapture(argv, return_code, stdout, stderr, cwd=cwd)
+        with self.assertRaisesRegex(ValueError, "env values"):
+            KernelProcessCapture(("/runtime",), 0, "", "", env=(("KEY", "value\ud800"),))
+
     def test_token_and_packet_are_immutable_and_packet_digest_is_stable(self):
         token = EvidenceToken("t1", "sensor", "s1", "c1", "2026-07-11T00:00:00Z", "2026-07-11T00:00:01Z")
         packet = EvidencePacket("p1", "(S x)", "c1", 2, 1, (token.id,), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")

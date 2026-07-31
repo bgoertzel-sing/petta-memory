@@ -1870,6 +1870,12 @@ class KernelProcessCapture:
     env: tuple[tuple[str, str], ...] | None = None
 
     def __post_init__(self) -> None:
+        def require_utf8(value: str, field: str) -> None:
+            try:
+                value.encode("utf-8")
+            except UnicodeEncodeError as error:
+                raise ValueError(f"{field} must be valid UTF-8 text") from error
+
         if (not isinstance(self.argv, tuple) or not self.argv
                 or any(
                     not isinstance(arg, str) or not arg or "\0" in arg
@@ -1878,10 +1884,14 @@ class KernelProcessCapture:
             raise ValueError(
                 "argv must be a non-empty tuple of non-empty strings without NUL bytes"
             )
+        for arg in self.argv:
+            require_utf8(arg, "argv entries")
         if isinstance(self.return_code, bool) or not isinstance(self.return_code, int):
             raise ValueError("return_code must be an integer")
         if not isinstance(self.stdout, str) or not isinstance(self.stderr, str):
             raise ValueError("stdout and stderr must be strings")
+        require_utf8(self.stdout, "stdout")
+        require_utf8(self.stderr, "stderr")
         if self.program_cid is not None:
             _sha256_digest(self.program_cid, "program_cid")
         if self.executable_sha256 is not None:
@@ -1892,6 +1902,8 @@ class KernelProcessCapture:
             not isinstance(self.cwd, str) or not self.cwd or "\0" in self.cwd
         ):
             raise ValueError("cwd must be a non-empty string without NUL bytes")
+        if self.cwd is not None:
+            require_utf8(self.cwd, "cwd")
         if self.env is not None and (
             not isinstance(self.env, tuple)
             or any(
@@ -1911,6 +1923,10 @@ class KernelProcessCapture:
             raise ValueError(
                 "env must be canonical sorted unique process environment entries"
             )
+        if self.env is not None:
+            for key, value in self.env:
+                require_utf8(key, "env keys")
+                require_utf8(value, "env values")
 
 
 def validate_kernel_capture_result(
