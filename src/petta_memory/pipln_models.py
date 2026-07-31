@@ -2092,6 +2092,8 @@ def run_kernel_subprocess(
     """
     if not isinstance(program, str) or not program:
         raise ValueError("program must be a non-empty string")
+    if "\0" in program:
+        raise ValueError("program must not contain NUL bytes")
     _positive_int(max_program_bytes, "max_program_bytes")
     try:
         encoded_program = program.encode("utf-8")

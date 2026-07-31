@@ -396,6 +396,16 @@ class PiPlnModelTests(unittest.TestCase):
             run_kernel_subprocess(
                 "program\ud800", argv=(sys.executable, "-c", "pass"), timeout_ms=1000,
             )
+        with self.assertRaisesRegex(ValueError, "program must not contain NUL bytes"):
+            run_kernel_subprocess(
+                "program\0unreviewed",
+                argv=(
+                    sys.executable, "-c",
+                    f"from pathlib import Path; Path({str(marker)!r}).touch()",
+                ),
+                timeout_ms=1000,
+            )
+        self.assertFalse(marker.exists())
         with self.assertRaisesRegex(ValueError, "positive integer"):
             run_kernel_subprocess(
                 "program", argv=(sys.executable, "-c", "pass"),
