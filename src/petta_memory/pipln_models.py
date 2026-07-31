@@ -2093,7 +2093,10 @@ def run_kernel_subprocess(
     if not isinstance(program, str) or not program:
         raise ValueError("program must be a non-empty string")
     _positive_int(max_program_bytes, "max_program_bytes")
-    encoded_program = program.encode("utf-8")
+    try:
+        encoded_program = program.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise ValueError("program must be valid UTF-8 text") from error
     if len(encoded_program) > max_program_bytes:
         raise ValueError("program exceeds max_program_bytes")
     command = tuple(argv)
@@ -2105,7 +2108,10 @@ def run_kernel_subprocess(
     # Account for the terminating NUL carried by each OS argv entry as well as
     # the caller-visible UTF-8 payload.
     def argv_size_bytes(items: tuple[str, ...]) -> int:
-        return sum(len(item.encode("utf-8")) + 1 for item in items)
+        try:
+            return sum(len(item.encode("utf-8")) + 1 for item in items)
+        except UnicodeEncodeError as error:
+            raise ValueError("argv entries must be valid UTF-8 text") from error
 
     if argv_size_bytes(command) > max_argv_bytes:
         raise ValueError("argv exceeds max_argv_bytes")
@@ -2146,7 +2152,11 @@ def run_kernel_subprocess(
             raise ValueError("cwd must be a non-empty string or path-like value")
         if "\0" in normalized_cwd:
             raise ValueError("cwd must not contain NUL bytes")
-        if len(normalized_cwd.encode("utf-8")) + 1 > max_cwd_bytes:
+        try:
+            cwd_bytes = len(normalized_cwd.encode("utf-8")) + 1
+        except UnicodeEncodeError as error:
+            raise ValueError("cwd must be valid UTF-8 text") from error
+        if cwd_bytes > max_cwd_bytes:
             raise ValueError("cwd exceeds max_cwd_bytes")
     _positive_int(max_env_bytes, "max_env_bytes")
     normalized_env: dict[str, str] | None = None
@@ -2161,7 +2171,10 @@ def run_kernel_subprocess(
             if "\0" in key or "\0" in value or "=" in key:
                 raise ValueError("env keys and values must be valid process environment strings")
             # The process environment serializes each entry as KEY=VALUE\0.
-            env_bytes += len(key.encode("utf-8")) + len(value.encode("utf-8")) + 2
+            try:
+                env_bytes += len(key.encode("utf-8")) + len(value.encode("utf-8")) + 2
+            except UnicodeEncodeError as error:
+                raise ValueError("env keys and values must be valid UTF-8 text") from error
             if env_bytes > max_env_bytes:
                 raise ValueError("env exceeds max_env_bytes")
             normalized_env[key] = value

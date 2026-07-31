@@ -388,6 +388,10 @@ class PiPlnModelTests(unittest.TestCase):
                 max_program_bytes=1,
             )
         self.assertFalse(marker.exists())
+        with self.assertRaisesRegex(ValueError, "program must be valid UTF-8"):
+            run_kernel_subprocess(
+                "program\ud800", argv=(sys.executable, "-c", "pass"), timeout_ms=1000,
+            )
         with self.assertRaisesRegex(ValueError, "positive integer"):
             run_kernel_subprocess(
                 "program", argv=(sys.executable, "-c", "pass"),
@@ -403,6 +407,11 @@ class PiPlnModelTests(unittest.TestCase):
                 "program", argv=(sys.executable, "-c", launch, "é"),
                 timeout_ms=1000,
                 max_argv_bytes=sum(map(len, (sys.executable.encode(), b"-c", launch.encode()))) + 1,
+            )
+        self.assertFalse(marker.exists())
+        with self.assertRaisesRegex(ValueError, "argv entries must be valid UTF-8"):
+            run_kernel_subprocess(
+                "program", argv=(sys.executable, "-c", launch, "bad\ud800"), timeout_ms=1000,
             )
         self.assertFalse(marker.exists())
         with self.assertRaisesRegex(ValueError, "NUL"):
@@ -436,6 +445,12 @@ class PiPlnModelTests(unittest.TestCase):
                 cwd="é", max_cwd_bytes=1,
             )
         self.assertFalse(marker.exists())
+        with self.assertRaisesRegex(ValueError, "cwd must be valid UTF-8"):
+            run_kernel_subprocess(
+                "program", argv=(sys.executable, "-c", launch), timeout_ms=1000,
+                cwd="bad\ud800cwd",
+            )
+        self.assertFalse(marker.exists())
         with self.assertRaisesRegex(ValueError, "NUL"):
             run_kernel_subprocess(
                 "program", argv=(sys.executable, "-c", launch), timeout_ms=1000,
@@ -462,6 +477,12 @@ class PiPlnModelTests(unittest.TestCase):
             run_kernel_subprocess(
                 "program", argv=(sys.executable, "-c", launch), timeout_ms=1000,
                 env={"MODE": "é"}, max_env_bytes=5,
+            )
+        self.assertFalse(marker.exists())
+        with self.assertRaisesRegex(ValueError, "env keys and values must be valid UTF-8"):
+            run_kernel_subprocess(
+                "program", argv=(sys.executable, "-c", launch), timeout_ms=1000,
+                env={"KEY": "bad\ud800value"},
             )
         self.assertFalse(marker.exists())
         for env in ({"BAD\0KEY": "x"}, {"BAD=KEY": "x"}, {"KEY": "bad\0value"}):
