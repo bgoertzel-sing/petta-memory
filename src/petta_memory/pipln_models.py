@@ -1871,8 +1871,13 @@ class KernelProcessCapture:
 
     def __post_init__(self) -> None:
         if (not isinstance(self.argv, tuple) or not self.argv
-                or any(not isinstance(arg, str) or not arg for arg in self.argv)):
-            raise ValueError("argv must be a non-empty tuple of non-empty strings")
+                or any(
+                    not isinstance(arg, str) or not arg or "\0" in arg
+                    for arg in self.argv
+                )):
+            raise ValueError(
+                "argv must be a non-empty tuple of non-empty strings without NUL bytes"
+            )
         if isinstance(self.return_code, bool) or not isinstance(self.return_code, int):
             raise ValueError("return_code must be an integer")
         if not isinstance(self.stdout, str) or not isinstance(self.stderr, str):
