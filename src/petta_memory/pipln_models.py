@@ -1866,6 +1866,7 @@ class KernelProcessCapture:
     program_cid: str | None = None
     executable_sha256: str | None = None
     program_sha256: str | None = None
+    cwd: str | None = None
 
     def __post_init__(self) -> None:
         if (not isinstance(self.argv, tuple) or not self.argv
@@ -1881,6 +1882,10 @@ class KernelProcessCapture:
             _sha256_digest(self.executable_sha256, "executable_sha256")
         if self.program_sha256 is not None:
             _sha256_digest(self.program_sha256, "program_sha256")
+        if self.cwd is not None and (
+            not isinstance(self.cwd, str) or not self.cwd or "\0" in self.cwd
+        ):
+            raise ValueError("cwd must be a non-empty string without NUL bytes")
 
 
 def validate_kernel_capture_result(
@@ -1999,6 +2004,10 @@ def validate_phase0_reference_replay(
     if len(capture.argv) != 1:
         raise ValueError(
             "Phase-0 reference replay must use the frozen stdin-only launch shape"
+        )
+    if capture.cwd is not None:
+        raise ValueError(
+            "Phase-0 reference replay must use the frozen inherited working directory"
         )
     if capture.executable_sha256 != reference.runtime_executable_sha256:
         raise ValueError("Phase-0 reference replay executable checksum mismatch")
@@ -2205,6 +2214,7 @@ def run_kernel_subprocess(
         _canonical_hash({"complete_program": program}),
         executable_sha256,
         sha256(program.encode("utf-8")).hexdigest(),
+        normalized_cwd,
     )
 
 

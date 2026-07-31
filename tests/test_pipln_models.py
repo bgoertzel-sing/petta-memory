@@ -231,6 +231,13 @@ class PiPlnModelTests(unittest.TestCase):
                 program_sha256=reference.source_sha256,
             ), "stdin-only launch shape"),
             (KernelProcessCapture(
+                capture.argv, 0, stdout, "",
+                program_cid=reference.source_cid,
+                executable_sha256=reference.runtime_executable_sha256,
+                program_sha256=reference.source_sha256,
+                cwd="/unreviewed/runtime-context",
+            ), "inherited working directory"),
+            (KernelProcessCapture(
                 capture.argv, 0, stdout + "x", "",
                 program_cid=reference.source_cid,
                 executable_sha256=reference.runtime_executable_sha256,
