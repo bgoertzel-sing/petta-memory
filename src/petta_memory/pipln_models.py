@@ -1867,6 +1867,7 @@ class KernelProcessCapture:
     executable_sha256: str | None = None
     program_sha256: str | None = None
     cwd: str | None = None
+    env: tuple[tuple[str, str], ...] | None = None
 
     def __post_init__(self) -> None:
         if (not isinstance(self.argv, tuple) or not self.argv
@@ -1886,6 +1887,25 @@ class KernelProcessCapture:
             not isinstance(self.cwd, str) or not self.cwd or "\0" in self.cwd
         ):
             raise ValueError("cwd must be a non-empty string without NUL bytes")
+        if self.env is not None and (
+            not isinstance(self.env, tuple)
+            or any(
+                not isinstance(entry, tuple)
+                or len(entry) != 2
+                or not isinstance(entry[0], str)
+                or not entry[0]
+                or not isinstance(entry[1], str)
+                or "\0" in entry[0]
+                or "\0" in entry[1]
+                or "=" in entry[0]
+                for entry in self.env
+            )
+            or self.env != tuple(sorted(self.env))
+            or len({key for key, _ in self.env}) != len(self.env)
+        ):
+            raise ValueError(
+                "env must be canonical sorted unique process environment entries"
+            )
 
 
 def validate_kernel_capture_result(
@@ -2008,6 +2028,10 @@ def validate_phase0_reference_replay(
     if capture.cwd is not None:
         raise ValueError(
             "Phase-0 reference replay must use the frozen inherited working directory"
+        )
+    if capture.env is not None:
+        raise ValueError(
+            "Phase-0 reference replay must use the frozen inherited process environment"
         )
     if capture.executable_sha256 != reference.runtime_executable_sha256:
         raise ValueError("Phase-0 reference replay executable checksum mismatch")
@@ -2215,6 +2239,7 @@ def run_kernel_subprocess(
         executable_sha256,
         sha256(program.encode("utf-8")).hexdigest(),
         normalized_cwd,
+        None if normalized_env is None else tuple(sorted(normalized_env.items())),
     )
 
 

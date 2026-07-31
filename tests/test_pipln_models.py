@@ -238,6 +238,13 @@ class PiPlnModelTests(unittest.TestCase):
                 cwd="/unreviewed/runtime-context",
             ), "inherited working directory"),
             (KernelProcessCapture(
+                capture.argv, 0, stdout, "",
+                program_cid=reference.source_cid,
+                executable_sha256=reference.runtime_executable_sha256,
+                program_sha256=reference.source_sha256,
+                env=(("UNREVIEWED_MODE", "1"),),
+            ), "inherited process environment"),
+            (KernelProcessCapture(
                 capture.argv, 0, stdout + "x", "",
                 program_cid=reference.source_cid,
                 executable_sha256=reference.runtime_executable_sha256,
@@ -281,10 +288,20 @@ class PiPlnModelTests(unittest.TestCase):
         self.assertEqual(capture.return_code, 0)
         self.assertEqual(capture.stdout, "(PLN.Query)\n")
         self.assertEqual(capture.stderr, "audit\n")
+        self.assertIsNone(capture.env)
         self.assertEqual(capture.program_cid, sha256(json.dumps(
             {"complete_program": "(PLN.Query)"}, sort_keys=True, separators=(",", ":"),
             ensure_ascii=False,
         ).encode("utf-8")).hexdigest())
+
+        explicit_env_capture = run_kernel_subprocess(
+            "(PLN.Query)",
+            argv=(sys.executable, "-c", "import os; print(os.environ['MODE'])"),
+            timeout_ms=1000,
+            env={"MODE": "bounded"},
+        )
+        self.assertEqual(explicit_env_capture.stdout, "bounded\n")
+        self.assertEqual(explicit_env_capture.env, (("MODE", "bounded"),))
 
     def test_kernel_subprocess_fails_closed_on_timeout_or_capture_overflow(self):
         with self.assertRaisesRegex(ValueError, "timeout"):
