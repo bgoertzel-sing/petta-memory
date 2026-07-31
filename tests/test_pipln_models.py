@@ -284,8 +284,12 @@ class PiPlnModelTests(unittest.TestCase):
         for argv, return_code, stdout, stderr, cwd, message in invalid:
             with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
                 KernelProcessCapture(argv, return_code, stdout, stderr, cwd=cwd)
-        with self.assertRaisesRegex(ValueError, "env values"):
-            KernelProcessCapture(("/runtime",), 0, "", "", env=(("KEY", "value\ud800"),))
+        for env, message in (
+            ((("KEY\ud800", "value"),), "env keys"),
+            ((("KEY", "value\ud800"),), "env values"),
+        ):
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
+                KernelProcessCapture(("/runtime",), 0, "", "", env=env)
 
     def test_token_and_packet_are_immutable_and_packet_digest_is_stable(self):
         token = EvidenceToken("t1", "sensor", "s1", "c1", "2026-07-11T00:00:00Z", "2026-07-11T00:00:01Z")
@@ -479,11 +483,14 @@ class PiPlnModelTests(unittest.TestCase):
                 env={"MODE": "é"}, max_env_bytes=5,
             )
         self.assertFalse(marker.exists())
-        with self.assertRaisesRegex(ValueError, "env keys and values must be valid UTF-8"):
-            run_kernel_subprocess(
-                "program", argv=(sys.executable, "-c", launch), timeout_ms=1000,
-                env={"KEY": "bad\ud800value"},
-            )
+        for env in ({"bad\ud800key": "value"}, {"KEY": "bad\ud800value"}):
+            with self.subTest(env=env), self.assertRaisesRegex(
+                ValueError, "env keys and values must be valid UTF-8"
+            ):
+                run_kernel_subprocess(
+                    "program", argv=(sys.executable, "-c", launch), timeout_ms=1000,
+                    env=env,
+                )
         self.assertFalse(marker.exists())
         for env in ({"BAD\0KEY": "x"}, {"BAD=KEY": "x"}, {"KEY": "bad\0value"}):
             with self.subTest(env=env), self.assertRaisesRegex(ValueError, "environment strings"):
