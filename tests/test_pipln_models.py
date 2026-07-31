@@ -219,6 +219,12 @@ class PiPlnModelTests(unittest.TestCase):
             (KernelProcessCapture(capture.argv, 1, stdout, ""), "exit successfully"),
             (KernelProcessCapture(capture.argv, 0, stdout, "warning"), "stderr"),
             (KernelProcessCapture(
+                ("runtime", "Reference.metta"), 0, stdout, "",
+                program_cid=reference.source_cid,
+                executable_sha256=reference.runtime_executable_sha256,
+                program_sha256=reference.source_sha256,
+            ), "absolute and normalized"),
+            (KernelProcessCapture(
                 capture.argv, 0, stdout + "x", "",
                 program_cid=reference.source_cid,
                 executable_sha256=reference.runtime_executable_sha256,

@@ -1991,6 +1991,11 @@ def validate_phase0_reference_replay(
         raise ValueError("Phase-0 reference replay process did not exit successfully")
     if capture.stderr:
         raise ValueError("Phase-0 reference replay emitted unexpected stderr")
+    executable = Path(capture.argv[0])
+    if not executable.is_absolute() or executable != executable.resolve(strict=False):
+        raise ValueError(
+            "Phase-0 reference replay executable path must be absolute and normalized"
+        )
     if capture.executable_sha256 != reference.runtime_executable_sha256:
         raise ValueError("Phase-0 reference replay executable checksum mismatch")
     if capture.program_sha256 != reference.source_sha256:
