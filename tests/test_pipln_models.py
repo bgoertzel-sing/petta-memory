@@ -208,7 +208,7 @@ class PiPlnModelTests(unittest.TestCase):
             output_bytes=len(stdout.encode()),
         )
         capture = KernelProcessCapture(
-            ("/runtime", "Reference.metta"), 0, stdout, "",
+            ("/runtime",), 0, stdout, "",
             program_cid=reference.source_cid,
             executable_sha256=reference.runtime_executable_sha256,
             program_sha256=reference.source_sha256,
@@ -224,6 +224,12 @@ class PiPlnModelTests(unittest.TestCase):
                 executable_sha256=reference.runtime_executable_sha256,
                 program_sha256=reference.source_sha256,
             ), "absolute and normalized"),
+            (KernelProcessCapture(
+                ("/runtime", "--unreviewed-mode"), 0, stdout, "",
+                program_cid=reference.source_cid,
+                executable_sha256=reference.runtime_executable_sha256,
+                program_sha256=reference.source_sha256,
+            ), "stdin-only launch shape"),
             (KernelProcessCapture(
                 capture.argv, 0, stdout + "x", "",
                 program_cid=reference.source_cid,

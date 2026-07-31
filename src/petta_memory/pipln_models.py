@@ -1996,6 +1996,10 @@ def validate_phase0_reference_replay(
         raise ValueError(
             "Phase-0 reference replay executable path must be absolute and normalized"
         )
+    if len(capture.argv) != 1:
+        raise ValueError(
+            "Phase-0 reference replay must use the frozen stdin-only launch shape"
+        )
     if capture.executable_sha256 != reference.runtime_executable_sha256:
         raise ValueError("Phase-0 reference replay executable checksum mismatch")
     if capture.program_sha256 != reference.source_sha256:
