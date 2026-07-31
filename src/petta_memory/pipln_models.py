@@ -2196,16 +2196,19 @@ def run_kernel_subprocess(
             normalized_env[key] = value
     _positive_int(timeout_ms, "timeout_ms")
     _positive_int(max_capture_bytes, "max_capture_bytes")
-    process = subprocess.Popen(
-        command,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        cwd=normalized_cwd,
-        env=normalized_env,
-        shell=False,
-        start_new_session=True,
-    )
+    try:
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=normalized_cwd,
+            env=normalized_env,
+            shell=False,
+            start_new_session=True,
+        )
+    except OSError as error:
+        raise ValueError("kernel subprocess could not be launched") from error
     captures: dict[str, bytes] = {}
     overflow: list[str] = []
     stdin_errors: list[BaseException] = []

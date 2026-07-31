@@ -355,6 +355,17 @@ class PiPlnModelTests(unittest.TestCase):
             )
         self.assertFalse(marker.exists())
 
+    def test_kernel_subprocess_wraps_os_launch_failure(self):
+        missing = Path(tempfile.gettempdir()) / "petta-memory-missing-kernel-executable"
+        missing.unlink(missing_ok=True)
+        with self.assertRaisesRegex(
+            ValueError, "kernel subprocess could not be launched",
+        ) as caught:
+            run_kernel_subprocess(
+                "program", argv=(str(missing),), timeout_ms=1000,
+            )
+        self.assertIsInstance(caught.exception.__cause__, FileNotFoundError)
+
     def test_kernel_subprocess_requires_complete_program_delivery(self):
         with self.assertRaisesRegex(ValueError, "complete program delivery"):
             run_kernel_subprocess(
