@@ -434,6 +434,11 @@ class PiPlnModelTests(unittest.TestCase):
                 run_kernel_subprocess(
                     "program", argv=argv, timeout_ms=1000,
                 )
+        with self.assertRaisesRegex(ValueError, "argv exceeds max_argv_bytes"):
+            run_kernel_subprocess(
+                "program", argv=iter(lambda: "x", None), timeout_ms=1000,
+                max_argv_bytes=8,
+            )
         with self.assertRaisesRegex(ValueError, "max_argv_bytes"):
             run_kernel_subprocess(
                 "program", argv=(sys.executable, "-c", launch, "é"),

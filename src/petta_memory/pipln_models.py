@@ -2106,25 +2106,33 @@ def run_kernel_subprocess(
         raise ValueError("program exceeds max_program_bytes")
     if isinstance(argv, (str, bytes)):
         raise ValueError("argv must be an iterable of argument strings, not text or bytes")
+    _positive_int(max_argv_bytes, "max_argv_bytes")
     try:
-        command = tuple(argv)
+        iterator = iter(argv)
     except TypeError as error:
         raise ValueError("argv must be an iterable of argument strings") from error
-    if not command or any(not isinstance(item, str) or not item for item in command):
+    command_items: list[str] = []
+    argv_bytes = 0
+    for item in iterator:
+        if not isinstance(item, str) or not item:
+            raise ValueError("argv must contain non-empty strings")
+        if "\0" in item:
+            raise ValueError("argv must not contain NUL bytes")
+        try:
+            argv_bytes += len(item.encode("utf-8")) + 1
+        except UnicodeEncodeError as error:
+            raise ValueError("argv entries must be valid UTF-8 text") from error
+        if argv_bytes > max_argv_bytes:
+            raise ValueError("argv exceeds max_argv_bytes")
+        command_items.append(item)
+    command = tuple(command_items)
+    if not command:
         raise ValueError("argv must contain non-empty strings")
-    _positive_int(max_argv_bytes, "max_argv_bytes")
-    if any("\0" in item for item in command):
-        raise ValueError("argv must not contain NUL bytes")
+
     # Account for the terminating NUL carried by each OS argv entry as well as
     # the caller-visible UTF-8 payload.
     def argv_size_bytes(items: tuple[str, ...]) -> int:
-        try:
-            return sum(len(item.encode("utf-8")) + 1 for item in items)
-        except UnicodeEncodeError as error:
-            raise ValueError("argv entries must be valid UTF-8 text") from error
-
-    if argv_size_bytes(command) > max_argv_bytes:
-        raise ValueError("argv exceeds max_argv_bytes")
+        return sum(len(item.encode("utf-8")) + 1 for item in items)
     executable_sha256: str | None = None
     if expected_executable_sha256 is not None:
         if (not isinstance(expected_executable_sha256, str)
