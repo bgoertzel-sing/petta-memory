@@ -1,6 +1,7 @@
 import math
 import json
 import os
+import subprocess
 import tempfile
 import sys
 import time
@@ -365,6 +366,17 @@ class PiPlnModelTests(unittest.TestCase):
                 "program", argv=(str(missing),), timeout_ms=1000,
             )
         self.assertIsInstance(caught.exception.__cause__, FileNotFoundError)
+
+    def test_kernel_subprocess_wraps_subprocess_launch_failure(self):
+        launch_error = subprocess.SubprocessError("untrusted process setup failure")
+        with mock.patch("petta_memory.pipln_models.subprocess.Popen", side_effect=launch_error):
+            with self.assertRaisesRegex(
+                ValueError, "kernel subprocess could not be launched",
+            ) as caught:
+                run_kernel_subprocess(
+                    "program", argv=(sys.executable,), timeout_ms=1000,
+                )
+        self.assertIs(caught.exception.__cause__, launch_error)
 
     def test_kernel_subprocess_requires_complete_program_delivery(self):
         with self.assertRaisesRegex(ValueError, "complete program delivery"):

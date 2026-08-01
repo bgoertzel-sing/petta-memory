@@ -2242,7 +2242,7 @@ def run_kernel_subprocess(
             shell=False,
             start_new_session=True,
         )
-    except OSError as error:
+    except (OSError, subprocess.SubprocessError) as error:
         raise ValueError("kernel subprocess could not be launched") from error
     captures: dict[str, bytes] = {}
     overflow: list[str] = []
