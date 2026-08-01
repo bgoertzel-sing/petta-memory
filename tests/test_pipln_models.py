@@ -581,6 +581,17 @@ class PiPlnModelTests(unittest.TestCase):
                 env=ScalarEnvironment(),
             )
         self.assertFalse(marker.exists())
+        class DuplicateKeyEnvironment(dict):
+            def items(self):
+                yield "MODE", "bounded"
+                yield "MODE", "unreviewed"
+
+        with self.assertRaisesRegex(ValueError, "env must not contain duplicate keys"):
+            run_kernel_subprocess(
+                "program", argv=(sys.executable, "-c", launch), timeout_ms=1000,
+                env=DuplicateKeyEnvironment(),
+            )
+        self.assertFalse(marker.exists())
         with self.assertRaisesRegex(ValueError, "max_env_bytes"):
             run_kernel_subprocess(
                 "program", argv=(sys.executable, "-c", launch), timeout_ms=1000,

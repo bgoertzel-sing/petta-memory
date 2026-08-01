@@ -2219,6 +2219,8 @@ def run_kernel_subprocess(
                 raise ValueError("env must map non-empty string keys to string values")
             if "\0" in key or "\0" in value or "=" in key:
                 raise ValueError("env keys and values must be valid process environment strings")
+            if key in normalized_env:
+                raise ValueError("env must not contain duplicate keys")
             # The process environment serializes each entry as KEY=VALUE\0.
             try:
                 env_bytes += len(key.encode("utf-8")) + len(value.encode("utf-8")) + 2
