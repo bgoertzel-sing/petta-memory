@@ -2104,7 +2104,12 @@ def run_kernel_subprocess(
         raise ValueError("program must be valid UTF-8 text") from error
     if len(encoded_program) > max_program_bytes:
         raise ValueError("program exceeds max_program_bytes")
-    command = tuple(argv)
+    if isinstance(argv, (str, bytes)):
+        raise ValueError("argv must be an iterable of argument strings, not text or bytes")
+    try:
+        command = tuple(argv)
+    except TypeError as error:
+        raise ValueError("argv must be an iterable of argument strings") from error
     if not command or any(not isinstance(item, str) or not item for item in command):
         raise ValueError("argv must contain non-empty strings")
     _positive_int(max_argv_bytes, "max_argv_bytes")

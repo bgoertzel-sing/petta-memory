@@ -427,6 +427,13 @@ class PiPlnModelTests(unittest.TestCase):
         marker = Path(tempfile.gettempdir()) / "petta-memory-argv-must-not-launch"
         marker.unlink(missing_ok=True)
         launch = f"from pathlib import Path; Path({str(marker)!r}).touch()"
+        for argv in (sys.executable, sys.executable.encode(), None):
+            with self.subTest(argv=argv), self.assertRaisesRegex(
+                ValueError, "argv must be an iterable of argument strings"
+            ):
+                run_kernel_subprocess(
+                    "program", argv=argv, timeout_ms=1000,
+                )
         with self.assertRaisesRegex(ValueError, "max_argv_bytes"):
             run_kernel_subprocess(
                 "program", argv=(sys.executable, "-c", launch, "é"),
