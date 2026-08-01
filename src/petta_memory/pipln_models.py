@@ -2211,10 +2211,10 @@ def run_kernel_subprocess(
                 break
             except Exception as error:
                 raise ValueError("env iteration failed") from error
-            try:
-                key, value = item
-            except (TypeError, ValueError) as error:
+            if not isinstance(item, tuple) or len(item) != 2:
+                error = ValueError("environment item is not a two-element tuple")
                 raise ValueError("env items must be key-value pairs") from error
+            key, value = item
             if not isinstance(key, str) or not key or not isinstance(value, str):
                 raise ValueError("env must map non-empty string keys to string values")
             if "\0" in key or "\0" in value or "=" in key:

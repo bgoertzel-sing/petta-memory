@@ -571,6 +571,16 @@ class PiPlnModelTests(unittest.TestCase):
             )
         self.assertIsInstance(caught.exception.__cause__, ValueError)
         self.assertFalse(marker.exists())
+        class ScalarEnvironment(dict):
+            def items(self):
+                yield "AB"
+
+        with self.assertRaisesRegex(ValueError, "env items must be key-value pairs"):
+            run_kernel_subprocess(
+                "program", argv=(sys.executable, "-c", launch), timeout_ms=1000,
+                env=ScalarEnvironment(),
+            )
+        self.assertFalse(marker.exists())
         with self.assertRaisesRegex(ValueError, "max_env_bytes"):
             run_kernel_subprocess(
                 "program", argv=(sys.executable, "-c", launch), timeout_ms=1000,
