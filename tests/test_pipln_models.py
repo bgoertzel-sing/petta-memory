@@ -548,6 +548,18 @@ class PiPlnModelTests(unittest.TestCase):
         marker = Path(tempfile.gettempdir()) / "petta-memory-env-must-not-launch"
         marker.unlink(missing_ok=True)
         launch = f"from pathlib import Path; Path({str(marker)!r}).touch()"
+        class BrokenEnvironment(dict):
+            def items(self):
+                yield "MODE", "bounded"
+                raise RuntimeError("untrusted environment iterator failure")
+
+        with self.assertRaisesRegex(ValueError, "env iteration failed") as caught:
+            run_kernel_subprocess(
+                "program", argv=(sys.executable, "-c", launch), timeout_ms=1000,
+                env=BrokenEnvironment(),
+            )
+        self.assertIsInstance(caught.exception.__cause__, RuntimeError)
+        self.assertFalse(marker.exists())
         with self.assertRaisesRegex(ValueError, "max_env_bytes"):
             run_kernel_subprocess(
                 "program", argv=(sys.executable, "-c", launch), timeout_ms=1000,

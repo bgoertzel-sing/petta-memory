@@ -2200,7 +2200,17 @@ def run_kernel_subprocess(
             raise ValueError("env must be a mapping of strings")
         normalized_env = {}
         env_bytes = 0
-        for key, value in env.items():
+        try:
+            env_iterator = iter(env.items())
+        except Exception as error:
+            raise ValueError("env iteration failed") from error
+        while True:
+            try:
+                key, value = next(env_iterator)
+            except StopIteration:
+                break
+            except Exception as error:
+                raise ValueError("env iteration failed") from error
             if not isinstance(key, str) or not key or not isinstance(value, str):
                 raise ValueError("env must map non-empty string keys to string values")
             if "\0" in key or "\0" in value or "=" in key:
