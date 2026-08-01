@@ -2246,6 +2246,7 @@ def run_kernel_subprocess(
         raise ValueError("kernel subprocess could not be launched") from error
     captures: dict[str, bytes] = {}
     overflow: list[str] = []
+    capture_errors: list[BaseException] = []
     stdin_errors: list[BaseException] = []
 
     def kill_process_tree() -> None:
@@ -2257,17 +2258,21 @@ def run_kernel_subprocess(
     def bounded_read(name: str, stream: object) -> None:
         chunks: list[bytes] = []
         size = 0
-        while True:
-            chunk = stream.read(min(65_536, max_capture_bytes + 1 - size))
-            if not chunk:
-                break
-            chunks.append(chunk)
-            size += len(chunk)
-            if size > max_capture_bytes:
-                overflow.append(name)
-                kill_process_tree()
-                break
-        captures[name] = b"".join(chunks)
+        try:
+            while True:
+                chunk = stream.read(min(65_536, max_capture_bytes + 1 - size))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                size += len(chunk)
+                if size > max_capture_bytes:
+                    overflow.append(name)
+                    kill_process_tree()
+                    break
+            captures[name] = b"".join(chunks)
+        except (OSError, ValueError) as error:
+            capture_errors.append(error)
+            kill_process_tree()
 
     readers = [
         threading.Thread(target=bounded_read, args=("stdout", process.stdout), daemon=True),
@@ -2309,6 +2314,8 @@ def run_kernel_subprocess(
         process.stderr.close()
     if overflow:
         raise ValueError(f"kernel subprocess {overflow[0]} exceeded max_capture_bytes")
+    if capture_errors:
+        raise ValueError("kernel subprocess output capture failed") from capture_errors[0]
     if stdin_errors:
         raise ValueError("kernel subprocess closed stdin before complete program delivery") from stdin_errors[0]
     stdout_bytes = captures["stdout"]
