@@ -2113,7 +2113,13 @@ def run_kernel_subprocess(
         raise ValueError("argv must be an iterable of argument strings") from error
     command_items: list[str] = []
     argv_bytes = 0
-    for item in iterator:
+    while True:
+        try:
+            item = next(iterator)
+        except StopIteration:
+            break
+        except Exception as error:
+            raise ValueError("argv iteration failed") from error
         if not isinstance(item, str) or not item:
             raise ValueError("argv must contain non-empty strings")
         if "\0" in item:

@@ -439,6 +439,14 @@ class PiPlnModelTests(unittest.TestCase):
                 "program", argv=iter(lambda: "x", None), timeout_ms=1000,
                 max_argv_bytes=8,
             )
+        def broken_argv():
+            yield sys.executable
+            raise RuntimeError("untrusted iterator failure")
+        with self.assertRaisesRegex(ValueError, "argv iteration failed") as caught:
+            run_kernel_subprocess(
+                "program", argv=broken_argv(), timeout_ms=1000,
+            )
+        self.assertIsInstance(caught.exception.__cause__, RuntimeError)
         with self.assertRaisesRegex(ValueError, "max_argv_bytes"):
             run_kernel_subprocess(
                 "program", argv=(sys.executable, "-c", launch, "é"),
