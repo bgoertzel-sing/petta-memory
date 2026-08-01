@@ -560,6 +560,17 @@ class PiPlnModelTests(unittest.TestCase):
             )
         self.assertIsInstance(caught.exception.__cause__, RuntimeError)
         self.assertFalse(marker.exists())
+        class MalformedEnvironment(dict):
+            def items(self):
+                yield ("MODE", "bounded", "unexpected")
+
+        with self.assertRaisesRegex(ValueError, "env items must be key-value pairs") as caught:
+            run_kernel_subprocess(
+                "program", argv=(sys.executable, "-c", launch), timeout_ms=1000,
+                env=MalformedEnvironment(),
+            )
+        self.assertIsInstance(caught.exception.__cause__, ValueError)
+        self.assertFalse(marker.exists())
         with self.assertRaisesRegex(ValueError, "max_env_bytes"):
             run_kernel_subprocess(
                 "program", argv=(sys.executable, "-c", launch), timeout_ms=1000,

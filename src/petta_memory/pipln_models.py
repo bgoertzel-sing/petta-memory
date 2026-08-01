@@ -2206,11 +2206,15 @@ def run_kernel_subprocess(
             raise ValueError("env iteration failed") from error
         while True:
             try:
-                key, value = next(env_iterator)
+                item = next(env_iterator)
             except StopIteration:
                 break
             except Exception as error:
                 raise ValueError("env iteration failed") from error
+            try:
+                key, value = item
+            except (TypeError, ValueError) as error:
+                raise ValueError("env items must be key-value pairs") from error
             if not isinstance(key, str) or not key or not isinstance(value, str):
                 raise ValueError("env must map non-empty string keys to string values")
             if "\0" in key or "\0" in value or "=" in key:
