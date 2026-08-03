@@ -454,6 +454,27 @@ class PiPlnModelTests(unittest.TestCase):
         process.stdout.close.assert_called_once_with()
         process.stderr.close.assert_called_once_with()
 
+    def test_kernel_subprocess_wraps_timeout_cleanup_wait_failure(self):
+        timeout_error = subprocess.TimeoutExpired((sys.executable,), 1)
+        cleanup_error = RuntimeError("unexpected timeout cleanup wait failure")
+        process = mock.Mock()
+        process.pid = 1234
+        process.stdout.read.return_value = b""
+        process.stderr.read.return_value = b""
+        process.wait.side_effect = (timeout_error, cleanup_error)
+        with mock.patch("petta_memory.pipln_models.subprocess.Popen", return_value=process):
+            with mock.patch("petta_memory.pipln_models.os.killpg") as killpg:
+                with self.assertRaisesRegex(
+                    ValueError, "kernel subprocess timeout cleanup failed",
+                ) as caught:
+                    run_kernel_subprocess(
+                        "program", argv=(sys.executable,), timeout_ms=1000,
+                    )
+        self.assertIs(caught.exception.__cause__, cleanup_error)
+        self.assertGreaterEqual(killpg.call_count, 1)
+        process.stdout.close.assert_called_once_with()
+        process.stderr.close.assert_called_once_with()
+
     def test_kernel_subprocess_closes_inherited_descendant_pipes(self):
         script = (
             "import subprocess, sys; "

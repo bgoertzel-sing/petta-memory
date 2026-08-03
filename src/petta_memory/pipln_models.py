@@ -2300,7 +2300,10 @@ def run_kernel_subprocess(
         process.wait(timeout=timeout_ms / 1000)
     except subprocess.TimeoutExpired as error:
         kill_process_tree()
-        process.wait()
+        try:
+            process.wait()
+        except Exception as cleanup_error:
+            raise ValueError("kernel subprocess timeout cleanup failed") from cleanup_error
         raise ValueError("kernel subprocess exceeded timeout_ms") from error
     except Exception as error:
         kill_process_tree()
