@@ -2302,7 +2302,7 @@ def run_kernel_subprocess(
         writer = threading.Thread(target=write_program, daemon=True)
     except Exception as error:
         kill_process_tree()
-        construction_cleanup_errors: list[BaseException] = []
+        construction_cleanup_errors: list[BaseException] = list(process_cleanup_errors)
         try:
             process.wait()
         except Exception as cleanup_error:
