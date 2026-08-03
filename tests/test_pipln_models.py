@@ -526,6 +526,37 @@ class PiPlnModelTests(unittest.TestCase):
         process.stdout.close.assert_called_once_with()
         process.stderr.close.assert_called_once_with()
 
+    def test_kernel_subprocess_wraps_worker_startup_failure(self):
+        start_error = RuntimeError("unexpected worker startup failure")
+        process = mock.Mock()
+        process.pid = 1234
+        process.stdin = mock.Mock()
+        process.wait.return_value = 0
+        workers = [mock.Mock(), mock.Mock(), mock.Mock()]
+        workers[1].start.side_effect = start_error
+        with mock.patch("petta_memory.pipln_models.subprocess.Popen", return_value=process):
+            with mock.patch("petta_memory.pipln_models.os.killpg") as killpg:
+                with mock.patch(
+                    "petta_memory.pipln_models.threading.Thread", side_effect=workers,
+                ):
+                    with self.assertRaisesRegex(
+                        ValueError, "kernel subprocess worker startup failed",
+                    ) as caught:
+                        run_kernel_subprocess(
+                            "program", argv=(sys.executable,), timeout_ms=1000,
+                        )
+        self.assertIs(caught.exception.__cause__, start_error)
+        workers[0].start.assert_called_once_with()
+        workers[0].join.assert_called_once_with()
+        workers[1].start.assert_called_once_with()
+        workers[1].join.assert_not_called()
+        workers[2].start.assert_not_called()
+        workers[2].join.assert_not_called()
+        self.assertGreaterEqual(killpg.call_count, 1)
+        process.wait.assert_called_once_with()
+        process.stdout.close.assert_called_once_with()
+        process.stderr.close.assert_called_once_with()
+
     def test_kernel_subprocess_wraps_process_group_cleanup_failure(self):
         cleanup_error = RuntimeError("unexpected process-group cleanup failure")
         process = mock.Mock()

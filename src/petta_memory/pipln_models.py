@@ -2251,6 +2251,8 @@ def run_kernel_subprocess(
     process_cleanup_errors: list[BaseException] = []
     stream_close_errors: list[BaseException] = []
     thread_join_errors: list[BaseException] = []
+    thread_start_errors: list[BaseException] = []
+    thread_start_cleanup_errors: list[BaseException] = []
 
     def kill_process_tree() -> None:
         try:
@@ -2298,11 +2300,21 @@ def run_kernel_subprocess(
                 stdin_errors.append(error)
 
     writer = threading.Thread(target=write_program, daemon=True)
-    for reader in readers:
-        reader.start()
-    writer.start()
+    started_workers: list[threading.Thread] = []
     try:
-        process.wait(timeout=timeout_ms / 1000)
+        try:
+            for worker in (*readers, writer):
+                worker.start()
+                started_workers.append(worker)
+        except Exception as error:
+            thread_start_errors.append(error)
+            kill_process_tree()
+            try:
+                process.wait()
+            except Exception as cleanup_error:
+                thread_start_cleanup_errors.append(cleanup_error)
+        if not thread_start_errors:
+            process.wait(timeout=timeout_ms / 1000)
     except subprocess.TimeoutExpired as error:
         kill_process_tree()
         try:
@@ -2317,7 +2329,7 @@ def run_kernel_subprocess(
         # A kernel must not extend the capture lifetime by leaving descendants
         # holding inherited stdout/stderr pipes after its direct process exits.
         kill_process_tree()
-        for worker in (writer, *readers):
+        for worker in started_workers:
             try:
                 worker.join()
             except Exception as error:
@@ -2334,6 +2346,10 @@ def run_kernel_subprocess(
         raise ValueError("kernel subprocess worker cleanup failed") from thread_join_errors[0]
     if process_cleanup_errors:
         raise ValueError("kernel subprocess process-group cleanup failed") from process_cleanup_errors[0]
+    if thread_start_cleanup_errors:
+        raise ValueError("kernel subprocess worker startup cleanup failed") from thread_start_cleanup_errors[0]
+    if thread_start_errors:
+        raise ValueError("kernel subprocess worker startup failed") from thread_start_errors[0]
     if overflow:
         raise ValueError(f"kernel subprocess {overflow[0]} exceeded max_capture_bytes")
     if capture_errors:
