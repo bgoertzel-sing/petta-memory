@@ -2350,8 +2350,8 @@ def run_kernel_subprocess(
                 worker.join()
             except Exception as error:
                 thread_join_errors.append(error)
-        assert process.stdout is not None and process.stderr is not None
-        for stream in (process.stdout, process.stderr):
+        assert process.stdin is not None and process.stdout is not None and process.stderr is not None
+        for stream in (process.stdin, process.stdout, process.stderr):
             try:
                 stream.close()
             except Exception as error:

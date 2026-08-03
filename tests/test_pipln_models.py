@@ -554,6 +554,7 @@ class PiPlnModelTests(unittest.TestCase):
         workers[2].join.assert_not_called()
         self.assertGreaterEqual(killpg.call_count, 1)
         process.wait.assert_called_once_with()
+        process.stdin.close.assert_called_once_with()
         process.stdout.close.assert_called_once_with()
         process.stderr.close.assert_called_once_with()
 
