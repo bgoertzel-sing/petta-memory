@@ -2248,6 +2248,7 @@ def run_kernel_subprocess(
     overflow: list[str] = []
     capture_errors: list[BaseException] = []
     stdin_errors: list[BaseException] = []
+    process_cleanup_errors: list[BaseException] = []
     stream_close_errors: list[BaseException] = []
 
     def kill_process_tree() -> None:
@@ -2255,6 +2256,8 @@ def run_kernel_subprocess(
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
+        except Exception as error:
+            process_cleanup_errors.append(error)
 
     def bounded_read(name: str, stream: object) -> None:
         chunks: list[bytes] = []
@@ -2324,6 +2327,8 @@ def run_kernel_subprocess(
                 stream_close_errors.append(error)
     if stream_close_errors:
         raise ValueError("kernel subprocess stream cleanup failed") from stream_close_errors[0]
+    if process_cleanup_errors:
+        raise ValueError("kernel subprocess process-group cleanup failed") from process_cleanup_errors[0]
     if overflow:
         raise ValueError(f"kernel subprocess {overflow[0]} exceeded max_capture_bytes")
     if capture_errors:
