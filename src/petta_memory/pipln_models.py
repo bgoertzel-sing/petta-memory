@@ -2284,12 +2284,12 @@ def run_kernel_subprocess(
         try:
             process.stdin.write(encoded_program)
             process.stdin.flush()
-        except (BrokenPipeError, OSError) as error:
+        except Exception as error:
             stdin_errors.append(error)
         finally:
             try:
                 process.stdin.close()
-            except (BrokenPipeError, OSError) as error:
+            except Exception as error:
                 stdin_errors.append(error)
 
     writer = threading.Thread(target=write_program, daemon=True)

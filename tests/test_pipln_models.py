@@ -414,6 +414,25 @@ class PiPlnModelTests(unittest.TestCase):
                 max_program_bytes=1_000_000,
             )
 
+    def test_kernel_subprocess_wraps_unexpected_stdin_failure(self):
+        write_error = RuntimeError("unexpected stdin stream failure")
+        process = mock.Mock()
+        process.pid = 1234
+        process.stdin.write.side_effect = write_error
+        process.stdout.read.return_value = b""
+        process.stderr.read.return_value = b""
+        process.wait.return_value = 0
+        process.returncode = 0
+        with mock.patch("petta_memory.pipln_models.subprocess.Popen", return_value=process):
+            with mock.patch("petta_memory.pipln_models.os.killpg"):
+                with self.assertRaisesRegex(
+                    ValueError, "complete program delivery",
+                ) as caught:
+                    run_kernel_subprocess(
+                        "program", argv=(sys.executable,), timeout_ms=1000,
+                    )
+        self.assertIs(caught.exception.__cause__, write_error)
+
     def test_kernel_subprocess_closes_inherited_descendant_pipes(self):
         script = (
             "import subprocess, sys; "
