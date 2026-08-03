@@ -2250,6 +2250,7 @@ def run_kernel_subprocess(
     stdin_errors: list[BaseException] = []
     process_cleanup_errors: list[BaseException] = []
     stream_close_errors: list[BaseException] = []
+    thread_join_errors: list[BaseException] = []
 
     def kill_process_tree() -> None:
         try:
@@ -2316,9 +2317,11 @@ def run_kernel_subprocess(
         # A kernel must not extend the capture lifetime by leaving descendants
         # holding inherited stdout/stderr pipes after its direct process exits.
         kill_process_tree()
-        writer.join()
-        for reader in readers:
-            reader.join()
+        for worker in (writer, *readers):
+            try:
+                worker.join()
+            except Exception as error:
+                thread_join_errors.append(error)
         assert process.stdout is not None and process.stderr is not None
         for stream in (process.stdout, process.stderr):
             try:
@@ -2327,6 +2330,8 @@ def run_kernel_subprocess(
                 stream_close_errors.append(error)
     if stream_close_errors:
         raise ValueError("kernel subprocess stream cleanup failed") from stream_close_errors[0]
+    if thread_join_errors:
+        raise ValueError("kernel subprocess worker cleanup failed") from thread_join_errors[0]
     if process_cleanup_errors:
         raise ValueError("kernel subprocess process-group cleanup failed") from process_cleanup_errors[0]
     if overflow:
