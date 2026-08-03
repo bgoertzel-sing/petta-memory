@@ -379,23 +379,27 @@ class PiPlnModelTests(unittest.TestCase):
         self.assertIs(caught.exception.__cause__, launch_error)
 
     def test_kernel_subprocess_wraps_output_capture_failure(self):
-        read_error = OSError("untrusted output stream failure")
-        process = mock.Mock()
-        process.pid = 1234
-        process.stdin = mock.Mock()
-        process.stdout.read.side_effect = read_error
-        process.stderr.read.return_value = b""
-        process.wait.return_value = 0
-        process.returncode = 0
-        with mock.patch("petta_memory.pipln_models.subprocess.Popen", return_value=process):
-            with mock.patch("petta_memory.pipln_models.os.killpg"):
-                with self.assertRaisesRegex(
-                    ValueError, "kernel subprocess output capture failed",
-                ) as caught:
-                    run_kernel_subprocess(
-                        "program", argv=(sys.executable,), timeout_ms=1000,
-                    )
-        self.assertIs(caught.exception.__cause__, read_error)
+        for read_error in (
+            OSError("untrusted output stream failure"),
+            RuntimeError("unexpected output stream failure"),
+        ):
+            with self.subTest(error=read_error):
+                process = mock.Mock()
+                process.pid = 1234
+                process.stdin = mock.Mock()
+                process.stdout.read.side_effect = read_error
+                process.stderr.read.return_value = b""
+                process.wait.return_value = 0
+                process.returncode = 0
+                with mock.patch("petta_memory.pipln_models.subprocess.Popen", return_value=process):
+                    with mock.patch("petta_memory.pipln_models.os.killpg"):
+                        with self.assertRaisesRegex(
+                            ValueError, "kernel subprocess output capture failed",
+                        ) as caught:
+                            run_kernel_subprocess(
+                                "program", argv=(sys.executable,), timeout_ms=1000,
+                            )
+                self.assertIs(caught.exception.__cause__, read_error)
 
     def test_kernel_subprocess_requires_complete_program_delivery(self):
         with self.assertRaisesRegex(ValueError, "complete program delivery"):

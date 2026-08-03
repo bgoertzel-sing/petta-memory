@@ -2270,7 +2270,7 @@ def run_kernel_subprocess(
                     kill_process_tree()
                     break
             captures[name] = b"".join(chunks)
-        except (OSError, ValueError) as error:
+        except Exception as error:
             capture_errors.append(error)
             kill_process_tree()
 
