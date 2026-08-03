@@ -2248,6 +2248,7 @@ def run_kernel_subprocess(
     overflow: list[str] = []
     capture_errors: list[BaseException] = []
     stdin_errors: list[BaseException] = []
+    stream_close_errors: list[BaseException] = []
 
     def kill_process_tree() -> None:
         try:
@@ -2316,8 +2317,13 @@ def run_kernel_subprocess(
         for reader in readers:
             reader.join()
         assert process.stdout is not None and process.stderr is not None
-        process.stdout.close()
-        process.stderr.close()
+        for stream in (process.stdout, process.stderr):
+            try:
+                stream.close()
+            except Exception as error:
+                stream_close_errors.append(error)
+    if stream_close_errors:
+        raise ValueError("kernel subprocess stream cleanup failed") from stream_close_errors[0]
     if overflow:
         raise ValueError(f"kernel subprocess {overflow[0]} exceeded max_capture_bytes")
     if capture_errors:
