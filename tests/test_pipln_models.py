@@ -557,6 +557,53 @@ class PiPlnModelTests(unittest.TestCase):
         process.stdout.close.assert_called_once_with()
         process.stderr.close.assert_called_once_with()
 
+    def test_kernel_subprocess_wraps_worker_construction_failure(self):
+        construction_error = RuntimeError("unexpected worker construction failure")
+        process = mock.Mock()
+        process.pid = 1234
+        process.wait.return_value = 0
+        with mock.patch("petta_memory.pipln_models.subprocess.Popen", return_value=process):
+            with mock.patch("petta_memory.pipln_models.os.killpg") as killpg:
+                with mock.patch(
+                    "petta_memory.pipln_models.threading.Thread",
+                    side_effect=construction_error,
+                ):
+                    with self.assertRaisesRegex(
+                        ValueError, "kernel subprocess worker construction failed",
+                    ) as caught:
+                        run_kernel_subprocess(
+                            "program", argv=(sys.executable,), timeout_ms=1000,
+                        )
+        self.assertIs(caught.exception.__cause__, construction_error)
+        killpg.assert_called_once_with(process.pid, signal.SIGKILL)
+        process.wait.assert_called_once_with()
+        process.stdin.close.assert_called_once_with()
+        process.stdout.close.assert_called_once_with()
+        process.stderr.close.assert_called_once_with()
+
+    def test_kernel_subprocess_wraps_worker_construction_cleanup_failure(self):
+        construction_error = RuntimeError("unexpected worker construction failure")
+        cleanup_error = RuntimeError("unexpected construction cleanup failure")
+        process = mock.Mock()
+        process.pid = 1234
+        process.wait.side_effect = cleanup_error
+        with mock.patch("petta_memory.pipln_models.subprocess.Popen", return_value=process):
+            with mock.patch("petta_memory.pipln_models.os.killpg"):
+                with mock.patch(
+                    "petta_memory.pipln_models.threading.Thread",
+                    side_effect=construction_error,
+                ):
+                    with self.assertRaisesRegex(
+                        ValueError, "kernel subprocess worker construction cleanup failed",
+                    ) as caught:
+                        run_kernel_subprocess(
+                            "program", argv=(sys.executable,), timeout_ms=1000,
+                        )
+        self.assertIs(caught.exception.__cause__, cleanup_error)
+        process.stdin.close.assert_called_once_with()
+        process.stdout.close.assert_called_once_with()
+        process.stderr.close.assert_called_once_with()
+
     def test_kernel_subprocess_wraps_process_group_cleanup_failure(self):
         cleanup_error = RuntimeError("unexpected process-group cleanup failure")
         process = mock.Mock()

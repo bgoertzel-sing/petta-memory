@@ -2281,11 +2281,6 @@ def run_kernel_subprocess(
             capture_errors.append(error)
             kill_process_tree()
 
-    readers = [
-        threading.Thread(target=bounded_read, args=("stdout", process.stdout), daemon=True),
-        threading.Thread(target=bounded_read, args=("stderr", process.stderr), daemon=True),
-    ]
-
     def write_program() -> None:
         assert process.stdin is not None
         try:
@@ -2299,7 +2294,28 @@ def run_kernel_subprocess(
             except Exception as error:
                 stdin_errors.append(error)
 
-    writer = threading.Thread(target=write_program, daemon=True)
+    try:
+        readers = [
+            threading.Thread(target=bounded_read, args=("stdout", process.stdout), daemon=True),
+            threading.Thread(target=bounded_read, args=("stderr", process.stderr), daemon=True),
+        ]
+        writer = threading.Thread(target=write_program, daemon=True)
+    except Exception as error:
+        kill_process_tree()
+        construction_cleanup_errors: list[BaseException] = []
+        try:
+            process.wait()
+        except Exception as cleanup_error:
+            construction_cleanup_errors.append(cleanup_error)
+        for stream in (process.stdin, process.stdout, process.stderr):
+            if stream is not None:
+                try:
+                    stream.close()
+                except Exception as cleanup_error:
+                    construction_cleanup_errors.append(cleanup_error)
+        if construction_cleanup_errors:
+            raise ValueError("kernel subprocess worker construction cleanup failed") from construction_cleanup_errors[0]
+        raise ValueError("kernel subprocess worker construction failed") from error
     started_workers: list[threading.Thread] = []
     try:
         try:
