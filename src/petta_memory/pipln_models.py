@@ -2302,6 +2302,9 @@ def run_kernel_subprocess(
         kill_process_tree()
         process.wait()
         raise ValueError("kernel subprocess exceeded timeout_ms") from error
+    except Exception as error:
+        kill_process_tree()
+        raise ValueError("kernel subprocess wait failed") from error
     finally:
         # A kernel must not extend the capture lifetime by leaving descendants
         # holding inherited stdout/stderr pipes after its direct process exits.

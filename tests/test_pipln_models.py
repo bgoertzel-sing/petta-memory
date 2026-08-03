@@ -1,6 +1,7 @@
 import math
 import json
 import os
+import signal
 import subprocess
 import tempfile
 import sys
@@ -432,6 +433,26 @@ class PiPlnModelTests(unittest.TestCase):
                         "program", argv=(sys.executable,), timeout_ms=1000,
                     )
         self.assertIs(caught.exception.__cause__, write_error)
+
+    def test_kernel_subprocess_wraps_unexpected_wait_failure(self):
+        wait_error = RuntimeError("unexpected process wait failure")
+        process = mock.Mock()
+        process.pid = 1234
+        process.stdout.read.return_value = b""
+        process.stderr.read.return_value = b""
+        process.wait.side_effect = wait_error
+        with mock.patch("petta_memory.pipln_models.subprocess.Popen", return_value=process):
+            with mock.patch("petta_memory.pipln_models.os.killpg") as killpg:
+                with self.assertRaisesRegex(
+                    ValueError, "kernel subprocess wait failed",
+                ) as caught:
+                    run_kernel_subprocess(
+                        "program", argv=(sys.executable,), timeout_ms=1000,
+                    )
+        self.assertIs(caught.exception.__cause__, wait_error)
+        killpg.assert_called_with(process.pid, signal.SIGKILL)
+        process.stdout.close.assert_called_once_with()
+        process.stderr.close.assert_called_once_with()
 
     def test_kernel_subprocess_closes_inherited_descendant_pipes(self):
         script = (
