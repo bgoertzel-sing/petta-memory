@@ -471,6 +471,27 @@ class PiPlnModelTests(unittest.TestCase):
         process.stdout.close.assert_called_once_with()
         process.stderr.close.assert_called_once_with()
 
+    def test_kernel_subprocess_tolerates_missing_pipe_process_already_exited(self):
+        process = mock.Mock()
+        process.pid = 1234
+        process.stdin = None
+        process.wait.return_value = 0
+        with mock.patch("petta_memory.pipln_models.subprocess.Popen", return_value=process):
+            with mock.patch(
+                "petta_memory.pipln_models.os.killpg",
+                side_effect=ProcessLookupError("process already exited"),
+            ) as killpg:
+                with self.assertRaisesRegex(
+                    ValueError, "kernel subprocess did not provide requested pipes",
+                ):
+                    run_kernel_subprocess(
+                        "program", argv=(sys.executable,), timeout_ms=1000,
+                    )
+        killpg.assert_called_once_with(process.pid, signal.SIGKILL)
+        process.wait.assert_called_once_with()
+        process.stdout.close.assert_called_once_with()
+        process.stderr.close.assert_called_once_with()
+
     def test_kernel_subprocess_wraps_output_capture_failure(self):
         for read_error in (
             OSError("untrusted output stream failure"),
