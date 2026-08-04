@@ -49,6 +49,7 @@ from petta_memory.pipln_models import (
     read_validated_kernel_result,
     run_kernel_subprocess,
     validate_exact_kernel_replay,
+    validate_exact_kernel_capture_replay,
     validate_kernel_capture_result,
     validate_kernel_result,
     validate_phase0_reference_artifact,
@@ -2257,6 +2258,23 @@ class PiPlnModelTests(unittest.TestCase):
                 replayed = validate_exact_kernel_replay(
                     result_atom, expected=loaded_result, compiled=loaded_compiled,
                 )
+                captured_replay = validate_exact_kernel_capture_replay(
+                    archived_capture, result_atom=result_atom,
+                    expected=loaded_result, compiled=loaded_compiled,
+                )
+                self.assertEqual(captured_replay, replayed)
+                with self.assertRaisesRegex(ValueError, "exit successfully"):
+                    validate_exact_kernel_capture_replay(
+                        replace(archived_capture, return_code=1),
+                        result_atom=result_atom, expected=loaded_result,
+                        compiled=loaded_compiled,
+                    )
+                with self.assertRaisesRegex(ValueError, "exactly once"):
+                    validate_exact_kernel_capture_replay(
+                        replace(archived_capture, stdout="unrelated\n"),
+                        result_atom=result_atom, expected=loaded_result,
+                        compiled=loaded_compiled,
+                    )
                 self.assertEqual(replayed, result)
                 self.assertEqual(loaded_compiled.episode_id, "capture-run")
                 self.assertEqual(loaded_result.episode_id, "capture-run")

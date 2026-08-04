@@ -2036,6 +2036,39 @@ def validate_kernel_capture_result(
     )
 
 
+def validate_exact_kernel_capture_replay(
+    capture: KernelProcessCapture,
+    *,
+    result_atom: str,
+    expected: ValidatedKernelResult,
+    compiled: CompiledEpisodeInputs,
+    max_result_chars: int = DEFAULT_MAX_KERNEL_RESULT_CHARS,
+) -> ValidatedKernelResult:
+    """Require an exact semantic replay from one bounded process capture.
+
+    Unlike :func:`validate_exact_kernel_replay`, this boundary also proves that
+    the candidate result is a unique complete stdout record from a successful
+    process with no stderr.  It remains non-promoting and does not claim
+    rule/trace identity.
+    """
+    captured = validate_kernel_capture_result(
+        capture,
+        result_atom=result_atom,
+        query_term=expected.query_term,
+        compiled=compiled,
+        max_result_chars=max_result_chars,
+    )
+    replayed = validate_exact_kernel_replay(
+        result_atom,
+        expected=expected,
+        compiled=compiled,
+        max_result_chars=max_result_chars,
+    )
+    if captured != replayed:
+        raise ValueError("captured kernel replay does not match validated replay")
+    return replayed
+
+
 def build_captured_episode_manifest(
     *, capture: KernelProcessCapture, result_atom: str, query_term: str,
     compiled: CompiledEpisodeInputs, chart: "PiChart",
