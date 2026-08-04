@@ -1932,6 +1932,70 @@ class KernelProcessCapture:
                 require_utf8(value, "env values")
 
 
+def kernel_process_capture_document(
+    capture: KernelProcessCapture,
+) -> dict[str, object]:
+    """Return a checksummed document for one bounded raw process capture."""
+    if not isinstance(capture, KernelProcessCapture):
+        raise ValueError("capture must be a bounded kernel process capture")
+    payload = {
+        "argv": list(capture.argv),
+        "return_code": capture.return_code,
+        "stdout": capture.stdout,
+        "stderr": capture.stderr,
+        "program_cid": capture.program_cid,
+        "executable_sha256": capture.executable_sha256,
+        "program_sha256": capture.program_sha256,
+        "cwd": capture.cwd,
+        "env": None if capture.env is None else [list(entry) for entry in capture.env],
+    }
+    return {
+        "schema": "petta-memory-kernel-process-capture-v1",
+        "payload": payload,
+        "document_digest": _canonical_hash(payload),
+    }
+
+
+def write_kernel_process_capture(
+    path: str | Path, capture: KernelProcessCapture,
+) -> None:
+    """Create one immutable bounded raw-process capture artifact."""
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    data = json.dumps(
+        kernel_process_capture_document(capture), sort_keys=True, indent=2,
+    ) + "\n"
+    _write_create_once_durable(destination, data)
+
+
+def read_kernel_process_capture(path: str | Path) -> KernelProcessCapture:
+    """Reload a checksummed raw capture through its complete typed boundary."""
+    document = _load_unambiguous_json(path)
+    if (not isinstance(document, dict)
+            or set(document) != {"schema", "payload", "document_digest"}
+            or document.get("schema") != "petta-memory-kernel-process-capture-v1"):
+        raise ValueError("invalid kernel process capture document schema")
+    payload = document.get("payload")
+    fields = set(KernelProcessCapture.__dataclass_fields__)
+    if not isinstance(payload, dict) or set(payload) != fields:
+        raise ValueError("invalid kernel process capture payload")
+    if document.get("document_digest") != _canonical_hash(payload):
+        raise ValueError("kernel process capture document checksum mismatch")
+    argv = payload.get("argv")
+    env = payload.get("env")
+    if not isinstance(argv, list):
+        raise ValueError("invalid kernel process capture argv")
+    if env is not None and (
+        not isinstance(env, list)
+        or any(not isinstance(entry, list) or len(entry) != 2 for entry in env)
+    ):
+        raise ValueError("invalid kernel process capture environment")
+    values = dict(payload)
+    values["argv"] = tuple(argv)
+    values["env"] = None if env is None else tuple(tuple(entry) for entry in env)
+    return KernelProcessCapture(**values)
+
+
 def validate_kernel_capture_result(
     capture: KernelProcessCapture,
     *,

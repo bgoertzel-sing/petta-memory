@@ -45,6 +45,7 @@ from petta_memory.pipln_models import (
     read_compiled_episode_inputs,
     read_evidence_snapshot,
     read_episode_manifest,
+    read_kernel_process_capture,
     read_validated_kernel_result,
     run_kernel_subprocess,
     validate_exact_kernel_replay,
@@ -56,11 +57,46 @@ from petta_memory.pipln_models import (
     write_compiled_episode_inputs,
     write_evidence_snapshot,
     write_episode_manifest,
+    write_kernel_process_capture,
     write_validated_kernel_result,
 )
 
 
 class PiPlnModelTests(unittest.TestCase):
+    def test_kernel_process_capture_persistence_closes_raw_runtime_provenance(self):
+        digest = sha256(b"capture-program").hexdigest()
+        capture = KernelProcessCapture(
+            ("/frozen/kernel", "--quiet"), 0, "result\n", "",
+            program_cid=digest, executable_sha256="a" * 64,
+            program_sha256="b" * 64, cwd="/frozen/run",
+            env=(("LANG", "C.UTF-8"), ("MODE", "bounded")),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "capture.json"
+            write_kernel_process_capture(path, capture)
+            self.assertEqual(read_kernel_process_capture(path), capture)
+            with self.assertRaises(FileExistsError):
+                write_kernel_process_capture(path, capture)
+
+            document = json.loads(path.read_text(encoding="utf-8"))
+            document["payload"]["stdout"] = "forged\n"
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "checksum mismatch"):
+                read_kernel_process_capture(path)
+
+            document["document_digest"] = sha256(json.dumps(
+                document["payload"], sort_keys=True, separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode("utf-8")).hexdigest()
+            document["payload"]["env"] = [["MODE", "bounded"], ["LANG", "C.UTF-8"]]
+            document["document_digest"] = sha256(json.dumps(
+                document["payload"], sort_keys=True, separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode("utf-8")).hexdigest()
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "canonical sorted unique"):
+                read_kernel_process_capture(path)
+
     def test_kernel_process_capture_rejects_malformed_provenance(self):
         digest = "a" * 64
         invalid = (
@@ -2021,9 +2057,18 @@ class PiPlnModelTests(unittest.TestCase):
                 compiled_path = clean_room / "compiled.json"
                 result_path = clean_room / "result.json"
                 manifest_path = clean_room / "manifest.json"
+                capture_path = clean_room / "capture.json"
                 write_compiled_episode_inputs(compiled_path, compiled)
                 write_validated_kernel_result(result_path, result)
                 write_episode_manifest(manifest_path, manifest)
+                archived_capture = KernelProcessCapture(
+                    ("/frozen/kernel",), 0, result_atom, "",
+                    sha256(json.dumps(
+                        {"complete_program": program}, sort_keys=True,
+                        separators=(",", ":"), ensure_ascii=False,
+                    ).encode("utf-8")).hexdigest(),
+                )
+                write_kernel_process_capture(capture_path, archived_capture)
 
                 reference_source = b"(Sentence (Reference archived) (stv 1 1) (0))\n"
                 reference_result = "((stv 0.5 0.75) (0))"
@@ -2064,6 +2109,7 @@ class PiPlnModelTests(unittest.TestCase):
                 }), encoding="utf-8")
                 expected_artifacts = {
                     "Reference.metta",
+                    "capture.json",
                     "compiled.json",
                     "manifest.json",
                     "reference-manifest.json",
@@ -2077,13 +2123,7 @@ class PiPlnModelTests(unittest.TestCase):
 
                 loaded_compiled = read_compiled_episode_inputs(compiled_path)
                 loaded_result = read_validated_kernel_result(result_path, compiled=loaded_compiled)
-                archived_capture = KernelProcessCapture(
-                    ("/frozen/kernel",), 0, result_atom, "",
-                    sha256(json.dumps(
-                        {"complete_program": program}, sort_keys=True,
-                        separators=(",", ":"), ensure_ascii=False,
-                    ).encode("utf-8")).hexdigest(),
-                )
+                archived_capture = read_kernel_process_capture(capture_path)
                 loaded_manifest = read_episode_manifest(
                     manifest_path, compiled=loaded_compiled, result=loaded_result,
                     complete_program=program, capture=archived_capture,
