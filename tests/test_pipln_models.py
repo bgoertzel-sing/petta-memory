@@ -2275,6 +2275,18 @@ class PiPlnModelTests(unittest.TestCase):
                         result_atom=result_atom, expected=loaded_result,
                         compiled=loaded_compiled,
                     )
+                with self.assertRaisesRegex(
+                        ValueError, "expected must be a validated kernel result"):
+                    validate_exact_kernel_capture_replay(
+                        archived_capture, result_atom=result_atom,
+                        expected=None, compiled=loaded_compiled,
+                    )
+                with self.assertRaisesRegex(
+                        ValueError, "compiled must be immutable compiled episode inputs"):
+                    validate_exact_kernel_capture_replay(
+                        archived_capture, result_atom=result_atom,
+                        expected=loaded_result, compiled=None,
+                    )
                 self.assertEqual(replayed, result)
                 self.assertEqual(loaded_compiled.episode_id, "capture-run")
                 self.assertEqual(loaded_result.episode_id, "capture-run")

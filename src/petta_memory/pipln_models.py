@@ -1833,6 +1833,10 @@ def validate_exact_kernel_replay(
     than raw output formatting, but it does not execute a kernel or establish
     rule/trace identity.
     """
+    if not isinstance(expected, ValidatedKernelResult):
+        raise ValueError("expected must be a validated kernel result")
+    if not isinstance(compiled, CompiledEpisodeInputs):
+        raise ValueError("compiled must be immutable compiled episode inputs")
     if (expected.episode_id != compiled.episode_id
             or expected.chart_fingerprint != compiled.chart_fingerprint):
         raise ValueError("expected kernel result does not match compiled episode")
@@ -2051,6 +2055,10 @@ def validate_exact_kernel_capture_replay(
     process with no stderr.  It remains non-promoting and does not claim
     rule/trace identity.
     """
+    if not isinstance(expected, ValidatedKernelResult):
+        raise ValueError("expected must be a validated kernel result")
+    if not isinstance(compiled, CompiledEpisodeInputs):
+        raise ValueError("compiled must be immutable compiled episode inputs")
     captured = validate_kernel_capture_result(
         capture,
         result_atom=result_atom,
