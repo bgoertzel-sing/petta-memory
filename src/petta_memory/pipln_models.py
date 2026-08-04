@@ -2252,6 +2252,8 @@ def run_kernel_subprocess(
     stream_close_errors: list[BaseException] = []
     thread_join_errors: list[BaseException] = []
     process_wait_errors: list[BaseException] = []
+    timeout_errors: list[BaseException] = []
+    timeout_cleanup_errors: list[BaseException] = []
     thread_start_errors: list[BaseException] = []
     thread_start_cleanup_errors: list[BaseException] = []
 
@@ -2337,8 +2339,8 @@ def run_kernel_subprocess(
         try:
             process.wait()
         except Exception as cleanup_error:
-            raise ValueError("kernel subprocess timeout cleanup failed") from cleanup_error
-        raise ValueError("kernel subprocess exceeded timeout_ms") from error
+            timeout_cleanup_errors.append(cleanup_error)
+        timeout_errors.append(error)
     except Exception as error:
         kill_process_tree()
         process_wait_errors.append(error)
@@ -2363,6 +2365,10 @@ def run_kernel_subprocess(
         raise ValueError("kernel subprocess worker cleanup failed") from thread_join_errors[0]
     if process_cleanup_errors:
         raise ValueError("kernel subprocess process-group cleanup failed") from process_cleanup_errors[0]
+    if timeout_cleanup_errors:
+        raise ValueError("kernel subprocess timeout cleanup failed") from timeout_cleanup_errors[0]
+    if timeout_errors:
+        raise ValueError("kernel subprocess exceeded timeout_ms") from timeout_errors[0]
     if process_wait_errors:
         raise ValueError("kernel subprocess wait failed") from process_wait_errors[0]
     if thread_start_cleanup_errors:

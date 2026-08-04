@@ -497,6 +497,28 @@ class PiPlnModelTests(unittest.TestCase):
         process.stdout.close.assert_called_once_with()
         process.stderr.close.assert_called_once_with()
 
+    def test_kernel_subprocess_preserves_timeout_path_kill_failure(self):
+        timeout_error = subprocess.TimeoutExpired((sys.executable,), 1)
+        kill_error = RuntimeError("unexpected timeout-path kill failure")
+        process = mock.Mock()
+        process.pid = 1234
+        process.stdin = mock.Mock()
+        process.stdout.read.return_value = b""
+        process.stderr.read.return_value = b""
+        process.wait.side_effect = (timeout_error, None)
+        with mock.patch("petta_memory.pipln_models.subprocess.Popen", return_value=process):
+            with mock.patch("petta_memory.pipln_models.os.killpg", side_effect=kill_error):
+                with self.assertRaisesRegex(
+                    ValueError, "kernel subprocess process-group cleanup failed",
+                ) as caught:
+                    run_kernel_subprocess(
+                        "program", argv=(sys.executable,), timeout_ms=1000,
+                    )
+        self.assertIs(caught.exception.__cause__, kill_error)
+        self.assertEqual(process.wait.call_count, 2)
+        process.stdout.close.assert_called_once_with()
+        process.stderr.close.assert_called_once_with()
+
     def test_kernel_subprocess_wraps_stream_cleanup_failure(self):
         close_error = RuntimeError("unexpected stdout close failure")
         process = mock.Mock()
