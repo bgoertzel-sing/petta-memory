@@ -2244,6 +2244,27 @@ def run_kernel_subprocess(
         )
     except Exception as error:
         raise ValueError("kernel subprocess could not be launched") from error
+    if process.stdin is None or process.stdout is None or process.stderr is None:
+        cleanup_errors: list[BaseException] = []
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except Exception as error:
+            cleanup_errors.append(error)
+        try:
+            process.wait()
+        except Exception as error:
+            cleanup_errors.append(error)
+        for stream in (process.stdin, process.stdout, process.stderr):
+            if stream is not None:
+                try:
+                    stream.close()
+                except Exception as error:
+                    cleanup_errors.append(error)
+        if cleanup_errors:
+            raise ValueError("kernel subprocess pipe validation cleanup failed") from cleanup_errors[0]
+        raise ValueError("kernel subprocess did not provide requested pipes")
     captures: dict[str, bytes] = {}
     overflow: list[str] = []
     capture_errors: list[BaseException] = []
