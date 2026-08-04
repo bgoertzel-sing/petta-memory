@@ -379,6 +379,17 @@ class PiPlnModelTests(unittest.TestCase):
                 )
         self.assertIs(caught.exception.__cause__, launch_error)
 
+    def test_kernel_subprocess_wraps_unexpected_launch_failure(self):
+        launch_error = RuntimeError("unexpected process construction failure")
+        with mock.patch("petta_memory.pipln_models.subprocess.Popen", side_effect=launch_error):
+            with self.assertRaisesRegex(
+                ValueError, "kernel subprocess could not be launched",
+            ) as caught:
+                run_kernel_subprocess(
+                    "program", argv=(sys.executable,), timeout_ms=1000,
+                )
+        self.assertIs(caught.exception.__cause__, launch_error)
+
     def test_kernel_subprocess_wraps_output_capture_failure(self):
         for read_error in (
             OSError("untrusted output stream failure"),
