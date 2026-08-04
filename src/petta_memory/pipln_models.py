@@ -2251,6 +2251,7 @@ def run_kernel_subprocess(
     process_cleanup_errors: list[BaseException] = []
     stream_close_errors: list[BaseException] = []
     thread_join_errors: list[BaseException] = []
+    process_wait_errors: list[BaseException] = []
     thread_start_errors: list[BaseException] = []
     thread_start_cleanup_errors: list[BaseException] = []
 
@@ -2340,7 +2341,7 @@ def run_kernel_subprocess(
         raise ValueError("kernel subprocess exceeded timeout_ms") from error
     except Exception as error:
         kill_process_tree()
-        raise ValueError("kernel subprocess wait failed") from error
+        process_wait_errors.append(error)
     finally:
         # A kernel must not extend the capture lifetime by leaving descendants
         # holding inherited stdout/stderr pipes after its direct process exits.
@@ -2362,6 +2363,8 @@ def run_kernel_subprocess(
         raise ValueError("kernel subprocess worker cleanup failed") from thread_join_errors[0]
     if process_cleanup_errors:
         raise ValueError("kernel subprocess process-group cleanup failed") from process_cleanup_errors[0]
+    if process_wait_errors:
+        raise ValueError("kernel subprocess wait failed") from process_wait_errors[0]
     if thread_start_cleanup_errors:
         raise ValueError("kernel subprocess worker startup cleanup failed") from thread_start_cleanup_errors[0]
     if thread_start_errors:
