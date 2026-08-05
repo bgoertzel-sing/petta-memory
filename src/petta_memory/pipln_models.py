@@ -2684,6 +2684,8 @@ def read_episode_manifest(
         raise ValueError("compiled must be immutable compiled episode inputs")
     if result is not None and not isinstance(result, ValidatedKernelResult):
         raise ValueError("result must be a validated kernel result")
+    if capture is not None and not isinstance(capture, KernelProcessCapture):
+        raise ValueError("episode manifest capture must be a KernelProcessCapture")
     document = _load_unambiguous_json(path)
     if (not isinstance(document, dict)
             or set(document) != {"schema", "payload", "document_digest"}
@@ -2711,8 +2713,6 @@ def read_episode_manifest(
                 != _canonical_hash({"complete_program": complete_program})):
             raise ValueError("episode manifest does not match complete program")
     if capture is not None:
-        if not isinstance(capture, KernelProcessCapture):
-            raise ValueError("episode manifest capture must be a KernelProcessCapture")
         if (manifest.return_code != capture.return_code
                 or manifest.stdout_cid != _canonical_hash({"stdout": capture.stdout})
                 or manifest.stderr_cid != _canonical_hash({"stderr": capture.stderr})):

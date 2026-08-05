@@ -2721,6 +2721,7 @@ class PiPlnModelTests(unittest.TestCase):
             malformed_replay_dependencies = (
                 ("compiled", "immutable compiled episode inputs"),
                 ("result", "validated kernel result"),
+                ("capture", "KernelProcessCapture"),
             )
             for field, message in malformed_replay_dependencies:
                 with self.subTest(field=field), self.assertRaisesRegex(ValueError, message):
