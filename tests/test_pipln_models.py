@@ -2726,6 +2726,14 @@ class PiPlnModelTests(unittest.TestCase):
             for field, message in malformed_replay_dependencies:
                 with self.subTest(field=field), self.assertRaisesRegex(ValueError, message):
                     read_episode_manifest(path, **{field: "malformed"})
+            for complete_program in (1, ""):
+                with self.subTest(complete_program=complete_program), self.assertRaisesRegex(
+                    ValueError, "complete_program must be a non-empty string"
+                ):
+                    read_episode_manifest(
+                        Path(directory) / "missing.json",
+                        complete_program=complete_program,
+                    )
             document = episode_manifest_document(manifest)
             document["payload"]["return_code"] = 1
             path.write_text(json.dumps(document), encoding="utf-8")

@@ -2686,6 +2686,10 @@ def read_episode_manifest(
         raise ValueError("result must be a validated kernel result")
     if capture is not None and not isinstance(capture, KernelProcessCapture):
         raise ValueError("episode manifest capture must be a KernelProcessCapture")
+    if complete_program is not None and (
+        not isinstance(complete_program, str) or not complete_program
+    ):
+        raise ValueError("complete_program must be a non-empty string")
     document = _load_unambiguous_json(path)
     if (not isinstance(document, dict)
             or set(document) != {"schema", "payload", "document_digest"}
@@ -2708,8 +2712,7 @@ def read_episode_manifest(
     values["budget"] = EpisodeBudget(**payload["budget"])
     manifest = EpisodeManifest(**values)
     if complete_program is not None:
-        if (not isinstance(complete_program, str) or not complete_program
-                or manifest.compiled_program_cid
+        if (manifest.compiled_program_cid
                 != _canonical_hash({"complete_program": complete_program})):
             raise ValueError("episode manifest does not match complete program")
     if capture is not None:
