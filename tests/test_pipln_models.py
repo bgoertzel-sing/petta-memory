@@ -1720,6 +1720,12 @@ class PiPlnModelTests(unittest.TestCase):
         document = validated_kernel_result_document(result)
         self.assertEqual(document["schema"], "petta-memory-pipln-validated-kernel-result-v1")
         with tempfile.TemporaryDirectory() as directory:
+            malformed_parent = Path(directory) / "result-must-not-exist"
+            with self.assertRaisesRegex(ValueError, "typed validated kernel result"):
+                write_validated_kernel_result(
+                    malformed_parent / "result.json", None,
+                )
+            self.assertFalse(malformed_parent.exists())
             path = Path(directory) / "result.json"
             write_validated_kernel_result(path, result)
             self.assertEqual(read_validated_kernel_result(path, compiled=compiled), result)

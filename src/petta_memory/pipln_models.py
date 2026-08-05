@@ -2775,6 +2775,8 @@ def read_episode_manifest(
 
 def validated_kernel_result_document(result: ValidatedKernelResult) -> dict[str, object]:
     """Return a checksummed artifact for one provenance-closed kernel result."""
+    if not isinstance(result, ValidatedKernelResult):
+        raise ValueError("result must be a typed validated kernel result")
     payload = {
         "episode_id": result.episode_id,
         "chart_fingerprint": result.chart_fingerprint,
@@ -2794,9 +2796,9 @@ def validated_kernel_result_document(result: ValidatedKernelResult) -> dict[str,
 
 def write_validated_kernel_result(path: str | Path, result: ValidatedKernelResult) -> None:
     """Create one immutable validated-result artifact; never replace a path."""
+    data = json.dumps(validated_kernel_result_document(result), sort_keys=True, indent=2) + "\n"
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    data = json.dumps(validated_kernel_result_document(result), sort_keys=True, indent=2) + "\n"
     _write_create_once_durable(destination, data)
 
 
