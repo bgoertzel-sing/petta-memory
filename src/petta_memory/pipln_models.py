@@ -1757,6 +1757,8 @@ def validate_kernel_result(
     complete stamp-to-evidence-basis closure. It records an ephemeral result;
     it does not infer rule identity or authorize evidence promotion.
     """
+    if not isinstance(compiled, CompiledEpisodeInputs):
+        raise ValueError("compiled must be immutable compiled episode inputs")
     _positive_int(max_result_chars, "max_result_chars")
     if not isinstance(result_atom, str) or len(result_atom) > max_result_chars:
         raise ValueError("kernel result exceeds max_result_chars")

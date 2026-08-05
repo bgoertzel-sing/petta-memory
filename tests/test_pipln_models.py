@@ -1862,6 +1862,11 @@ class PiPlnModelTests(unittest.TestCase):
                                    max_result_chars=5)
         with self.assertRaisesRegex(ValueError, "executable/control form"):
             validate_kernel_result("((stv 0.5 0.5) (0))", query_term="(eval dangerous)", compiled=compiled)
+        with self.assertRaisesRegex(
+                ValueError, "compiled must be immutable compiled episode inputs"):
+            validate_kernel_result(
+                "((stv 0.5 0.5) (0))", query_term="(Q x)", compiled=None,
+            )
 
     def test_exact_kernel_replay_requires_semantic_and_provenance_identity(self):
         packets = [
