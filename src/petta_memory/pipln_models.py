@@ -1016,13 +1016,13 @@ def write_pettachainer_rule_attribution(
     attribution: PeTTaChainerRuleAttribution,
 ) -> None:
     """Create one immutable rule-attribution artifact; never replace it."""
-    destination = Path(path)
-    destination.parent.mkdir(parents=True, exist_ok=True)
     data = json.dumps(
         pettachainer_rule_attribution_document(attribution),
         sort_keys=True,
         indent=2,
     ) + "\n"
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
     _write_create_once_durable(destination, data)
 
 
