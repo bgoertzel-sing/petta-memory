@@ -2590,6 +2590,23 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
                 ),
                 manifest,
             )
+            missing_manifest_path = manifest_path.with_name("missing-manifest.json")
+            malformed_dependencies = (
+                ("contract", "immutable PeTTaChainer episode contract"),
+                ("result", "typed PeTTaChainer derived capture"),
+                ("attribution", "close against the PeTTaChainer derived capture"),
+            )
+            valid_dependencies = {
+                "contract": contract,
+                "result": capture,
+                "attribution": attribution,
+            }
+            for field, message in malformed_dependencies:
+                with self.subTest(field=field), self.assertRaisesRegex(ValueError, message):
+                    read_pettachainer_episode_manifest(
+                        missing_manifest_path,
+                        **{**valid_dependencies, field: None},
+                    )
             with self.assertRaisesRegex(ValueError, "input provenance mismatch"):
                 read_pettachainer_episode_manifest(
                     manifest_path,

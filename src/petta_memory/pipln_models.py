@@ -1525,6 +1525,14 @@ def read_pettachainer_episode_manifest(
     attribution: PeTTaChainerRuleAttribution,
 ) -> PeTTaChainerEpisodeManifest:
     """Reload a checksummed manifest and close it against its typed inputs."""
+    if not isinstance(contract, PeTTaChainerEpisodeContract):
+        raise ValueError("contract must be an immutable PeTTaChainer episode contract")
+    if not isinstance(result, PeTTaChainerDerivedResultCapture):
+        raise ValueError("result must be a typed PeTTaChainer derived capture")
+    if (not isinstance(attribution, PeTTaChainerRuleAttribution)
+            or attribution.result_digest != result.result_digest
+            or attribution != build_pettachainer_rule_attribution(result)):
+        raise ValueError("attribution must close against the PeTTaChainer derived capture")
     document = _load_unambiguous_json(path)
     if (not isinstance(document, dict)
             or set(document) != {"schema", "payload", "document_digest"}
@@ -1540,14 +1548,6 @@ def read_pettachainer_episode_manifest(
             or not isinstance(payload["budget"], dict)
             or set(payload["budget"]) != set(EpisodeBudget.__dataclass_fields__)):
         raise ValueError("invalid PeTTaChainer episode manifest payload")
-    if not isinstance(contract, PeTTaChainerEpisodeContract):
-        raise ValueError("contract must be an immutable PeTTaChainer episode contract")
-    if not isinstance(result, PeTTaChainerDerivedResultCapture):
-        raise ValueError("result must be a typed PeTTaChainer derived capture")
-    if (not isinstance(attribution, PeTTaChainerRuleAttribution)
-            or attribution.result_digest != result.result_digest
-            or attribution != build_pettachainer_rule_attribution(result)):
-        raise ValueError("attribution must close against the PeTTaChainer derived capture")
     expected_contract_cid = _canonical_hash(_pettachainer_contract_payload(contract))
     if (payload["episode_id"] != contract.episode_id
             or payload["chart_fingerprint"] != contract.chart_fingerprint
