@@ -1118,6 +1118,8 @@ def pettachainer_derived_result_capture_document(
     result: PeTTaChainerDerivedResultCapture,
 ) -> dict[str, object]:
     """Return a checksummed persistence envelope for one derived capture."""
+    if not isinstance(result, PeTTaChainerDerivedResultCapture):
+        raise ValueError("derived result document requires a typed PeTTaChainer capture")
     payload = {
         field: getattr(result, field)
         for field in result.__dataclass_fields__
@@ -1145,11 +1147,11 @@ def write_pettachainer_derived_result_capture(
     result: PeTTaChainerDerivedResultCapture,
 ) -> None:
     """Create one immutable derived-result capture artifact; never replace it."""
-    destination = Path(path)
-    destination.parent.mkdir(parents=True, exist_ok=True)
     data = json.dumps(
         pettachainer_derived_result_capture_document(result), sort_keys=True, indent=2,
     ) + "\n"
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
     _write_create_once_durable(destination, data)
 
 

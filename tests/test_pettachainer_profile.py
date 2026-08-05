@@ -2531,6 +2531,14 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
             path = Path(directory) / "derived-result.json"
             manifest_path = Path(directory) / "episode-manifest.json"
             attribution_path = Path(directory) / "rule-attribution.json"
+            malformed_capture_parent = Path(directory) / "capture-must-not-exist"
+            with self.assertRaisesRegex(
+                ValueError, "typed PeTTaChainer capture",
+            ):
+                write_pettachainer_derived_result_capture(
+                    malformed_capture_parent / "capture.json", None,
+                )
+            self.assertFalse(malformed_capture_parent.exists())
             malformed_parent = Path(directory) / "must-not-exist"
             with self.assertRaisesRegex(
                 ValueError, "typed PeTTaChainer episode manifest",
