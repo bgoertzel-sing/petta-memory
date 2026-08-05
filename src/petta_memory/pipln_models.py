@@ -2661,6 +2661,8 @@ def build_episode_manifest(
 
 
 def episode_manifest_document(manifest: EpisodeManifest) -> dict[str, object]:
+    if not isinstance(manifest, EpisodeManifest):
+        raise ValueError("manifest must be a typed episode manifest")
     payload = _episode_manifest_payload(manifest)
     return {
         "schema": "petta-memory-pipln-episode-manifest-v1",
@@ -2671,9 +2673,9 @@ def episode_manifest_document(manifest: EpisodeManifest) -> dict[str, object]:
 
 def write_episode_manifest(path: str | Path, manifest: EpisodeManifest) -> None:
     """Create one immutable episode-manifest artifact; never replace a path."""
+    data = json.dumps(episode_manifest_document(manifest), sort_keys=True, indent=2) + "\n"
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    data = json.dumps(episode_manifest_document(manifest), sort_keys=True, indent=2) + "\n"
     _write_create_once_durable(destination, data)
 
 

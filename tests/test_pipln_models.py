@@ -2580,6 +2580,13 @@ class PiPlnModelTests(unittest.TestCase):
         )
         self.assertEqual(manifest.result_cid, result.result_digest)
         self.assertEqual(manifest.projection_policy_ids, ("kernel-projection", "projection"))
+        with tempfile.TemporaryDirectory() as directory:
+            malformed_parent = Path(directory) / "manifest-must-not-exist"
+            with self.assertRaisesRegex(ValueError, "typed episode manifest"):
+                write_episode_manifest(
+                    malformed_parent / "episode-manifest.json", None,
+                )
+            self.assertFalse(malformed_parent.exists())
         self.assertEqual(episode_manifest_document(manifest)["schema"], "petta-memory-pipln-episode-manifest-v1")
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "manifest.json"
