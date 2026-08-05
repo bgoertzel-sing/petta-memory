@@ -2717,6 +2717,14 @@ class PiPlnModelTests(unittest.TestCase):
         manifest = build_episode_manifest(complete_program=compiled.sentences[0].atom + "\n(Q a)", **kwargs)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "manifest.json"
+            write_episode_manifest(path, manifest)
+            malformed_replay_dependencies = (
+                ("compiled", "immutable compiled episode inputs"),
+                ("result", "validated kernel result"),
+            )
+            for field, message in malformed_replay_dependencies:
+                with self.subTest(field=field), self.assertRaisesRegex(ValueError, message):
+                    read_episode_manifest(path, **{field: "malformed"})
             document = episode_manifest_document(manifest)
             document["payload"]["return_code"] = 1
             path.write_text(json.dumps(document), encoding="utf-8")

@@ -2680,6 +2680,10 @@ def read_episode_manifest(
     capture: KernelProcessCapture | None = None,
 ) -> EpisodeManifest:
     """Load a checksummed manifest and optionally close its replay provenance."""
+    if compiled is not None and not isinstance(compiled, CompiledEpisodeInputs):
+        raise ValueError("compiled must be immutable compiled episode inputs")
+    if result is not None and not isinstance(result, ValidatedKernelResult):
+        raise ValueError("result must be a validated kernel result")
     document = _load_unambiguous_json(path)
     if (not isinstance(document, dict)
             or set(document) != {"schema", "payload", "document_digest"}
