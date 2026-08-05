@@ -1499,6 +1499,8 @@ def pettachainer_episode_manifest_document(
     manifest: PeTTaChainerEpisodeManifest,
 ) -> dict[str, object]:
     """Return a checksummed document for one non-promoting manifest."""
+    if not isinstance(manifest, PeTTaChainerEpisodeManifest):
+        raise ValueError("manifest must be a typed PeTTaChainer episode manifest")
     payload = _pettachainer_episode_manifest_payload(manifest)
     return {
         "schema": "petta-memory-pettachainer-episode-manifest-v2",

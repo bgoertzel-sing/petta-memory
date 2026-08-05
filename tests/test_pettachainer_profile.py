@@ -2522,6 +2522,10 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "cannot authorize promotion"):
             replace(manifest, promotion_authorized=True)
+        with self.assertRaisesRegex(
+            ValueError, "typed PeTTaChainer episode manifest",
+        ):
+            pipln_models.pettachainer_episode_manifest_document(None)
 
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "derived-result.json"
