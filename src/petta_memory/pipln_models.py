@@ -2578,6 +2578,16 @@ def build_episode_manifest(
     sentence exactly once. Runtime invocation and artifact storage remain caller
     responsibilities; constructing this record grants no promotion authority.
     """
+    if not isinstance(compiled, CompiledEpisodeInputs):
+        raise ValueError("compiled must be immutable compiled episode inputs")
+    if not isinstance(result, ValidatedKernelResult):
+        raise ValueError("result must be a validated kernel result")
+    if not isinstance(chart, PiChart):
+        raise ValueError("chart must be an immutable pi chart")
+    if not isinstance(evidence_snapshot, EvidenceSnapshot):
+        raise ValueError("evidence_snapshot must be an immutable evidence snapshot")
+    if not isinstance(budget, EpisodeBudget):
+        raise ValueError("budget must be an immutable episode budget")
     _positive_int(max_program_chars, "max_program_chars")
     if not isinstance(complete_program, str) or not complete_program or len(complete_program) > max_program_chars:
         raise ValueError("complete_program must be non-empty and within max_program_chars")

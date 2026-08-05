@@ -2699,6 +2699,19 @@ class PiPlnModelTests(unittest.TestCase):
             seed=0, budget=EpisodeBudget(1, 100, 100), started_at="2026-07-14T12:00:00Z",
             finished_at="2026-07-14T12:00:01Z", return_code=0, stdout="", stderr="",
         )
+        malformed_dependencies = (
+            ("compiled", "immutable compiled episode inputs"),
+            ("result", "validated kernel result"),
+            ("chart", "immutable pi chart"),
+            ("evidence_snapshot", "immutable evidence snapshot"),
+            ("budget", "immutable episode budget"),
+        )
+        for field, message in malformed_dependencies:
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, message):
+                build_episode_manifest(
+                    complete_program=compiled.sentences[0].atom + "\n(Q a)",
+                    **{**kwargs, field: None},
+                )
         with self.assertRaisesRegex(ValueError, "every compiled sentence"):
             build_episode_manifest(complete_program="(unrelated)", **kwargs)
         manifest = build_episode_manifest(complete_program=compiled.sentences[0].atom + "\n(Q a)", **kwargs)
