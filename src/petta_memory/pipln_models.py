@@ -1513,11 +1513,11 @@ def write_pettachainer_episode_manifest(
     path: str | Path, manifest: PeTTaChainerEpisodeManifest,
 ) -> None:
     """Create one immutable PeTTaChainer manifest artifact."""
-    destination = Path(path)
-    destination.parent.mkdir(parents=True, exist_ok=True)
     data = json.dumps(
         pettachainer_episode_manifest_document(manifest), sort_keys=True, indent=2,
     ) + "\n"
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
     _write_create_once_durable(destination, data)
 
 
