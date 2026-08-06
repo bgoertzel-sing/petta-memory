@@ -1281,6 +1281,8 @@ def read_pettachainer_derived_result_capture(
     contract: PeTTaChainerEpisodeContract,
 ) -> PeTTaChainerDerivedResultCapture:
     """Reload a capture and close its compiler provenance against one contract."""
+    if not isinstance(contract, PeTTaChainerEpisodeContract):
+        raise ValueError("derived result reload requires a typed PeTTaChainer contract")
     document = _load_unambiguous_json(path)
     schema = "petta-memory-pettachainer-derived-result-capture-v1"
     if (not isinstance(document, dict)
@@ -1302,8 +1304,7 @@ def read_pettachainer_derived_result_capture(
             or any(set(payload[field]) != set(PeTTaChainerStageCapture.__dataclass_fields__)
                    for field in capture_fields)):
         raise ValueError("invalid PeTTaChainer derived result capture payload")
-    if (not isinstance(contract, PeTTaChainerEpisodeContract)
-            or payload["episode_id"] != contract.episode_id
+    if (payload["episode_id"] != contract.episode_id
             or payload["chart_fingerprint"] != contract.chart_fingerprint
             or payload["query_term"] != contract.query_term):
         raise ValueError("PeTTaChainer derived result capture does not match episode contract")

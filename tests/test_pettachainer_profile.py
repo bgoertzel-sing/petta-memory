@@ -2971,6 +2971,12 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
             manifest_path.write_text(original_manifest_text, encoding="utf-8")
             with self.assertRaises(FileExistsError):
                 write_pettachainer_episode_manifest(manifest_path, manifest)
+            with self.assertRaisesRegex(
+                ValueError, "derived result reload requires a typed PeTTaChainer contract",
+            ):
+                read_pettachainer_derived_result_capture(
+                    Path(directory) / "absent-derived-result.json", contract=None,
+                )
             with patch("petta_memory.pipln_models.os.fsync", wraps=os.fsync) as fsync:
                 write_pettachainer_derived_result_capture(path, capture)
             self.assertEqual(fsync.call_count, 2)
