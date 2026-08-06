@@ -3449,6 +3449,10 @@ def compile_episode_inputs(
     derived result. Each selected packet must close against the frozen snapshot
     and exactly one packet-derived evidence basis.
     """
+    if not isinstance(chart, PiChart):
+        raise ValueError("chart must be an immutable pi chart")
+    if not isinstance(evidence_snapshot, EvidenceSnapshot):
+        raise ValueError("evidence_snapshot must be an immutable evidence snapshot")
     _nonempty(episode_id, "episode_id")
     _positive_int(max_sentences, "max_sentences")
     _positive_int(max_atom_chars, "max_atom_chars")

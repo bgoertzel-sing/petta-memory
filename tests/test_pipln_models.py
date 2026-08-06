@@ -1542,6 +1542,22 @@ class PiPlnModelTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "max_atom_chars"):
             build_pettachainer_episode_contract(compiled=compiled, query_term="(S a)", max_atom_chars=10)
 
+    def test_episode_input_compiler_rejects_malformed_immutable_dependencies(self):
+        snapshot = self.snapshot()
+        context = PiContext("ctx", "lang", "world", "guard", "guard-v1", "query", "assumptions",
+                            "ontology", "ontology-v1", "weak-v1", "relevance-v1")
+        chart = build_pi_chart(
+            chart_id="chart", context=context, prior_strength_p0=0.5, prior_weight_k=2,
+            prior_provenance="review", policy=ChartPolicy("factor", "projection", "kernel", "rules", "v1", "v1"),
+            selected_packet_ids=["p1"], evidence_snapshot=snapshot, adequacy_certificate_id="adequacy",
+        )
+        kwargs = dict(episode_id="episode", chart=chart, evidence_snapshot=snapshot,
+                      packets=(), bases=())
+        with self.assertRaisesRegex(ValueError, "immutable pi chart"):
+            compile_episode_inputs(**{**kwargs, "chart": None})
+        with self.assertRaisesRegex(ValueError, "immutable evidence snapshot"):
+            compile_episode_inputs(**{**kwargs, "evidence_snapshot": None})
+
     def test_episode_input_compiler_fails_closed_on_snapshot_packet_or_basis_drift(self):
         packet = EvidencePacket("p1", "(S a)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")
         token = EvidenceToken("t1", "sensor", "s1", "ctx", "observed", "minted")
