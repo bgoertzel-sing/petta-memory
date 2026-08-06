@@ -3577,6 +3577,8 @@ def build_pettachainer_episode_contract(
 
 def compiled_episode_inputs_document(compiled: CompiledEpisodeInputs) -> dict[str, object]:
     """Return a canonical checksummed artifact for exact compiler-output replay."""
+    if not isinstance(compiled, CompiledEpisodeInputs):
+        raise ValueError("compiled must be immutable compiled episode inputs")
     payload = {
         "episode_id": compiled.episode_id,
         "chart_fingerprint": compiled.chart_fingerprint,
@@ -3620,9 +3622,9 @@ def compiled_episode_inputs_document(compiled: CompiledEpisodeInputs) -> dict[st
 
 def write_compiled_episode_inputs(path: str | Path, compiled: CompiledEpisodeInputs) -> None:
     """Create one immutable compiler-output artifact; never replace a path."""
+    data = json.dumps(compiled_episode_inputs_document(compiled), sort_keys=True, indent=2) + "\n"
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    data = json.dumps(compiled_episode_inputs_document(compiled), sort_keys=True, indent=2) + "\n"
     _write_create_once_durable(destination, data)
 
 

@@ -1661,6 +1661,13 @@ class PiPlnModelTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "exactly one filesystem link"):
                 read_compiled_episode_inputs(safe_artifact)
 
+    def test_compiled_episode_inputs_serialization_rejects_malformed_input_before_io(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "must-not-exist" / "compiled.json"
+            with self.assertRaisesRegex(ValueError, "immutable compiled episode inputs"):
+                write_compiled_episode_inputs(path, None)
+            self.assertFalse(path.parent.exists())
+
     def test_kernel_result_validator_closes_numeric_output_to_episode_provenance(self):
         packets = [
             EvidencePacket("p1", "(S a)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION"),
