@@ -3146,6 +3146,12 @@ def build_pi_chart(
     evidence_snapshot: EvidenceSnapshot, adequacy_certificate_id: str,
 ) -> PiChart:
     """Freeze a chart against one validated immutable evidence snapshot."""
+    if not isinstance(context, PiContext):
+        raise ValueError("context must be an immutable pi context")
+    if not isinstance(policy, ChartPolicy):
+        raise ValueError("policy must be an immutable chart policy")
+    if not isinstance(evidence_snapshot, EvidenceSnapshot):
+        raise ValueError("evidence_snapshot must be an immutable evidence snapshot")
     supplied_packet_ids = tuple(selected_packet_ids)
     packet_ids = tuple(sorted(supplied_packet_ids))
     if not packet_ids:

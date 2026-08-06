@@ -1448,6 +1448,22 @@ class PiPlnModelTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "context"):
             build_pi_chart(selected_packet_ids=["p1"], evidence_snapshot=self.snapshot(("p1",), context_id="other"), **kwargs)
 
+    def test_chart_rejects_malformed_immutable_dependencies(self):
+        context = PiContext("ctx", "lang", "world", "guard", "guard-v1", "query", "assumptions",
+                            "ontology", "ontology-v1", "weak-v1", "relevance-v1")
+        policy = ChartPolicy("factor-v1", "projection-v1", "kernel-projection-v1", "rules-v1", "kernel-v1", "translator-v1")
+        kwargs = dict(chart_id="chart", context=context, prior_strength_p0=0.5, prior_weight_k=2,
+                      prior_provenance="review:1", policy=policy, selected_packet_ids=["p1"],
+                      evidence_snapshot=self.snapshot(("p1",)), adequacy_certificate_id="adequacy-1")
+        malformed_dependencies = (
+            ("context", "immutable pi context"),
+            ("policy", "immutable chart policy"),
+            ("evidence_snapshot", "immutable evidence snapshot"),
+        )
+        for field, message in malformed_dependencies:
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, message):
+                build_pi_chart(**{**kwargs, field: None})
+
     def test_chart_rejects_empty_duplicate_or_blank_packet_selection(self):
         context = PiContext("ctx", "lang", "world", "guard", "guard-v1", "query", "assumptions",
                             "ontology", "ontology-v1", "weak-v1", "relevance-v1")
