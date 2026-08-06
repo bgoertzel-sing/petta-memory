@@ -2808,6 +2808,8 @@ def read_validated_kernel_result(
     compiled: CompiledEpisodeInputs,
 ) -> ValidatedKernelResult:
     """Load a result and close its stamps and basis IDs against one episode."""
+    if not isinstance(compiled, CompiledEpisodeInputs):
+        raise ValueError("compiled must be immutable compiled episode inputs")
     document = _load_unambiguous_json(path)
     schema = "petta-memory-pipln-validated-kernel-result-v1"
     if (not isinstance(document, dict) or set(document) != {"schema", "payload", "document_digest"}

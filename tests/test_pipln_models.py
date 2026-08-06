@@ -1749,6 +1749,12 @@ class PiPlnModelTests(unittest.TestCase):
                     malformed_parent / "result.json", None,
                 )
             self.assertFalse(malformed_parent.exists())
+            with self.assertRaisesRegex(
+                ValueError, "compiled must be immutable compiled episode inputs",
+            ):
+                read_validated_kernel_result(
+                    Path(directory) / "absent-result.json", compiled=None,
+                )
             path = Path(directory) / "result.json"
             write_validated_kernel_result(path, result)
             self.assertEqual(read_validated_kernel_result(path, compiled=compiled), result)
