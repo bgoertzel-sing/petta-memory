@@ -2986,7 +2986,9 @@ def write_evidence_snapshot(path: str | Path, snapshot: EvidenceSnapshot) -> Non
 def read_evidence_snapshot(path: str | Path) -> EvidenceSnapshot:
     """Load a snapshot document and fail closed on schema or checksum drift."""
     document = _load_unambiguous_json(path)
-    if not isinstance(document, dict) or document.get("schema") != "petta-memory-pipln-evidence-snapshot-v2":
+    if (not isinstance(document, dict)
+            or set(document) != {"schema", "payload", "document_digest"}
+            or document.get("schema") != "petta-memory-pipln-evidence-snapshot-v2"):
         raise ValueError("invalid evidence snapshot document schema")
     payload = document.get("payload")
     if not isinstance(payload, dict) or document.get("document_digest") != _canonical_hash(payload):

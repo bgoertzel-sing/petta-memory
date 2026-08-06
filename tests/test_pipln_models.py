@@ -1249,6 +1249,16 @@ class PiPlnModelTests(unittest.TestCase):
             path = Path(directory) / "nested" / "snapshot.json"
             write_evidence_snapshot(path, snapshot)
             self.assertEqual(read_evidence_snapshot(path), snapshot)
+            document = json.loads(path.read_text(encoding="utf-8"))
+            document["promotion_authorized"] = True
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(
+                ValueError, "invalid evidence snapshot document schema",
+            ):
+                read_evidence_snapshot(path)
+            path.write_text(
+                json.dumps(evidence_snapshot_document(snapshot)), encoding="utf-8",
+            )
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
             with self.assertRaises(FileExistsError):
                 write_evidence_snapshot(path, snapshot)
