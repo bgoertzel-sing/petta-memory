@@ -1970,11 +1970,11 @@ def write_kernel_process_capture(
     path: str | Path, capture: KernelProcessCapture,
 ) -> None:
     """Create one immutable bounded raw-process capture artifact."""
-    destination = Path(path)
-    destination.parent.mkdir(parents=True, exist_ok=True)
     data = json.dumps(
         kernel_process_capture_document(capture), sort_keys=True, indent=2,
     ) + "\n"
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
     _write_create_once_durable(destination, data)
 
 

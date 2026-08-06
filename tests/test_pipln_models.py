@@ -64,6 +64,15 @@ from petta_memory.pipln_models import (
 
 
 class PiPlnModelTests(unittest.TestCase):
+    def test_kernel_process_capture_validates_before_filesystem_mutation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory) / "must-not-exist"
+            with self.assertRaisesRegex(
+                ValueError, "capture must be a bounded kernel process capture",
+            ):
+                write_kernel_process_capture(parent / "capture.json", None)
+            self.assertFalse(parent.exists())
+
     def test_kernel_process_capture_persistence_closes_raw_runtime_provenance(self):
         digest = sha256(b"capture-program").hexdigest()
         capture = KernelProcessCapture(
