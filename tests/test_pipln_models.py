@@ -1270,6 +1270,13 @@ class PiPlnModelTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "exactly one filesystem link"):
                 read_evidence_snapshot(safe_artifact)
 
+    def test_evidence_snapshot_serialization_rejects_malformed_input_before_io(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "must-not-exist" / "snapshot.json"
+            with self.assertRaisesRegex(ValueError, "immutable evidence snapshot"):
+                write_evidence_snapshot(path, None)
+            self.assertFalse(path.parent.exists())
+
     def test_evidence_snapshot_persistence_rejects_tampering_and_schema_drift(self):
         packet = EvidencePacket("p1", "(S x)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")
         snapshot = build_evidence_snapshot(snapshot_id="snap", packets=[packet], context_id="ctx",

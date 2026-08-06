@@ -2952,6 +2952,8 @@ def build_evidence_snapshot(
 
 def evidence_snapshot_document(snapshot: EvidenceSnapshot) -> dict[str, object]:
     """Return the canonical, checksummed persistence envelope for a snapshot."""
+    if not isinstance(snapshot, EvidenceSnapshot):
+        raise ValueError("snapshot must be an immutable evidence snapshot")
     payload = {
         "id": snapshot.id,
         "packet_ids": list(snapshot.packet_ids),
@@ -2972,9 +2974,9 @@ def evidence_snapshot_document(snapshot: EvidenceSnapshot) -> dict[str, object]:
 
 def write_evidence_snapshot(path: str | Path, snapshot: EvidenceSnapshot) -> None:
     """Create an immutable snapshot document; never replace an existing path."""
+    data = json.dumps(evidence_snapshot_document(snapshot), sort_keys=True, indent=2) + "\n"
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    data = json.dumps(evidence_snapshot_document(snapshot), sort_keys=True, indent=2) + "\n"
     _write_create_once_durable(destination, data)
 
 
