@@ -1557,6 +1557,14 @@ class PiPlnModelTests(unittest.TestCase):
             compile_episode_inputs(**{**kwargs, "chart": None})
         with self.assertRaisesRegex(ValueError, "immutable evidence snapshot"):
             compile_episode_inputs(**{**kwargs, "evidence_snapshot": None})
+        with self.assertRaisesRegex(ValueError, "immutable evidence packets"):
+            compile_episode_inputs(**{**kwargs, "packets": (None,)})
+        packet = EvidencePacket(
+            "p1", "(S x)", "ctx", 1, 0, ("t-p1",), 1, 1,
+            "ACTIVE", "a1", "o1", "OBSERVATION",
+        )
+        with self.assertRaisesRegex(ValueError, "immutable evidence bases"):
+            compile_episode_inputs(**{**kwargs, "packets": (packet,), "bases": (None,)})
 
     def test_episode_input_compiler_fails_closed_on_snapshot_packet_or_basis_drift(self):
         packet = EvidencePacket("p1", "(S a)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")

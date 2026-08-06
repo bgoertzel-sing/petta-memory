@@ -3463,6 +3463,8 @@ def compile_episode_inputs(
 
     packet_by_id: dict[str, EvidencePacket] = {}
     for packet in packets:
+        if not isinstance(packet, EvidencePacket):
+            raise ValueError("packets must contain immutable evidence packets")
         if packet.id in packet_by_id:
             raise ValueError(f"duplicate packet: {packet.id}")
         packet_by_id[packet.id] = packet
@@ -3477,6 +3479,8 @@ def compile_episode_inputs(
 
     basis_by_id: dict[str, EvidenceBasis] = {}
     for basis in bases:
+        if not isinstance(basis, EvidenceBasis):
+            raise ValueError("bases must contain immutable evidence bases")
         if basis.basis_id in basis_by_id:
             raise ValueError(f"duplicate basis: {basis.basis_id}")
         basis_by_id[basis.basis_id] = basis
