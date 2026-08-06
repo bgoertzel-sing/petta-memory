@@ -1512,6 +1512,10 @@ class PiPlnModelTests(unittest.TestCase):
         self.assertIn("(Sentence ((S a) (stv", compiled.sentences[0].atom)
         self.assertEqual(compiled.sentences[0].meta.context_id, chart.context_id)
         self.assertEqual(compiled.evidence_snapshot_fingerprint, snapshot.snapshot_fingerprint)
+        with self.assertRaisesRegex(ValueError, "immutable stamp map entries"):
+            replace(compiled, stamp_map=(None,))
+        with self.assertRaisesRegex(ValueError, "immutable compiled sentences"):
+            replace(compiled, sentences=(None,))
 
         contract = build_pettachainer_episode_contract(compiled=compiled, query_term="(S a)")
         self.assertEqual(contract.query_atom, "(: $prf (S a) $tv)")

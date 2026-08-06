@@ -682,6 +682,8 @@ class CompiledEpisodeInputs:
             raise ValueError("compiled episode must contain at least one sentence")
         basis_by_stamp: dict[int, str] = {}
         for entry in self.stamp_map:
+            if not isinstance(entry, StampMapEntry):
+                raise ValueError("stamp_map must contain immutable stamp map entries")
             if entry.episode_id != self.episode_id:
                 raise ValueError("stamp map episode mismatch")
             if entry.stamp_int in basis_by_stamp or entry.basis_id in basis_by_stamp.values():
@@ -691,6 +693,8 @@ class CompiledEpisodeInputs:
             raise ValueError("stamp map integers must be contiguous from zero")
         sentence_digests: set[str] = set()
         for sentence in self.sentences:
+            if not isinstance(sentence, CompiledSentence):
+                raise ValueError("sentences must contain immutable compiled sentences")
             if sentence.meta.episode_id != self.episode_id:
                 raise ValueError("compiled sentence episode mismatch")
             if sentence.meta.sentence_digest in sentence_digests:
