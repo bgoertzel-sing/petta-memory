@@ -772,6 +772,20 @@ class PeTTaChainerEpisodeContract:
         proof_ids = tuple(statement.proof_id for statement in self.statements)
         if len(set(proof_ids)) != len(proof_ids):
             raise ValueError("PeTTaChainer contract proof ids must be unique")
+        basis_by_stamp: dict[int, str] = {}
+        stamp_by_basis: dict[str, int] = {}
+        for statement in self.statements:
+            for stamp, basis_id in zip(
+                statement.stamp_ints, statement.evidence_basis_ids,
+            ):
+                if (stamp in basis_by_stamp and basis_by_stamp[stamp] != basis_id
+                        or basis_id in stamp_by_basis and stamp_by_basis[basis_id] != stamp):
+                    raise ValueError(
+                        "PeTTaChainer contract stamps and evidence bases must have "
+                        "a consistent one-to-one mapping"
+                    )
+                basis_by_stamp[stamp] = basis_id
+                stamp_by_basis[basis_id] = stamp
         canonical_query = _canonical_kernel_term(self.query_term)
         if canonical_query != self.query_term:
             raise ValueError("PeTTaChainer query term is not canonical")

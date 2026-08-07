@@ -1523,6 +1523,31 @@ class PiPlnModelTests(unittest.TestCase):
         self.assertEqual(contract.query_atom, "(: $prf (S a) $tv)")
         self.assertEqual(len(contract.statements), 2)
         first = contract.statements[0]
+        second = contract.statements[1]
+        with self.assertRaisesRegex(ValueError, "consistent one-to-one mapping"):
+            replace(
+                contract,
+                statements=(
+                    first,
+                    replace(
+                        second,
+                        stamp_ints=first.stamp_ints,
+                        evidence_basis_ids=second.evidence_basis_ids,
+                    ),
+                ),
+            )
+        with self.assertRaisesRegex(ValueError, "consistent one-to-one mapping"):
+            replace(
+                contract,
+                statements=(
+                    first,
+                    replace(
+                        second,
+                        stamp_ints=second.stamp_ints,
+                        evidence_basis_ids=first.evidence_basis_ids,
+                    ),
+                ),
+            )
         self.assertEqual(first.proof_id, f"pm-{compiled.sentences[0].meta.sentence_digest}")
         self.assertEqual(first.stamp_ints, compiled.sentences[0].meta.stamp_ints)
         self.assertEqual(first.evidence_basis_ids, compiled.sentences[0].meta.evidence_basis_ids)
