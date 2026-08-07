@@ -1518,6 +1518,8 @@ class PiPlnModelTests(unittest.TestCase):
             replace(compiled, sentences=(None,))
 
         contract = build_pettachainer_episode_contract(compiled=compiled, query_term="(S a)")
+        with self.assertRaisesRegex(ValueError, "immutable input statements"):
+            replace(contract, statements=(None,))
         self.assertEqual(contract.query_atom, "(: $prf (S a) $tv)")
         self.assertEqual(len(contract.statements), 2)
         first = contract.statements[0]

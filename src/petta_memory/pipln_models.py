@@ -759,6 +759,8 @@ class PeTTaChainerEpisodeContract:
         _sha256_digest(self.chart_fingerprint, "chart_fingerprint")
         if not self.statements:
             raise ValueError("PeTTaChainer contract must contain at least one statement")
+        if any(not isinstance(statement, PeTTaChainerInputStatement) for statement in self.statements):
+            raise ValueError("PeTTaChainer contract must contain immutable input statements")
         proof_ids = tuple(statement.proof_id for statement in self.statements)
         if len(set(proof_ids)) != len(proof_ids):
             raise ValueError("PeTTaChainer contract proof ids must be unique")
