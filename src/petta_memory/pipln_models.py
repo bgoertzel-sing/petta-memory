@@ -792,6 +792,10 @@ class PeTTaChainerEpisodeContract:
                     )
                 basis_by_stamp[stamp] = basis_id
                 stamp_by_basis[basis_id] = stamp
+        if tuple(sorted(basis_by_stamp)) != tuple(range(len(basis_by_stamp))):
+            raise ValueError(
+                "PeTTaChainer contract stamps must be contiguous from zero"
+            )
         canonical_query = _canonical_kernel_term(self.query_term)
         if canonical_query != self.query_term:
             raise ValueError("PeTTaChainer query term is not canonical")

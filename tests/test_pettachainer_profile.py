@@ -697,6 +697,15 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "at least one statement"):
             replace(contract, statements=list(contract.statements))
 
+    def test_episode_contract_requires_contiguous_compiler_stamps(self):
+        contract = self.episode_contract()
+        statement = replace(
+            contract.statements[0],
+            stamp_ints=(1,),
+        )
+        with self.assertRaisesRegex(ValueError, "contiguous from zero"):
+            replace(contract, statements=(statement,))
+
     def test_episode_contract_probe_runs_runtime_only_after_exact_validation(self):
         events = [
             {"label": "validate_episode_contract", "status": "ok", "statement_results": [1.0], "query_result": 1.0},
@@ -3544,7 +3553,7 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
                 atom=fact.atom, proof_id=fact.proof_id,
                 sentence_digest=fact.sentence_digest,
                 canonical_term=fact.canonical_term, strength=fact.strength,
-                confidence=fact.confidence, stamp_ints=(2,),
+                confidence=fact.confidence, stamp_ints=fact.stamp_ints,
                 evidence_basis_ids=("basis-other",),
             )
             drifted_contract = PeTTaChainerEpisodeContract(
@@ -3608,7 +3617,7 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
             atom=f"(: pm-{other_digest} (S b) (STV 0.7 0.5))",
             proof_id=f"pm-{other_digest}", sentence_digest=other_digest,
             canonical_term="(S b)", strength=0.7, confidence=0.5,
-            stamp_ints=(2,), evidence_basis_ids=("basis-other",),
+            stamp_ints=(1,), evidence_basis_ids=("basis-other",),
         )
         two_facts = PeTTaChainerEpisodeContract(
             episode_id=contract.episode_id, chart_fingerprint=contract.chart_fingerprint,
