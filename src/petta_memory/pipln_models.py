@@ -733,8 +733,14 @@ class PeTTaChainerInputStatement:
             raise ValueError("PeTTaChainer statement atom does not match typed content")
         if tuple(sorted(set(self.stamp_ints))) != self.stamp_ints or not self.stamp_ints:
             raise ValueError("PeTTaChainer statement stamps must be non-empty, unique, and sorted")
+        if any(isinstance(stamp, bool) or not isinstance(stamp, int) or stamp < 0
+               for stamp in self.stamp_ints):
+            raise ValueError("PeTTaChainer statement stamps must be non-negative integers")
         if tuple(sorted(set(self.evidence_basis_ids))) != self.evidence_basis_ids or not self.evidence_basis_ids:
             raise ValueError("PeTTaChainer statement evidence bases must be non-empty, unique, and sorted")
+        if any(not isinstance(basis_id, str) or not basis_id.strip()
+               for basis_id in self.evidence_basis_ids):
+            raise ValueError("PeTTaChainer statement evidence bases must be non-empty strings")
 
 
 @dataclass(frozen=True)
