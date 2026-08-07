@@ -1464,6 +1464,8 @@ def build_pettachainer_episode_manifest(
             or attribution.result_digest != result.result_digest
             or attribution != build_pettachainer_rule_attribution(result)):
         raise ValueError("attribution must close against the PeTTaChainer derived capture")
+    if not isinstance(budget, EpisodeBudget):
+        raise ValueError("budget must be an immutable episode budget")
     statements = {statement.sentence_digest: statement for statement in contract.statements}
     fact = statements.get(result.fact_sentence_digest)
     rule = statements.get(result.rule_sentence_digest)

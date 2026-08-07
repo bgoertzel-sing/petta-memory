@@ -2544,6 +2544,10 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
             build_pettachainer_episode_manifest(**manifest_kwargs).manifest_digest,
             manifest.manifest_digest,
         )
+        with self.assertRaisesRegex(
+            ValueError, "budget must be an immutable episode budget"
+        ):
+            build_pettachainer_episode_manifest(**(manifest_kwargs | {"budget": None}))
         with self.assertRaisesRegex(ValueError, "cannot authorize promotion"):
             replace(manifest, promotion_authorized=True)
         with self.assertRaisesRegex(
