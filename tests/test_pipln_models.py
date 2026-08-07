@@ -1567,6 +1567,8 @@ class PiPlnModelTests(unittest.TestCase):
                 contract,
                 query_atom="(: $prf (S a) $tv)" + " " * 1_000_000,
             )
+        with self.assertRaisesRegex(ValueError, "exceed max_atom_chars"):
+            replace(contract, query_term="(S " + "a" * 1_000_000 + ")")
 
         repeated_contract = build_pettachainer_episode_contract(compiled=repeated, query_term="(S a)")
         self.assertEqual(contract, repeated_contract)
