@@ -2336,6 +2336,30 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         self.assertEqual(capture.runtime_capture.stdout_bytes, 120)
         self.assertRegex(capture.runtime_capture.capture_digest, r"^[0-9a-f]{64}$")
         self.assertRegex(capture.result_digest, r"^[0-9a-f]{64}$")
+        builder_values = {
+            "episode_id": capture.episode_id,
+            "chart_fingerprint": capture.chart_fingerprint,
+            "fact": fact,
+            "rule": rule,
+            "query_term": capture.query_term,
+            "derived_atom": capture.derived_atom,
+            "derived_proof": capture.derived_proof,
+            "strength": capture.strength,
+            "confidence": capture.confidence,
+            "validator_capture": capture.validator_capture,
+            "runtime_capture": capture.runtime_capture,
+        }
+        for field, message in (
+            ("fact", "fact must be an immutable PeTTaChainer input statement"),
+            ("rule", "rule must be an immutable PeTTaChainer input statement"),
+            ("validator_capture", "validator_capture must be a typed PeTTaChainer stage capture"),
+            ("runtime_capture", "runtime_capture must be a typed PeTTaChainer stage capture"),
+        ):
+            with self.subTest(malformed_builder_dependency=field):
+                with self.assertRaisesRegex(ValueError, message):
+                    pipln_models.build_pettachainer_derived_result_capture(
+                        **(builder_values | {field: None})
+                    )
         malformed_capture_values = {
             field: getattr(capture, field)
             for field in capture.__dataclass_fields__

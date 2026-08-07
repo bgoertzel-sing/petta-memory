@@ -1086,6 +1086,14 @@ def build_pettachainer_derived_result_capture(
     validator_capture: PeTTaChainerStageCapture,
     runtime_capture: PeTTaChainerStageCapture,
 ) -> PeTTaChainerDerivedResultCapture:
+    if not isinstance(fact, PeTTaChainerInputStatement):
+        raise ValueError("fact must be an immutable PeTTaChainer input statement")
+    if not isinstance(rule, PeTTaChainerInputStatement):
+        raise ValueError("rule must be an immutable PeTTaChainer input statement")
+    if not isinstance(validator_capture, PeTTaChainerStageCapture):
+        raise ValueError("validator_capture must be a typed PeTTaChainer stage capture")
+    if not isinstance(runtime_capture, PeTTaChainerStageCapture):
+        raise ValueError("runtime_capture must be a typed PeTTaChainer stage capture")
     for value, field in ((strength, "strength"), (confidence, "confidence")):
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError(f"derived result {field} must be numeric")
