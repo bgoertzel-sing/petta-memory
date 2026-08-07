@@ -1562,6 +1562,11 @@ class PiPlnModelTests(unittest.TestCase):
             replace(first, atom="(: forged (S a) (STV 1.0 1.0))")
         with self.assertRaisesRegex(ValueError, "does not match typed content"):
             replace(contract, query_atom="(: fixed-proof (S a) (STV 1.0 1.0))")
+        with self.assertRaisesRegex(ValueError, "exceed max_atom_chars"):
+            replace(
+                contract,
+                query_atom="(: $prf (S a) $tv)" + " " * 1_000_000,
+            )
 
         repeated_contract = build_pettachainer_episode_contract(compiled=repeated, query_term="(S a)")
         self.assertEqual(contract, repeated_contract)

@@ -796,6 +796,11 @@ class PeTTaChainerEpisodeContract:
             raise ValueError(
                 "PeTTaChainer contract stamps must be contiguous from zero"
             )
+        emitted_chars = sum(len(statement.atom) for statement in self.statements)
+        if not isinstance(self.query_atom, str):
+            raise ValueError("PeTTaChainer query atom must be a string")
+        if emitted_chars + len(self.query_atom) > DEFAULT_MAX_COMPILED_ATOM_CHARS:
+            raise ValueError("PeTTaChainer contract atoms exceed max_atom_chars")
         canonical_query = _canonical_kernel_term(self.query_term)
         if canonical_query != self.query_term:
             raise ValueError("PeTTaChainer query term is not canonical")
