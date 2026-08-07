@@ -765,7 +765,7 @@ class PeTTaChainerEpisodeContract:
     def __post_init__(self) -> None:
         _nonempty(self.episode_id, "episode_id")
         _sha256_digest(self.chart_fingerprint, "chart_fingerprint")
-        if not self.statements:
+        if not isinstance(self.statements, tuple) or not self.statements:
             raise ValueError("PeTTaChainer contract must contain at least one statement")
         if any(not isinstance(statement, PeTTaChainerInputStatement) for statement in self.statements):
             raise ValueError("PeTTaChainer contract must contain immutable input statements")
