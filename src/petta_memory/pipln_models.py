@@ -741,6 +741,8 @@ class PeTTaChainerInputStatement:
         if any(not isinstance(basis_id, str) or not basis_id.strip()
                for basis_id in self.evidence_basis_ids):
             raise ValueError("PeTTaChainer statement evidence bases must be non-empty strings")
+        if len(self.evidence_basis_ids) != len(self.stamp_ints):
+            raise ValueError("PeTTaChainer statement evidence bases must close every stamp")
 
 
 @dataclass(frozen=True)

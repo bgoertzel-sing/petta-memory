@@ -677,6 +677,11 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "non-empty strings"):
             replace(statement, evidence_basis_ids=(1,))
 
+    def test_input_statement_requires_evidence_basis_for_every_stamp(self):
+        statement = self.episode_contract().statements[0]
+        with self.assertRaisesRegex(ValueError, "close every stamp"):
+            replace(statement, stamp_ints=(0, 1))
+
     def test_episode_contract_probe_runs_runtime_only_after_exact_validation(self):
         events = [
             {"label": "validate_episode_contract", "status": "ok", "statement_results": [1.0], "query_result": 1.0},
