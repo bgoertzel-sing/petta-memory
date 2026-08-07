@@ -731,13 +731,19 @@ class PeTTaChainerInputStatement:
         expected_atom = f"(: {self.proof_id} {canonical_term} (STV {self.strength} {self.confidence}))"
         if self.atom != expected_atom:
             raise ValueError("PeTTaChainer statement atom does not match typed content")
-        if tuple(sorted(set(self.stamp_ints))) != self.stamp_ints or not self.stamp_ints:
-            raise ValueError("PeTTaChainer statement stamps must be non-empty, unique, and sorted")
+        if (not isinstance(self.stamp_ints, tuple) or not self.stamp_ints
+                or tuple(sorted(set(self.stamp_ints))) != self.stamp_ints):
+            raise ValueError(
+                "PeTTaChainer statement stamps must be a non-empty, unique, sorted tuple"
+            )
         if any(isinstance(stamp, bool) or not isinstance(stamp, int) or stamp < 0
                for stamp in self.stamp_ints):
             raise ValueError("PeTTaChainer statement stamps must be non-negative integers")
-        if tuple(sorted(set(self.evidence_basis_ids))) != self.evidence_basis_ids or not self.evidence_basis_ids:
-            raise ValueError("PeTTaChainer statement evidence bases must be non-empty, unique, and sorted")
+        if (not isinstance(self.evidence_basis_ids, tuple) or not self.evidence_basis_ids
+                or tuple(sorted(set(self.evidence_basis_ids))) != self.evidence_basis_ids):
+            raise ValueError(
+                "PeTTaChainer statement evidence bases must be a non-empty, unique, sorted tuple"
+            )
         if any(not isinstance(basis_id, str) or not basis_id.strip()
                for basis_id in self.evidence_basis_ids):
             raise ValueError("PeTTaChainer statement evidence bases must be non-empty strings")

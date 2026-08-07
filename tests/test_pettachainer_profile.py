@@ -682,6 +682,16 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "close every stamp"):
             replace(statement, stamp_ints=(0, 1))
 
+    def test_input_statement_rejects_mutable_provenance_collections(self):
+        statement = self.episode_contract().statements[0]
+        with self.assertRaisesRegex(ValueError, "stamps must be .* tuple"):
+            replace(statement, stamp_ints=list(statement.stamp_ints))
+        with self.assertRaisesRegex(ValueError, "evidence bases must be .* tuple"):
+            replace(
+                statement,
+                evidence_basis_ids=list(statement.evidence_basis_ids),
+            )
+
     def test_episode_contract_rejects_mutable_statement_collection(self):
         contract = self.episode_contract()
         with self.assertRaisesRegex(ValueError, "at least one statement"):
