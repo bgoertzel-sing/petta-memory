@@ -591,6 +591,10 @@ class EvidenceBasis:
     def __post_init__(self) -> None:
         _nonempty(self.basis_id, "basis_id")
         _nonempty(self.justification_cid, "justification_cid")
+        if not isinstance(self.member_token_ids, tuple):
+            raise ValueError("member_token_ids must be an immutable tuple")
+        if not isinstance(self.causal_group_ids, tuple):
+            raise ValueError("causal_group_ids must be an immutable tuple")
         if not self.member_token_ids or tuple(sorted(set(self.member_token_ids))) != self.member_token_ids:
             raise ValueError("member_token_ids must be non-empty, unique, and sorted")
         if tuple(sorted(set(self.causal_group_ids))) != self.causal_group_ids:

@@ -64,6 +64,22 @@ from petta_memory.pipln_models import (
 
 
 class PiPlnModelTests(unittest.TestCase):
+    def test_evidence_basis_requires_immutable_provenance_collections(self):
+        fields = {
+            "basis_id": "basis-1",
+            "member_token_ids": ("token-1",),
+            "causal_group_ids": ("causal-group-1",),
+            "independence_status": "PROVEN_DISJOINT",
+            "justification_cid": "cid:basis-1",
+        }
+        for field in ("member_token_ids", "causal_group_ids"):
+            mutable_fields = dict(fields)
+            mutable_fields[field] = list(fields[field])
+            with self.subTest(field=field), self.assertRaisesRegex(
+                ValueError, f"{field} must be an immutable tuple",
+            ):
+                EvidenceBasis(**mutable_fields)
+
     def test_evidence_packet_requires_immutable_provenance_collections(self):
         fields = {
             "id": "packet-1",
