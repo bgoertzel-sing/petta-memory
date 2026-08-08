@@ -1685,6 +1685,10 @@ class ValidatedKernelResult:
             if (isinstance(value, bool) or not isinstance(value, (int, float))
                     or not math.isfinite(value) or not 0 <= value <= 1):
                 raise ValueError(f"kernel result {field} must be finite and in [0, 1]")
+        if not isinstance(self.stamp_ints, tuple):
+            raise ValueError("kernel result stamps must be an immutable tuple")
+        if not isinstance(self.evidence_basis_ids, tuple):
+            raise ValueError("kernel result evidence bases must be an immutable tuple")
         if not self.stamp_ints or tuple(sorted(set(self.stamp_ints))) != self.stamp_ints:
             raise ValueError("kernel result stamps must be non-empty, unique, and sorted")
         if any(isinstance(value, bool) or not isinstance(value, int) or value < 0

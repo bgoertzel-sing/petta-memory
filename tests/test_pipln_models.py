@@ -1829,6 +1829,10 @@ class PiPlnModelTests(unittest.TestCase):
             tuple(entry.basis_id for entry in compiled.stamp_map),
         )
         self.assertEqual(len(result.result_digest), 64)
+        with self.assertRaisesRegex(ValueError, "kernel result stamps must be an immutable tuple"):
+            replace(result, stamp_ints=list(result.stamp_ints))
+        with self.assertRaisesRegex(ValueError, "kernel result evidence bases must be an immutable tuple"):
+            replace(result, evidence_basis_ids=list(result.evidence_basis_ids))
 
     def test_validated_kernel_result_persistence_is_create_once_and_replay_closed(self):
         packets = [
