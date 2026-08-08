@@ -780,6 +780,11 @@ class PeTTaChainerEpisodeContract:
             raise ValueError("PeTTaChainer contract must contain at least one statement")
         if any(not isinstance(statement, PeTTaChainerInputStatement) for statement in self.statements):
             raise ValueError("PeTTaChainer contract must contain immutable input statements")
+        emitted_chars = 0
+        for statement in self.statements:
+            emitted_chars += len(statement.atom)
+            if emitted_chars > DEFAULT_MAX_COMPILED_ATOM_CHARS:
+                raise ValueError("PeTTaChainer contract atoms exceed max_atom_chars")
         proof_ids = tuple(statement.proof_id for statement in self.statements)
         if len(set(proof_ids)) != len(proof_ids):
             raise ValueError("PeTTaChainer contract proof ids must be unique")
@@ -801,7 +806,6 @@ class PeTTaChainerEpisodeContract:
             raise ValueError(
                 "PeTTaChainer contract stamps must be contiguous from zero"
             )
-        emitted_chars = sum(len(statement.atom) for statement in self.statements)
         if not isinstance(self.query_atom, str):
             raise ValueError("PeTTaChainer query atom must be a string")
         if not isinstance(self.query_term, str):

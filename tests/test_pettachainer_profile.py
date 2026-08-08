@@ -716,6 +716,15 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "at least one statement"):
             replace(contract, statements=list(contract.statements))
 
+    def test_episode_contract_bounds_statements_before_uniqueness_scan(self):
+        contract = self.episode_contract()
+        statement = contract.statements[0]
+        oversized_count = (
+            pipln_models.DEFAULT_MAX_COMPILED_ATOM_CHARS // len(statement.atom) + 1
+        )
+        with self.assertRaisesRegex(ValueError, "exceed.*max_atom_chars"):
+            replace(contract, statements=(statement,) * oversized_count)
+
     def test_episode_contract_requires_contiguous_compiler_stamps(self):
         contract = self.episode_contract()
         statement = replace(
