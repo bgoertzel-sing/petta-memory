@@ -667,6 +667,29 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
             query_atom="(: $prf (T a) $tv)",
         )
 
+    def derived_capture(self):
+        contract = self.rule_episode_contract()
+        rule, fact = contract.statements
+        validator = pipln_models.build_pettachainer_stage_capture(
+            label="validate_repaired_one_rule_derivation", elapsed_seconds=0.1,
+            stdout_bytes=1, stdout_sha256="d" * 64,
+            stderr_bytes=0, stderr_sha256="e" * 64,
+        )
+        runtime = pipln_models.build_pettachainer_stage_capture(
+            label="repaired_one_rule_derivation", elapsed_seconds=0.2,
+            stdout_bytes=1, stdout_sha256="f" * 64,
+            stderr_bytes=0, stderr_sha256="0" * 64,
+        )
+        proof = f"(rule-proof {rule.proof_id} {fact.proof_id})"
+        return pipln_models.build_pettachainer_derived_result_capture(
+            episode_id=contract.episode_id,
+            chart_fingerprint=contract.chart_fingerprint,
+            fact=fact, rule=rule, query_term=contract.query_term,
+            derived_atom=f"(: {proof} (T a) (STV 0.7 0.5))",
+            derived_proof=proof, strength=0.7, confidence=0.5,
+            validator_capture=validator, runtime_capture=runtime,
+        )
+
     def test_input_statement_rejects_boolean_stamp(self):
         statement = self.episode_contract().statements[0]
         with self.assertRaisesRegex(ValueError, "non-negative integers"):
@@ -742,6 +765,25 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "contiguous from zero"):
             replace(contract, statements=(statement,))
+
+    def test_derived_capture_bounds_query_before_parsing(self):
+        capture = self.derived_capture()
+        oversized = "x" * (pipln_models.DEFAULT_MAX_COMPILED_ATOM_CHARS + 1)
+        with patch.object(
+            pipln_models, "_canonical_kernel_term",
+            side_effect=AssertionError("oversized query must not be parsed"),
+        ):
+            with self.assertRaisesRegex(ValueError, "exceeds max_atom_chars"):
+                replace(capture, query_term=oversized)
+
+    def test_derived_capture_rejects_non_string_query_before_parsing(self):
+        capture = self.derived_capture()
+        with patch.object(
+            pipln_models, "_canonical_kernel_term",
+            side_effect=AssertionError("non-string query must not be parsed"),
+        ):
+            with self.assertRaisesRegex(ValueError, "text must be strings"):
+                replace(capture, query_term=None)
 
     def test_episode_contract_probe_runs_runtime_only_after_exact_validation(self):
         events = [

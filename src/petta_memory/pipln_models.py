@@ -902,6 +902,14 @@ class PeTTaChainerDerivedResultCapture:
         _sha256_digest(self.chart_fingerprint, "chart_fingerprint")
         _sha256_digest(self.fact_sentence_digest, "fact_sentence_digest")
         _sha256_digest(self.rule_sentence_digest, "rule_sentence_digest")
+        if not all(isinstance(value, str) for value in (
+            self.query_term, self.derived_atom, self.derived_proof,
+        )):
+            raise ValueError("PeTTaChainer derived result text must be strings")
+        if (len(self.query_term) > DEFAULT_MAX_COMPILED_ATOM_CHARS
+                or len(self.derived_atom) > DEFAULT_MAX_COMPILED_ATOM_CHARS
+                or len(self.derived_proof) > DEFAULT_MAX_COMPILED_ATOM_CHARS):
+            raise ValueError("PeTTaChainer derived result text exceeds max_atom_chars")
         if self.fact_proof_id != f"pm-{self.fact_sentence_digest}":
             raise ValueError("fact proof id does not match its sentence digest")
         if self.rule_proof_id != f"pm-{self.rule_sentence_digest}":
