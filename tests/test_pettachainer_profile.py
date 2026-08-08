@@ -725,6 +725,15 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "exceed.*max_atom_chars"):
             replace(contract, statements=(statement,) * oversized_count)
 
+    def test_episode_contract_bounds_query_before_provenance_scans(self):
+        contract = self.episode_contract()
+        with self.assertRaisesRegex(ValueError, "exceed.*max_atom_chars"):
+            replace(
+                contract,
+                statements=contract.statements * 2,
+                query_atom="x" * pipln_models.DEFAULT_MAX_COMPILED_ATOM_CHARS,
+            )
+
     def test_episode_contract_requires_contiguous_compiler_stamps(self):
         contract = self.episode_contract()
         statement = replace(

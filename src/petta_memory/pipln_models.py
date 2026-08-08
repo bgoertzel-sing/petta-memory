@@ -785,6 +785,13 @@ class PeTTaChainerEpisodeContract:
             emitted_chars += len(statement.atom)
             if emitted_chars > DEFAULT_MAX_COMPILED_ATOM_CHARS:
                 raise ValueError("PeTTaChainer contract atoms exceed max_atom_chars")
+        if not isinstance(self.query_atom, str):
+            raise ValueError("PeTTaChainer query atom must be a string")
+        if not isinstance(self.query_term, str):
+            raise ValueError("PeTTaChainer query term must be a string")
+        if (emitted_chars + len(self.query_atom) > DEFAULT_MAX_COMPILED_ATOM_CHARS
+                or len(self.query_term) > DEFAULT_MAX_COMPILED_ATOM_CHARS):
+            raise ValueError("PeTTaChainer contract atoms exceed max_atom_chars")
         proof_ids = tuple(statement.proof_id for statement in self.statements)
         if len(set(proof_ids)) != len(proof_ids):
             raise ValueError("PeTTaChainer contract proof ids must be unique")
@@ -806,13 +813,6 @@ class PeTTaChainerEpisodeContract:
             raise ValueError(
                 "PeTTaChainer contract stamps must be contiguous from zero"
             )
-        if not isinstance(self.query_atom, str):
-            raise ValueError("PeTTaChainer query atom must be a string")
-        if not isinstance(self.query_term, str):
-            raise ValueError("PeTTaChainer query term must be a string")
-        if (emitted_chars + len(self.query_atom) > DEFAULT_MAX_COMPILED_ATOM_CHARS
-                or len(self.query_term) > DEFAULT_MAX_COMPILED_ATOM_CHARS):
-            raise ValueError("PeTTaChainer contract atoms exceed max_atom_chars")
         canonical_query = _canonical_kernel_term(self.query_term)
         if canonical_query != self.query_term:
             raise ValueError("PeTTaChainer query term is not canonical")
