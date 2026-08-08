@@ -677,6 +677,25 @@ class PeTTaChainerProfileWorkloadTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "non-empty strings"):
             replace(statement, evidence_basis_ids=(1,))
 
+    def test_input_statement_bounds_reconstructed_term_before_parsing(self):
+        statement = self.episode_contract().statements[0]
+        oversized = "x" * (pipln_models.DEFAULT_MAX_COMPILED_ATOM_CHARS + 1)
+        with patch.object(
+            pipln_models, "_canonical_kernel_term",
+            side_effect=AssertionError("oversized term must not be parsed"),
+        ):
+            with self.assertRaisesRegex(ValueError, "exceeds max_atom_chars"):
+                replace(statement, canonical_term=oversized)
+
+    def test_input_statement_rejects_non_string_term_before_parsing(self):
+        statement = self.episode_contract().statements[0]
+        with patch.object(
+            pipln_models, "_canonical_kernel_term",
+            side_effect=AssertionError("non-string term must not be parsed"),
+        ):
+            with self.assertRaisesRegex(ValueError, "must be strings"):
+                replace(statement, canonical_term=None)
+
     def test_input_statement_requires_evidence_basis_for_every_stamp(self):
         statement = self.episode_contract().statements[0]
         with self.assertRaisesRegex(ValueError, "close every stamp"):

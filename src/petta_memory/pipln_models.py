@@ -719,6 +719,11 @@ class PeTTaChainerInputStatement:
     evidence_basis_ids: tuple[str, ...]
 
     def __post_init__(self) -> None:
+        if not isinstance(self.atom, str) or not isinstance(self.canonical_term, str):
+            raise ValueError("PeTTaChainer statement atom and term must be strings")
+        if (len(self.atom) > DEFAULT_MAX_COMPILED_ATOM_CHARS
+                or len(self.canonical_term) > DEFAULT_MAX_COMPILED_ATOM_CHARS):
+            raise ValueError("PeTTaChainer statement atom or term exceeds max_atom_chars")
         _sha256_digest(self.sentence_digest, "sentence_digest")
         if self.proof_id != f"pm-{self.sentence_digest}":
             raise ValueError("PeTTaChainer proof id must derive from the complete sentence digest")
