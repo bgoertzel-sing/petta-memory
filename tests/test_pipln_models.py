@@ -1740,6 +1740,10 @@ class PiPlnModelTests(unittest.TestCase):
                                            justification_cid="review:basis")
         compiled = compile_episode_inputs(episode_id="episode", chart=chart, evidence_snapshot=snapshot,
                                           packets=[packet], bases=[basis])
+        with self.assertRaisesRegex(ValueError, "stamp_map must be an immutable tuple"):
+            replace(compiled, stamp_map=list(compiled.stamp_map))
+        with self.assertRaisesRegex(ValueError, "sentences must be an immutable tuple"):
+            replace(compiled, sentences=list(compiled.sentences))
         document = compiled_episode_inputs_document(compiled)
         self.assertEqual(document["schema"], "petta-memory-pipln-compiled-episode-inputs-v1")
         with tempfile.TemporaryDirectory() as directory:

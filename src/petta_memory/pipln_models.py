@@ -687,6 +687,10 @@ class CompiledEpisodeInputs:
             _nonempty(getattr(self, field), field)
         _sha256_digest(self.chart_fingerprint, "chart_fingerprint")
         _sha256_digest(self.evidence_snapshot_fingerprint, "evidence_snapshot_fingerprint")
+        if not isinstance(self.stamp_map, tuple):
+            raise ValueError("stamp_map must be an immutable tuple")
+        if not isinstance(self.sentences, tuple):
+            raise ValueError("sentences must be an immutable tuple")
         if not self.sentences:
             raise ValueError("compiled episode must contain at least one sentence")
         basis_by_stamp: dict[int, str] = {}
