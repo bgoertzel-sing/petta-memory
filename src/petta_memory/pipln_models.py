@@ -631,6 +631,10 @@ class KernelSentenceMeta:
             _nonempty(getattr(self, field), field)
         _sha256_digest(self.sentence_digest, "sentence_digest")
         _sha256_digest(self.projection_id, "projection_id")
+        if not isinstance(self.stamp_ints, tuple):
+            raise ValueError("stamp_ints must be an immutable tuple")
+        if not isinstance(self.evidence_basis_ids, tuple):
+            raise ValueError("evidence_basis_ids must be an immutable tuple")
         if tuple(sorted(set(self.stamp_ints))) != self.stamp_ints:
             raise ValueError("stamp_ints must be unique and sorted")
         if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in self.stamp_ints):

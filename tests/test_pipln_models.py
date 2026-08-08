@@ -1516,6 +1516,13 @@ class PiPlnModelTests(unittest.TestCase):
             replace(compiled.sentences[0], projection=None)
         with self.assertRaisesRegex(ValueError, "immutable kernel sentence metadata"):
             replace(compiled.sentences[0], meta=None)
+        with self.assertRaisesRegex(ValueError, "stamp_ints must be an immutable tuple"):
+            replace(compiled.sentences[0].meta, stamp_ints=list(compiled.sentences[0].meta.stamp_ints))
+        with self.assertRaisesRegex(ValueError, "evidence_basis_ids must be an immutable tuple"):
+            replace(
+                compiled.sentences[0].meta,
+                evidence_basis_ids=list(compiled.sentences[0].meta.evidence_basis_ids),
+            )
         with mock.patch(
             "petta_memory.pipln_models._canonical_kernel_term",
             side_effect=AssertionError("parser must not run"),
