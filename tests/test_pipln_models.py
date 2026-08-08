@@ -64,6 +64,30 @@ from petta_memory.pipln_models import (
 
 
 class PiPlnModelTests(unittest.TestCase):
+    def test_evidence_packet_requires_immutable_provenance_collections(self):
+        fields = {
+            "id": "packet-1",
+            "statement": "(S x)",
+            "context_id": "ctx",
+            "positive_delta": 1,
+            "negative_delta": 0,
+            "token_ids": ("token-1",),
+            "source_reliability": 1,
+            "temporal_relevance": 1,
+            "status": "ACTIVE",
+            "assumption_fingerprint": "assumptions",
+            "ontology_fingerprint": "ontology",
+            "created_by": "OBSERVATION",
+            "parent_packet_ids": ("parent-1",),
+        }
+        for field in ("token_ids", "parent_packet_ids"):
+            mutable_fields = dict(fields)
+            mutable_fields[field] = list(fields[field])
+            with self.subTest(field=field), self.assertRaisesRegex(
+                ValueError, f"{field} must be an immutable tuple",
+            ):
+                EvidencePacket(**mutable_fields)
+
     def test_kernel_process_capture_validates_before_filesystem_mutation(self):
         with tempfile.TemporaryDirectory() as directory:
             parent = Path(directory) / "must-not-exist"

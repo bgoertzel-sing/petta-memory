@@ -554,6 +554,10 @@ class EvidencePacket:
     def __post_init__(self) -> None:
         for field in ("id", "statement", "context_id", "assumption_fingerprint", "ontology_fingerprint"):
             _nonempty(getattr(self, field), field)
+        if not isinstance(self.token_ids, tuple):
+            raise ValueError("token_ids must be an immutable tuple")
+        if not isinstance(self.parent_packet_ids, tuple):
+            raise ValueError("parent_packet_ids must be an immutable tuple")
         _finite_nonnegative(self.positive_delta, "positive_delta")
         _finite_nonnegative(self.negative_delta, "negative_delta")
         for field in ("source_reliability", "temporal_relevance"):
