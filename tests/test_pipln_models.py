@@ -1512,6 +1512,23 @@ class PiPlnModelTests(unittest.TestCase):
         self.assertIn("(Sentence ((S a) (stv", compiled.sentences[0].atom)
         self.assertEqual(compiled.sentences[0].meta.context_id, chart.context_id)
         self.assertEqual(compiled.evidence_snapshot_fingerprint, snapshot.snapshot_fingerprint)
+        with self.assertRaisesRegex(ValueError, "immutable projection record"):
+            replace(compiled.sentences[0], projection=None)
+        with self.assertRaisesRegex(ValueError, "immutable kernel sentence metadata"):
+            replace(compiled.sentences[0], meta=None)
+        with mock.patch(
+            "petta_memory.pipln_models._canonical_kernel_term",
+            side_effect=AssertionError("parser must not run"),
+        ) as parser:
+            with self.assertRaisesRegex(ValueError, "exceeds max_atom_chars"):
+                replace(
+                    compiled.sentences[0],
+                    meta=replace(
+                        compiled.sentences[0].meta,
+                        canonical_term="x" * 1_000_001,
+                    ),
+                )
+        parser.assert_not_called()
         with self.assertRaisesRegex(ValueError, "immutable stamp map entries"):
             replace(compiled, stamp_map=(None,))
         with self.assertRaisesRegex(ValueError, "immutable compiled sentences"):

@@ -648,6 +648,15 @@ class CompiledSentence:
     meta: KernelSentenceMeta
 
     def __post_init__(self) -> None:
+        if not isinstance(self.projection, ProjectionRecord):
+            raise ValueError("projection must be an immutable projection record")
+        if not isinstance(self.meta, KernelSentenceMeta):
+            raise ValueError("meta must be immutable kernel sentence metadata")
+        if not isinstance(self.atom, str) or not isinstance(self.meta.canonical_term, str):
+            raise ValueError("compiled sentence atom and canonical_term must be strings")
+        if (len(self.atom) > DEFAULT_MAX_COMPILED_ATOM_CHARS
+                or len(self.meta.canonical_term) > DEFAULT_MAX_COMPILED_ATOM_CHARS):
+            raise ValueError("compiled sentence atom or canonical_term exceeds max_atom_chars")
         _nonempty(self.atom, "atom")
         canonical_term = _canonical_kernel_term(self.meta.canonical_term)
         if canonical_term != self.meta.canonical_term:
