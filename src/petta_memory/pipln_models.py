@@ -1757,10 +1757,14 @@ class EpisodeManifest:
             "kernel_version", "rule_profile_id",
         ):
             _nonempty(getattr(self, field), field)
+        if not isinstance(self.parent_episode_ids, tuple):
+            raise ValueError("parent_episode_ids must be an immutable tuple")
         if tuple(sorted(set(self.parent_episode_ids))) != self.parent_episode_ids:
             raise ValueError("parent_episode_ids must be unique and sorted")
         if self.episode_id in self.parent_episode_ids:
             raise ValueError("an episode cannot be its own parent")
+        if not isinstance(self.projection_policy_ids, tuple):
+            raise ValueError("projection_policy_ids must be an immutable tuple")
         if not self.projection_policy_ids or tuple(sorted(set(self.projection_policy_ids))) != self.projection_policy_ids:
             raise ValueError("projection_policy_ids must be non-empty, unique, and sorted")
         for value in self.parent_episode_ids + self.projection_policy_ids:

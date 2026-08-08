@@ -2777,6 +2777,10 @@ class PiPlnModelTests(unittest.TestCase):
         )
         self.assertEqual(manifest.result_cid, result.result_digest)
         self.assertEqual(manifest.projection_policy_ids, ("kernel-projection", "projection"))
+        with self.assertRaisesRegex(ValueError, "parent_episode_ids must be an immutable tuple"):
+            replace(manifest, parent_episode_ids=list(manifest.parent_episode_ids))
+        with self.assertRaisesRegex(ValueError, "projection_policy_ids must be an immutable tuple"):
+            replace(manifest, projection_policy_ids=list(manifest.projection_policy_ids))
         with tempfile.TemporaryDirectory() as directory:
             malformed_parent = Path(directory) / "manifest-must-not-exist"
             with self.assertRaisesRegex(ValueError, "typed episode manifest"):
