@@ -2076,6 +2076,48 @@ class PiPlnModelTests(unittest.TestCase):
                     bad_capture, result_atom=bad_atom, query_term="(Q a)", compiled=compiled,
                 )
 
+    def test_reconstructed_kernel_result_bounds_query_before_parsing(self):
+        packet = EvidencePacket(
+            "p1", "(S a)", "ctx", 1, 0, ("t1",), 1, 1,
+            "ACTIVE", "a1", "o1", "OBSERVATION",
+        )
+        token = EvidenceToken("t1", "sensor", "s1", "ctx", "observed", "minted")
+        snapshot = build_evidence_snapshot(
+            snapshot_id="snapshot", packets=[packet], context_id="ctx",
+            assumption_fingerprint="a1", ontology_fingerprint="o1", created_at="now",
+        )
+        context = PiContext(
+            "ctx", "lang", "world", "guard", "guard-v1", "query", "assumptions",
+            "ontology", "ontology-v1", "weak-v1", "relevance-v1",
+        )
+        chart = build_pi_chart(
+            chart_id="chart", context=context, prior_strength_p0=0.5, prior_weight_k=2,
+            prior_provenance="review",
+            policy=ChartPolicy("factor", "projection", "kernel", "rules", "v1", "v1"),
+            selected_packet_ids=["p1"], evidence_snapshot=snapshot,
+            adequacy_certificate_id="adequacy",
+        )
+        basis = evidence_basis_from_packet(
+            packet, [token], independence_status="PROVEN_DISJOINT",
+            justification_cid="review:basis",
+        )
+        compiled = compile_episode_inputs(
+            episode_id="episode", chart=chart, evidence_snapshot=snapshot,
+            packets=[packet], bases=[basis],
+        )
+        result = validate_kernel_result(
+            "((stv 0.8 0.6) (0))", query_term="(Likes alice music)", compiled=compiled,
+        )
+        with mock.patch(
+            "petta_memory.pipln_models._canonical_kernel_term",
+            side_effect=AssertionError("parser must not run"),
+        ) as parser:
+            with self.assertRaisesRegex(ValueError, "query_term must be a string"):
+                replace(result, query_term=None)
+            with self.assertRaisesRegex(ValueError, "query_term exceeds max_atom_chars"):
+                replace(result, query_term="x" * 1_000_001)
+        parser.assert_not_called()
+
     def test_captured_episode_manifest_binds_one_successful_capture_end_to_end(self):
         packet = EvidencePacket("p1", "(S a)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")
         token = EvidenceToken("t1", "sensor", "s1", "ctx", "observed", "minted")

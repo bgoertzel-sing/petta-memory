@@ -1656,6 +1656,10 @@ class ValidatedKernelResult:
     def __post_init__(self) -> None:
         _nonempty(self.episode_id, "episode_id")
         _sha256_digest(self.chart_fingerprint, "chart_fingerprint")
+        if not isinstance(self.query_term, str):
+            raise ValueError("kernel result query_term must be a string")
+        if len(self.query_term) > DEFAULT_MAX_COMPILED_ATOM_CHARS:
+            raise ValueError("kernel result query_term exceeds max_atom_chars")
         canonical_term = _canonical_kernel_term(self.query_term)
         if canonical_term != self.query_term:
             raise ValueError("kernel result query_term is not canonical")
