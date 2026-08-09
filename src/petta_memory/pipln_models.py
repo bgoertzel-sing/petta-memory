@@ -3367,7 +3367,10 @@ def evidence_basis_from_packet(
 def deterministic_stamp_map(episode_id: str, bases: Iterable[EvidenceBasis]) -> tuple[StampMapEntry, ...]:
     """Assign collision-free integers after sorting stable basis identifiers."""
     _nonempty(episode_id, "episode_id")
-    ordered = sorted(bases, key=lambda basis: basis.basis_id)
+    supplied = tuple(bases)
+    if any(not isinstance(basis, EvidenceBasis) for basis in supplied):
+        raise ValueError("bases must contain immutable evidence bases")
+    ordered = sorted(supplied, key=lambda basis: basis.basis_id)
     ids = [basis.basis_id for basis in ordered]
     if len(ids) != len(set(ids)):
         raise ValueError("basis_id values must be unique within an episode")

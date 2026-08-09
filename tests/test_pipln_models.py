@@ -3255,6 +3255,17 @@ class PiPlnModelTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "duplicate basis metadata"):
             merge_evidence_capsules(left, left, bases=duplicate)
 
+    def test_deterministic_stamp_map_rejects_untyped_basis_before_field_access(self):
+        class ForgedBasis:
+            @property
+            def basis_id(self):
+                raise AssertionError("untyped basis field was accessed")
+
+        with self.assertRaisesRegex(
+            ValueError, "bases must contain immutable evidence bases"
+        ):
+            deterministic_stamp_map("episode", [ForgedBasis()])
+
     def test_capsule_rejects_unsorted_duplicate_or_empty_contributions(self):
         a = EvidenceContribution("basis-a", positive_weight=1)
         b = EvidenceContribution("basis-b", negative_weight=1)
