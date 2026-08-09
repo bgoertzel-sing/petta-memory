@@ -3266,6 +3266,34 @@ class PiPlnModelTests(unittest.TestCase):
         ):
             deterministic_stamp_map("episode", [ForgedBasis()])
 
+    def test_evidence_basis_rejects_untyped_inputs_before_field_access(self):
+        class ForgedPacket:
+            @property
+            def token_ids(self):
+                raise AssertionError("untyped packet field was accessed")
+
+        class ForgedToken:
+            @property
+            def id(self):
+                raise AssertionError("untyped token field was accessed")
+
+        with self.assertRaisesRegex(
+            ValueError, "packet must be an immutable evidence packet"
+        ):
+            evidence_basis_from_packet(
+                ForgedPacket(), (), independence_status="UNKNOWN", justification_cid="review"
+            )
+        packet = EvidencePacket(
+            "packet", "(S x)", "context", 1, 0, ("token",), 1, 1,
+            "ACTIVE", "assumption", "ontology", "OBSERVATION",
+        )
+        with self.assertRaisesRegex(
+            ValueError, "tokens must contain immutable evidence tokens"
+        ):
+            evidence_basis_from_packet(
+                packet, (ForgedToken(),), independence_status="UNKNOWN", justification_cid="review"
+            )
+
     def test_capsule_rejects_unsorted_duplicate_or_empty_contributions(self):
         a = EvidenceContribution("basis-a", positive_weight=1)
         b = EvidenceContribution("basis-b", negative_weight=1)

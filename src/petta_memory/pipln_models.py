@@ -3340,8 +3340,13 @@ def evidence_basis_from_packet(
     only validates provenance closure and gives the basis a deterministic ID;
     it never infers disjointness from distinct token identifiers.
     """
+    if not isinstance(packet, EvidencePacket):
+        raise ValueError("packet must be an immutable evidence packet")
+    supplied_tokens = tuple(tokens)
+    if any(not isinstance(token, EvidenceToken) for token in supplied_tokens):
+        raise ValueError("tokens must contain immutable evidence tokens")
     token_by_id: dict[str, EvidenceToken] = {}
-    for token in tokens:
+    for token in supplied_tokens:
         if token.id in token_by_id:
             raise ValueError(f"duplicate token metadata: {token.id}")
         token_by_id[token.id] = token
