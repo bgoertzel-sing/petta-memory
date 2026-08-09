@@ -2987,6 +2987,12 @@ class EvidenceSnapshot:
             "created_at", "snapshot_fingerprint",
         ):
             _nonempty(getattr(self, field), field)
+        if not isinstance(self.packet_ids, tuple):
+            raise ValueError("packet_ids must be an immutable tuple")
+        if not isinstance(self.packet_content_digests, tuple):
+            raise ValueError("packet_content_digests must be an immutable tuple")
+        if any(not isinstance(item, tuple) for item in self.packet_content_digests):
+            raise ValueError("packet_content_digests entries must be immutable tuples")
         if not self.packet_ids or tuple(sorted(set(self.packet_ids))) != self.packet_ids:
             raise ValueError("packet_ids must be non-empty, unique, and sorted")
         for packet_id in self.packet_ids:

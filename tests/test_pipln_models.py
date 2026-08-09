@@ -13,6 +13,7 @@ from hashlib import sha256
 from pathlib import Path
 
 from petta_memory.pipln_models import (
+    _snapshot_fingerprint,
     EvidenceBasis,
     EvidenceCapsule,
     EvidenceContribution,
@@ -64,6 +65,38 @@ from petta_memory.pipln_models import (
 
 
 class PiPlnModelTests(unittest.TestCase):
+    def test_evidence_snapshot_requires_immutable_content_collections(self):
+        packet_digest = "1" * 64
+        fields = {
+            "id": "snapshot-1",
+            "packet_ids": ("packet-1",),
+            "context_id": "context-1",
+            "assumption_fingerprint": "assumptions-1",
+            "ontology_fingerprint": "ontology-1",
+            "created_at": "2026-08-09T00:00:00+00:00",
+            "snapshot_fingerprint": _snapshot_fingerprint(
+                (("packet-1", packet_digest),),
+                context_id="context-1",
+                assumption_fingerprint="assumptions-1",
+                ontology_fingerprint="ontology-1",
+            ),
+            "packet_content_digests": (("packet-1", packet_digest),),
+        }
+        for field in ("packet_ids", "packet_content_digests"):
+            mutable_fields = dict(fields)
+            mutable_fields[field] = list(fields[field])
+            with self.subTest(field=field), self.assertRaisesRegex(
+                ValueError, f"{field} must be an immutable tuple",
+            ):
+                EvidenceSnapshot(**mutable_fields)
+
+        mutable_fields = dict(fields)
+        mutable_fields["packet_content_digests"] = (["packet-1", packet_digest],)
+        with self.assertRaisesRegex(
+            ValueError, "packet_content_digests entries must be immutable tuples",
+        ):
+            EvidenceSnapshot(**mutable_fields)
+
     def test_evidence_basis_requires_immutable_provenance_collections(self):
         fields = {
             "basis_id": "basis-1",
