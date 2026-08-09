@@ -3380,6 +3380,13 @@ class EvidenceCapsule:
     contributions: tuple[EvidenceContribution, ...]
 
     def __post_init__(self) -> None:
+        if not isinstance(self.contributions, tuple):
+            raise ValueError("contributions must be an immutable tuple")
+        if any(
+            not isinstance(item, EvidenceContribution)
+            for item in self.contributions
+        ):
+            raise ValueError("contributions must contain evidence contributions")
         ids = tuple(item.basis_id for item in self.contributions)
         if not ids or ids != tuple(sorted(set(ids))):
             raise ValueError("contributions must be non-empty, unique, and sorted by basis_id")

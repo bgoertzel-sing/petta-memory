@@ -65,6 +65,17 @@ from petta_memory.pipln_models import (
 
 
 class PiPlnModelTests(unittest.TestCase):
+    def test_evidence_capsule_requires_immutable_typed_contributions(self):
+        contribution = EvidenceContribution("basis-1", positive_weight=1)
+        with self.assertRaisesRegex(
+            ValueError, "contributions must be an immutable tuple",
+        ):
+            EvidenceCapsule([contribution])
+        with self.assertRaisesRegex(
+            ValueError, "contributions must contain evidence contributions",
+        ):
+            EvidenceCapsule((None,))
+
     def test_evidence_snapshot_requires_immutable_content_collections(self):
         packet_digest = "1" * 64
         fields = {
