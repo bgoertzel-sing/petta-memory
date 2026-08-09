@@ -65,6 +65,16 @@ from petta_memory.pipln_models import (
 
 
 class PiPlnModelTests(unittest.TestCase):
+    def test_pi_context_requires_immutable_parent_collection(self):
+        with self.assertRaisesRegex(
+            ValueError, "parent_context_ids must be an immutable tuple",
+        ):
+            PiContext(
+                "ctx", "lang", "world", "guard", "guard-v1", "query",
+                "assumptions", "ontology", "ontology-v1", "weakness-v1",
+                "relevance-v1", parent_context_ids=["parent"],
+            )
+
     def test_evidence_capsule_requires_immutable_typed_contributions(self):
         contribution = EvidenceContribution("basis-1", positive_weight=1)
         with self.assertRaisesRegex(

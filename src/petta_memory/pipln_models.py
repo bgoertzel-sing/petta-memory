@@ -3200,6 +3200,8 @@ class PiContext:
             "weakness_policy_id", "relevance_policy_id",
         ):
             _nonempty(getattr(self, field), field)
+        if not isinstance(self.parent_context_ids, tuple):
+            raise ValueError("parent_context_ids must be an immutable tuple")
         if tuple(sorted(set(self.parent_context_ids))) != self.parent_context_ids:
             raise ValueError("parent_context_ids must be unique and sorted")
         if self.id in self.parent_context_ids:
