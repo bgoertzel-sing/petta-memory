@@ -223,6 +223,27 @@ class PiPlnModelTests(unittest.TestCase):
             ):
                 EvidencePacket(**mutable_fields)
 
+    def test_evidence_packet_rejects_malformed_schema_version(self):
+        fields = {
+            "id": "packet-1",
+            "statement": "(S x)",
+            "context_id": "ctx",
+            "positive_delta": 1,
+            "negative_delta": 0,
+            "token_ids": ("token-1",),
+            "source_reliability": 1,
+            "temporal_relevance": 1,
+            "status": "ACTIVE",
+            "assumption_fingerprint": "assumptions",
+            "ontology_fingerprint": "ontology",
+            "created_by": "OBSERVATION",
+        }
+        for value in (True, "1", None):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                ValueError, "schema_version must be a positive integer",
+            ):
+                EvidencePacket(**fields, schema_version=value)
+
     def test_kernel_process_capture_validates_before_filesystem_mutation(self):
         with tempfile.TemporaryDirectory() as directory:
             parent = Path(directory) / "must-not-exist"

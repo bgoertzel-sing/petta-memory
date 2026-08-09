@@ -580,7 +580,9 @@ class EvidencePacket:
             raise ValueError("token_ids must be non-empty, unique, and sorted")
         if tuple(sorted(set(self.parent_packet_ids))) != self.parent_packet_ids:
             raise ValueError("parent_packet_ids must be unique and sorted")
-        if isinstance(self.schema_version, bool) or self.schema_version < 1:
+        if (isinstance(self.schema_version, bool)
+                or not isinstance(self.schema_version, int)
+                or self.schema_version < 1):
             raise ValueError("schema_version must be a positive integer")
 
     @property
