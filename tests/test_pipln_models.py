@@ -66,6 +66,23 @@ from petta_memory.pipln_models import (
 
 
 class PiPlnModelTests(unittest.TestCase):
+    def test_evidence_token_rejects_malformed_optional_provenance(self):
+        fields = {
+            "id": "token-1",
+            "namespace": "local",
+            "source_id": "source-1",
+            "context_id": "context-1",
+            "observed_at": "2026-08-09T12:00:00+00:00",
+            "minted_at": "2026-08-09T12:00:01+00:00",
+        }
+        for field in ("source_event_id", "causal_group_id", "payload_cid"):
+            with self.subTest(field=field), self.assertRaisesRegex(
+                ValueError, f"{field} must be a non-empty string",
+            ):
+                EvidenceToken(**fields, **{field: 1})
+        with self.assertRaisesRegex(ValueError, "schema_version must be a positive integer"):
+            EvidenceToken(**fields, schema_version="1")
+
     def test_pi_chart_requires_immutable_packet_selection_and_policy(self):
         policy = ChartPolicy(
             "factor-v1", "projection-v1", "kernel-projection-v1", "rules-v1",

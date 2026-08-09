@@ -530,7 +530,11 @@ class EvidenceToken:
     def __post_init__(self) -> None:
         for field in ("id", "namespace", "source_id", "context_id", "observed_at", "minted_at", "privacy_label"):
             _nonempty(getattr(self, field), field)
-        if isinstance(self.schema_version, bool) or self.schema_version < 1:
+        for field in ("source_event_id", "causal_group_id", "payload_cid"):
+            value = getattr(self, field)
+            if value is not None:
+                _nonempty(value, field)
+        if isinstance(self.schema_version, bool) or not isinstance(self.schema_version, int) or self.schema_version < 1:
             raise ValueError("schema_version must be a positive integer")
 
 
