@@ -1359,7 +1359,18 @@ class PiPlnModelTests(unittest.TestCase):
         packet = EvidencePacket("p1", "(S x)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")
         with self.assertRaisesRegex(ValueError, "unique"):
             build_evidence_snapshot(snapshot_id="snap", packets=[packet, packet], context_id="ctx",
-                                    assumption_fingerprint="a1", ontology_fingerprint="o1", created_at="now")
+                                     assumption_fingerprint="a1", ontology_fingerprint="o1", created_at="now")
+
+    def test_evidence_packet_rejects_malformed_provenance_ids(self):
+        values = dict(id="p1", statement="(S x)", context_id="ctx", positive_delta=1,
+                      negative_delta=0, token_ids=("t1",), source_reliability=1,
+                      temporal_relevance=1, status="ACTIVE", assumption_fingerprint="a1",
+                      ontology_fingerprint="o1", created_by="OBSERVATION")
+        for field, malformed in (("token_ids", (None,)),
+                                 ("parent_packet_ids", ("",))):
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(ValueError, field[:-1]):
+                    EvidencePacket(**(values | {field: malformed}))
 
     def test_evidence_snapshot_rejects_empty_selection_and_invalid_fingerprint(self):
         with self.assertRaisesRegex(ValueError, "non-empty"):

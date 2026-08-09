@@ -558,6 +558,10 @@ class EvidencePacket:
             raise ValueError("token_ids must be an immutable tuple")
         if not isinstance(self.parent_packet_ids, tuple):
             raise ValueError("parent_packet_ids must be an immutable tuple")
+        for token_id in self.token_ids:
+            _nonempty(token_id, "token_id")
+        for parent_packet_id in self.parent_packet_ids:
+            _nonempty(parent_packet_id, "parent_packet_id")
         _finite_nonnegative(self.positive_delta, "positive_delta")
         _finite_nonnegative(self.negative_delta, "negative_delta")
         for field in ("source_reliability", "temporal_relevance"):
