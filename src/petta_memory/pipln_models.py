@@ -3447,6 +3447,8 @@ def merge_evidence_capsules(
     other units. This deliberately fails closed instead of treating partial or
     unknown overlap as independent evidence.
     """
+    if not isinstance(left, EvidenceCapsule) or not isinstance(right, EvidenceCapsule):
+        raise ValueError("left and right must be immutable evidence capsules")
     merged = {item.basis_id: item for item in left.contributions}
     for item in right.contributions:
         existing = merged.get(item.basis_id)
@@ -3457,6 +3459,8 @@ def merge_evidence_capsules(
     if bases is not None:
         registry: dict[str, EvidenceBasis] = {}
         for basis in bases:
+            if not isinstance(basis, EvidenceBasis):
+                raise ValueError("bases must contain immutable evidence bases")
             if basis.basis_id in registry:
                 raise ValueError(f"duplicate basis metadata: {basis.basis_id}")
             registry[basis.basis_id] = basis

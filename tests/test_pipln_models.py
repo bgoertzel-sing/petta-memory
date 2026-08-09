@@ -3233,6 +3233,18 @@ class PiPlnModelTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "conflicting contribution"):
             merge_evidence_capsules(left, right)
 
+    def test_exact_capsule_merge_rejects_malformed_dependencies(self):
+        capsule = EvidenceCapsule((EvidenceContribution("basis-a", positive_weight=1),))
+        for left, right in ((None, capsule), (capsule, None)):
+            with self.subTest(left=left, right=right), self.assertRaisesRegex(
+                ValueError, "left and right must be immutable evidence capsules",
+            ):
+                merge_evidence_capsules(left, right)
+        with self.assertRaisesRegex(
+            ValueError, "bases must contain immutable evidence bases",
+        ):
+            merge_evidence_capsules(capsule, capsule, bases=(None,))
+
     def test_reviewed_merge_is_commutative_and_associative_for_disjoint_bases(self):
         capsules = [
             EvidenceCapsule((EvidenceContribution(f"basis-{name}", positive_weight=1),))
