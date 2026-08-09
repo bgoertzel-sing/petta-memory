@@ -1347,6 +1347,14 @@ class PiPlnModelTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "ontology mismatch"):
             build_evidence_snapshot(packets=[packet("p3", "t3", ontology_fingerprint="o2")], **kwargs)
 
+    def test_evidence_snapshot_builder_rejects_untyped_packets(self):
+        with self.assertRaisesRegex(ValueError, "immutable evidence packets"):
+            build_evidence_snapshot(
+                snapshot_id="snap", packets=[None], context_id="ctx",
+                assumption_fingerprint="a1", ontology_fingerprint="o1",
+                created_at="2026-07-11T00:00:00Z",
+            )
+
     def test_evidence_snapshot_rejects_duplicate_packet_ids(self):
         packet = EvidencePacket("p1", "(S x)", "ctx", 1, 0, ("t1",), 1, 1, "ACTIVE", "a1", "o1", "OBSERVATION")
         with self.assertRaisesRegex(ValueError, "unique"):

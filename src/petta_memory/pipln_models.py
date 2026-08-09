@@ -3041,6 +3041,8 @@ def build_evidence_snapshot(
 ) -> EvidenceSnapshot:
     """Freeze active, version-compatible packets and derive a stable content fingerprint."""
     packet_list = tuple(packets)
+    if any(not isinstance(packet, EvidencePacket) for packet in packet_list):
+        raise ValueError("packets must contain immutable evidence packets")
     ids = tuple(sorted(packet.id for packet in packet_list))
     if len(ids) != len(set(ids)):
         raise ValueError("packet ids must be unique within a snapshot")
