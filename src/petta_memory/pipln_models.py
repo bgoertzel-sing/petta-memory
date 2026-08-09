@@ -3244,6 +3244,10 @@ class PiChart:
     def __post_init__(self) -> None:
         for field in ("id", "context_id", "prior_provenance", "evidence_snapshot_id", "evidence_snapshot_fingerprint", "adequacy_certificate_id", "chart_fingerprint"):
             _nonempty(getattr(self, field), field)
+        if not isinstance(self.policy, ChartPolicy):
+            raise ValueError("policy must be an immutable chart policy")
+        if not isinstance(self.selected_packet_ids, tuple):
+            raise ValueError("selected_packet_ids must be an immutable tuple")
         if isinstance(self.prior_strength_p0, bool) or not isinstance(self.prior_strength_p0, (int, float)) or not math.isfinite(self.prior_strength_p0) or not 0 <= self.prior_strength_p0 <= 1:
             raise ValueError("prior_strength_p0 must be finite and in [0, 1]")
         if isinstance(self.prior_weight_k, bool) or not isinstance(self.prior_weight_k, (int, float)) or not math.isfinite(self.prior_weight_k) or self.prior_weight_k <= 0:

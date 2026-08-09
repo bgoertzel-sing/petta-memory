@@ -26,6 +26,7 @@ from petta_memory.pipln_models import (
     KernelProcessCapture,
     Phase0ReferenceArtifact,
     ChartPolicy,
+    PiChart,
     PiContext,
     build_pi_chart,
     build_captured_episode_manifest,
@@ -65,6 +66,31 @@ from petta_memory.pipln_models import (
 
 
 class PiPlnModelTests(unittest.TestCase):
+    def test_pi_chart_requires_immutable_packet_selection_and_policy(self):
+        policy = ChartPolicy(
+            "factor-v1", "projection-v1", "kernel-projection-v1", "rules-v1",
+            "kernel-v1", "translator-v1",
+        )
+        fields = {
+            "id": "chart-1",
+            "context_id": "ctx",
+            "prior_strength_p0": 0.5,
+            "prior_weight_k": 2.0,
+            "prior_provenance": "review:1",
+            "policy": policy,
+            "selected_packet_ids": ("packet-1",),
+            "evidence_snapshot_id": "snapshot-1",
+            "evidence_snapshot_fingerprint": "1" * 64,
+            "adequacy_certificate_id": "adequacy-1",
+            "chart_fingerprint": "2" * 64,
+        }
+        with self.assertRaisesRegex(
+            ValueError, "selected_packet_ids must be an immutable tuple",
+        ):
+            PiChart(**{**fields, "selected_packet_ids": ["packet-1"]})
+        with self.assertRaisesRegex(ValueError, "immutable chart policy"):
+            PiChart(**{**fields, "policy": None})
+
     def test_pi_context_requires_immutable_parent_collection(self):
         with self.assertRaisesRegex(
             ValueError, "parent_context_ids must be an immutable tuple",
