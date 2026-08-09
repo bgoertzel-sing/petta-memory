@@ -177,6 +177,28 @@ class PiPlnModelTests(unittest.TestCase):
             ):
                 EvidenceBasis(**mutable_fields)
 
+    def test_evidence_basis_validates_provenance_ids(self):
+        fields = {
+            "basis_id": "basis-1",
+            "member_token_ids": ("token-1",),
+            "causal_group_ids": ("causal-group-1",),
+            "independence_status": "PROVEN_DISJOINT",
+            "justification_cid": "cid:basis-1",
+        }
+        invalid = (
+            ("member_token_ids", ("",), "member_token_id"),
+            ("member_token_ids", (None,), "member_token_id"),
+            ("causal_group_ids", ("",), "causal_group_id"),
+            ("causal_group_ids", (None,), "causal_group_id"),
+        )
+        for field, value, message in invalid:
+            malformed_fields = dict(fields)
+            malformed_fields[field] = value
+            with self.subTest(field=field, value=value), self.assertRaisesRegex(
+                ValueError, f"{message} must be a non-empty string",
+            ):
+                EvidenceBasis(**malformed_fields)
+
     def test_evidence_packet_requires_immutable_provenance_collections(self):
         fields = {
             "id": "packet-1",

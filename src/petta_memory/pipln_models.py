@@ -603,6 +603,10 @@ class EvidenceBasis:
             raise ValueError("member_token_ids must be an immutable tuple")
         if not isinstance(self.causal_group_ids, tuple):
             raise ValueError("causal_group_ids must be an immutable tuple")
+        for member_token_id in self.member_token_ids:
+            _nonempty(member_token_id, "member_token_id")
+        for causal_group_id in self.causal_group_ids:
+            _nonempty(causal_group_id, "causal_group_id")
         if not self.member_token_ids or tuple(sorted(set(self.member_token_ids))) != self.member_token_ids:
             raise ValueError("member_token_ids must be non-empty, unique, and sorted")
         if tuple(sorted(set(self.causal_group_ids))) != self.causal_group_ids:
