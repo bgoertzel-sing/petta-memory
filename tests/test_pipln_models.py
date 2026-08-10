@@ -158,9 +158,17 @@ class PiPlnModelTests(unittest.TestCase):
         mutable_fields = dict(fields)
         mutable_fields["packet_content_digests"] = (["packet-1", packet_digest],)
         with self.assertRaisesRegex(
-            ValueError, "packet_content_digests entries must be immutable tuples",
+            ValueError, "packet_content_digests entries must be immutable pairs",
         ):
             EvidenceSnapshot(**mutable_fields)
+
+        for malformed_entry in ((), ("packet-1",), ("packet-1", packet_digest, "extra")):
+            with self.subTest(malformed_entry=malformed_entry), self.assertRaisesRegex(
+                ValueError, "packet_content_digests entries must be immutable pairs",
+            ):
+                EvidenceSnapshot(
+                    **{**fields, "packet_content_digests": (malformed_entry,)},
+                )
 
     def test_evidence_snapshot_validates_packet_ids_before_sorting(self):
         with self.assertRaisesRegex(ValueError, "packet_id must be a non-empty string"):
