@@ -162,6 +162,22 @@ class PiPlnModelTests(unittest.TestCase):
         ):
             EvidenceSnapshot(**mutable_fields)
 
+    def test_evidence_snapshot_validates_packet_ids_before_sorting(self):
+        with self.assertRaisesRegex(ValueError, "packet_id must be a non-empty string"):
+            EvidenceSnapshot(
+                id="snapshot-1",
+                packet_ids=("packet-1", 1),
+                context_id="context-1",
+                assumption_fingerprint="assumptions-1",
+                ontology_fingerprint="ontology-1",
+                created_at="2026-08-10T04:01:00+00:00",
+                snapshot_fingerprint="1" * 64,
+                packet_content_digests=(
+                    ("packet-1", "2" * 64),
+                    (1, "3" * 64),
+                ),
+            )
+
     def test_evidence_basis_requires_immutable_provenance_collections(self):
         fields = {
             "basis_id": "basis-1",

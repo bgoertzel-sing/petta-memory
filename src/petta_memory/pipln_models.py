@@ -3010,10 +3010,10 @@ class EvidenceSnapshot:
             raise ValueError("packet_content_digests must be an immutable tuple")
         if any(not isinstance(item, tuple) for item in self.packet_content_digests):
             raise ValueError("packet_content_digests entries must be immutable tuples")
-        if not self.packet_ids or tuple(sorted(set(self.packet_ids))) != self.packet_ids:
-            raise ValueError("packet_ids must be non-empty, unique, and sorted")
         for packet_id in self.packet_ids:
             _nonempty(packet_id, "packet_id")
+        if not self.packet_ids or tuple(sorted(set(self.packet_ids))) != self.packet_ids:
+            raise ValueError("packet_ids must be non-empty, unique, and sorted")
         _sha256_digest(self.snapshot_fingerprint, "snapshot_fingerprint")
         digest_ids = tuple(packet_id for packet_id, _ in self.packet_content_digests)
         if digest_ids != self.packet_ids:
