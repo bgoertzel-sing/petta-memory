@@ -23,6 +23,7 @@ from petta_memory.pipln_models import (
     EvidenceToken,
     EpisodeBudget,
     EpisodeManifest,
+    KernelSentenceMeta,
     KernelProcessCapture,
     Phase0ReferenceArtifact,
     ChartPolicy,
@@ -243,6 +244,28 @@ class PiPlnModelTests(unittest.TestCase):
                 ValueError, "schema_version must be a positive integer",
             ):
                 EvidencePacket(**fields, schema_version=value)
+
+    def test_kernel_sentence_meta_rejects_malformed_provenance_members(self):
+        fields = {
+            "episode_id": "episode-1",
+            "sentence_digest": "1" * 64,
+            "canonical_term": "(S x)",
+            "projection_id": "2" * 64,
+            "context_id": "context-1",
+            "chart_id": "chart-1",
+            "stamp_ints": (0,),
+            "evidence_basis_ids": ("basis-1",),
+        }
+        for value in ((0, "1"), (0, None), (0, True)):
+            with self.subTest(stamp_ints=value), self.assertRaisesRegex(
+                ValueError, "stamp_ints must contain non-negative integers",
+            ):
+                KernelSentenceMeta(**{**fields, "stamp_ints": value})
+        for value in (("basis-1", None), ("basis-1", "")):
+            with self.subTest(evidence_basis_ids=value), self.assertRaisesRegex(
+                ValueError, "evidence_basis_ids must contain non-empty strings",
+            ):
+                KernelSentenceMeta(**{**fields, "evidence_basis_ids": value})
 
     def test_kernel_process_capture_validates_before_filesystem_mutation(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -657,10 +657,13 @@ class KernelSentenceMeta:
             raise ValueError("stamp_ints must be an immutable tuple")
         if not isinstance(self.evidence_basis_ids, tuple):
             raise ValueError("evidence_basis_ids must be an immutable tuple")
-        if tuple(sorted(set(self.stamp_ints))) != self.stamp_ints:
-            raise ValueError("stamp_ints must be unique and sorted")
         if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in self.stamp_ints):
             raise ValueError("stamp_ints must contain non-negative integers")
+        if tuple(sorted(set(self.stamp_ints))) != self.stamp_ints:
+            raise ValueError("stamp_ints must be unique and sorted")
+        if any(not isinstance(value, str) or not value.strip()
+               for value in self.evidence_basis_ids):
+            raise ValueError("evidence_basis_ids must contain non-empty strings")
         if not self.evidence_basis_ids or tuple(sorted(set(self.evidence_basis_ids))) != self.evidence_basis_ids:
             raise ValueError("evidence_basis_ids must be non-empty, unique, and sorted")
 
