@@ -3457,6 +3457,10 @@ def merge_evidence_capsules(
         merged[item.basis_id] = item
 
     if bases is not None:
+        try:
+            bases = iter(bases)
+        except TypeError as error:
+            raise ValueError("bases must be an iterable of immutable evidence bases") from error
         registry: dict[str, EvidenceBasis] = {}
         for basis in bases:
             if not isinstance(basis, EvidenceBasis):

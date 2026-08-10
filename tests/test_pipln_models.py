@@ -3244,6 +3244,10 @@ class PiPlnModelTests(unittest.TestCase):
             ValueError, "bases must contain immutable evidence bases",
         ):
             merge_evidence_capsules(capsule, capsule, bases=(None,))
+        with self.assertRaisesRegex(
+            ValueError, "bases must be an iterable of immutable evidence bases",
+        ):
+            merge_evidence_capsules(capsule, capsule, bases=1)
 
     def test_reviewed_merge_is_commutative_and_associative_for_disjoint_bases(self):
         capsules = [
