@@ -1166,6 +1166,139 @@ def read_pettachainer_rule_attribution(
     return attribution
 
 
+@dataclass(frozen=True)
+class TraceAttribution:
+    """Persisted attribution binding a compiled result to its proof trace.
+
+    This extends the compiler-bound attribution boundary: the result is bound
+    not only to its originating rule identity but also to a bounded, non-empty
+    proof trace captured from the runtime.  The trace text is treated as opaque
+    diagnostic content; the attribution does not interpret or validate its
+    semantics.  This is a distinct artifact class from
+    ``PeTTaChainerRuleAttribution`` — the latter remains compiler-bound and
+    explicitly does not claim a decoded runtime trace.
+    """
+
+    result_digest: str
+    inference_rule: str
+    rule_sentence_digest: str
+    rule_proof_id: str
+    proof_trace: str
+    trace_digest: str
+
+    def __post_init__(self) -> None:
+        _sha256_digest(self.result_digest, "result_digest")
+        _nonempty(self.inference_rule, "inference_rule")
+        _sha256_digest(self.rule_sentence_digest, "rule_sentence_digest")
+        if self.rule_proof_id != f"pm-{self.rule_sentence_digest}":
+            raise ValueError("rule proof id does not match sentence digest")
+        if not isinstance(self.proof_trace, str) or not self.proof_trace:
+            raise ValueError("proof_trace must be a non-empty string")
+        if len(self.proof_trace) > DEFAULT_MAX_COMPILED_ATOM_CHARS:
+            raise ValueError("proof_trace exceeds max_atom_chars")
+        expected = _canonical_hash({
+            field: getattr(self, field)
+            for field in self.__dataclass_fields__
+            if field != "trace_digest"
+        })
+        if self.trace_digest != expected:
+            raise ValueError("trace attribution digest does not match typed content")
+
+
+def build_trace_attribution(
+    *,
+    result: PeTTaChainerDerivedResultCapture,
+    proof_trace: str,
+) -> TraceAttribution:
+    """Build a trace attribution from an admitted derived result and proof trace."""
+    if not isinstance(result, PeTTaChainerDerivedResultCapture):
+        raise ValueError("trace attribution requires a typed PeTTaChainer derived result")
+    if not isinstance(proof_trace, str) or not proof_trace:
+        raise ValueError("proof_trace must be a non-empty string")
+    if len(proof_trace) > DEFAULT_MAX_COMPILED_ATOM_CHARS:
+        raise ValueError("proof_trace exceeds max_atom_chars")
+    values = {
+        "result_digest": result.result_digest,
+        "inference_rule": "TotalMP",
+        "rule_sentence_digest": result.rule_sentence_digest,
+        "rule_proof_id": result.rule_proof_id,
+        "proof_trace": proof_trace,
+    }
+    return TraceAttribution(**values, trace_digest=_canonical_hash(values))
+
+
+def trace_attribution_document(
+    attribution: TraceAttribution,
+) -> dict[str, object]:
+    """Return a checksummed persistence envelope for a trace attribution."""
+    if not isinstance(attribution, TraceAttribution):
+        raise ValueError("trace attribution document requires typed attribution")
+    payload = {
+        field: getattr(attribution, field)
+        for field in attribution.__dataclass_fields__
+    }
+    return {
+        "schema": "petta-memory-trace-attribution-v1",
+        "payload": payload,
+        "document_digest": _canonical_hash(payload),
+    }
+
+
+def write_trace_attribution(
+    path: str | Path,
+    attribution: TraceAttribution,
+) -> None:
+    """Create one immutable trace-attribution artifact; never replace it."""
+    if not isinstance(attribution, TraceAttribution):
+        raise ValueError("trace attribution write requires typed attribution")
+    data = json.dumps(
+        trace_attribution_document(attribution),
+        sort_keys=True,
+        indent=2,
+    ) + "\n"
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    _write_create_once_durable(destination, data)
+
+
+def read_trace_attribution(
+    path: str | Path,
+    *,
+    result: PeTTaChainerDerivedResultCapture,
+) -> TraceAttribution:
+    """Reload a trace attribution and close it against one admitted result.
+
+    The proof trace is opaque content that cannot be independently derived
+    from the result.  Reload therefore verifies that the artifact's
+    result-binding fields (result_digest, rule_sentence_digest, rule_proof_id)
+    match the supplied derived capture, rather than rebuilding an expected
+    attribution from the result.  The proof_trace itself is content-addressed
+    by trace_digest and protected by the create-once write boundary.
+    """
+    if not isinstance(result, PeTTaChainerDerivedResultCapture):
+        raise ValueError("trace attribution reload requires a typed derived result")
+    document = _load_unambiguous_json(path)
+    schema = "petta-memory-trace-attribution-v1"
+    if (not isinstance(document, dict)
+            or set(document) != {"schema", "payload", "document_digest"}
+            or document.get("schema") != schema):
+        raise ValueError("invalid trace attribution document schema")
+    payload = document.get("payload")
+    if not isinstance(payload, dict) or document.get("document_digest") != _canonical_hash(payload):
+        raise ValueError("trace attribution document checksum mismatch")
+    expected_fields = set(TraceAttribution.__dataclass_fields__)
+    if set(payload) != expected_fields:
+        raise ValueError("invalid trace attribution payload")
+    attribution = TraceAttribution(**payload)
+    if attribution.result_digest != result.result_digest:
+        raise ValueError("trace attribution result_digest does not match derived result")
+    if attribution.rule_sentence_digest != result.rule_sentence_digest:
+        raise ValueError("trace attribution rule_sentence_digest does not match derived result")
+    if attribution.rule_proof_id != result.rule_proof_id:
+        raise ValueError("trace attribution rule_proof_id does not match derived result")
+    return attribution
+
+
 def _pettachainer_derived_result_payload(result: PeTTaChainerDerivedResultCapture) -> dict[str, object]:
     return {
         field: getattr(result, field)
