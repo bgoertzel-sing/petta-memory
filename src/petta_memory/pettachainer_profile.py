@@ -138,14 +138,23 @@ def _isolated_stage_worker(
 ) -> None:
     # PeTTaChainer/SWI-Prolog writes below Python's sys.stdout layer, so capture
     # OS file descriptors rather than only using contextlib.redirect_stdout.
+    # Under pytest or other capturing frameworks, sys.stdout may not point to
+    # fd 1, so we must also replace the Python-level objects.
     stdout_original = os.dup(1)
     stderr_original = os.dup(2)
+    saved_stdout = sys.stdout
+    saved_stderr = sys.stderr
     with tempfile.TemporaryFile(mode="w+b") as stdout_file, tempfile.TemporaryFile(mode="w+b") as stderr_file:
         try:
             sys.stdout.flush()
             sys.stderr.flush()
             os.dup2(stdout_file.fileno(), 1)
             os.dup2(stderr_file.fileno(), 2)
+            # Replace Python-level sys.stdout/sys.stderr so that print() writes
+            # through the redirected fd, not to the pytest capture buffer.
+            # closefd=False preserves fd 1/2 for the dup2 restoration below.
+            sys.stdout = open(1, "w", buffering=1, closefd=False)
+            sys.stderr = open(2, "w", buffering=1, closefd=False)
             try:
                 payload = target(*args)
                 payload.setdefault("status", "ok")
@@ -154,6 +163,10 @@ def _isolated_stage_worker(
             finally:
                 sys.stdout.flush()
                 sys.stderr.flush()
+                sys.stdout.close()
+                sys.stderr.close()
+                sys.stdout = saved_stdout
+                sys.stderr = saved_stderr
                 os.dup2(stdout_original, 1)
                 os.dup2(stderr_original, 2)
         finally:
