@@ -4190,5 +4190,379 @@ class StoreRoundTripUnifiedInferenceControlTests(unittest.TestCase):
                 )
 
 
+# ---------------------------------------------------------------------------
+# Rich 6-belief store fixture for pipeline discrimination evaluation.
+# Tests below verify that the chained_inference_pipeline correctly
+# discriminates between beliefs with diverse EC profiles, domains, and
+# STVs, including edge cases the 4-belief unified fixture does not cover.
+# ---------------------------------------------------------------------------
+
+_EVAL_BELIEF_OVERWHELMING = """
+;;; BEGIN MemoryCluster mc-ev-a
+(MemoryCluster mc-ev-a)
+(SchemaVersion mc-ev-a medium-memory-v1)
+(ClusterType mc-ev-a belief-promotion)
+(ObservedEvent oe-ev-a)
+(EventText oe-ev-a "overwhelming evidence for memory architecture")
+(ClusterOpenedAt mc-ev-a "2026-08-30 14:00 PDT")
+(ClusterSource mc-ev-a src-test)
+(Contains mc-ev-a pe-ev-a)
+(Contains mc-ev-a b-ev-a)
+(ClusterStatus mc-ev-a active)
+(PromotionEvent pe-ev-a)
+(PromotesFrom pe-ev-a qc-ev-a)
+(PromotesTo pe-ev-a b-ev-a)
+(PromotionRule pe-ev-a explicit-architecture-promotion)
+(PromotionTrust pe-ev-a 0.95)
+(PromotionDomain pe-ev-a memory-architecture)
+(DerivedBelief b-ev-a)
+(BeliefContent b-ev-a (Requires MemoryTarget0 PLNReadyViews))
+(TruthValue b-ev-a (stv 0.95 0.90))
+(EvidenceFor b-ev-a qc-ev-a)
+(EvidenceSupportCount b-ev-a 50.0)
+(EvidenceOppositionCount b-ev-a 2.0)
+;;; END MemoryCluster mc-ev-a
+"""
+
+_EVAL_BELIEF_BALANCED = """
+;;; BEGIN MemoryCluster mc-ev-b
+(MemoryCluster mc-ev-b)
+(SchemaVersion mc-ev-b medium-memory-v1)
+(ClusterType mc-ev-b belief-promotion)
+(ObservedEvent oe-ev-b)
+(EventText oe-ev-b "balanced evidence for planning domain")
+(ClusterOpenedAt mc-ev-b "2026-08-30 14:01 PDT")
+(ClusterSource mc-ev-b src-test)
+(Contains mc-ev-b pe-ev-b)
+(Contains mc-ev-b b-ev-b)
+(ClusterStatus mc-ev-b active)
+(PromotionEvent pe-ev-b)
+(PromotesFrom pe-ev-b qc-ev-b)
+(PromotesTo pe-ev-b b-ev-b)
+(PromotionRule pe-ev-b exploratory-hypothesis)
+(PromotionTrust pe-ev-b 0.60)
+(PromotionDomain pe-ev-b planning)
+(DerivedBelief b-ev-b)
+(BeliefContent b-ev-b (Requires MemoryTarget1 PlanningStep))
+(TruthValue b-ev-b (stv 0.55 0.50))
+(EvidenceFor b-ev-b qc-ev-b)
+(EvidenceSupportCount b-ev-b 10.0)
+(EvidenceOppositionCount b-ev-b 10.0)
+;;; END MemoryCluster mc-ev-b
+"""
+
+_EVAL_BELIEF_STRONG_CONFLICTING = """
+;;; BEGIN MemoryCluster mc-ev-c
+(MemoryCluster mc-ev-c)
+(SchemaVersion mc-ev-c medium-memory-v1)
+(ClusterType mc-ev-c belief-promotion)
+(ObservedEvent oe-ev-c)
+(EventText oe-ev-c "strongly conflicting evidence for reasoning domain")
+(ClusterOpenedAt mc-ev-c "2026-08-30 14:02 PDT")
+(ClusterSource mc-ev-c src-test)
+(Contains mc-ev-c pe-ev-c)
+(Contains mc-ev-c b-ev-c)
+(ClusterStatus mc-ev-c active)
+(PromotionEvent pe-ev-c)
+(PromotesFrom pe-ev-c qc-ev-c)
+(PromotesTo pe-ev-c b-ev-c)
+(PromotionRule pe-ev-c explicit-reasoning-promotion)
+(PromotionTrust pe-ev-c 0.65)
+(PromotionDomain pe-ev-c reasoning)
+(DerivedBelief b-ev-c)
+(BeliefContent b-ev-c (Requires MemoryTarget2 ReasoningChain))
+(TruthValue b-ev-c (stv 0.70 0.60))
+(EvidenceFor b-ev-c qc-ev-c)
+(EvidenceSupportCount b-ev-c 1.0)
+(EvidenceOppositionCount b-ev-c 20.0)
+;;; END MemoryCluster mc-ev-c
+"""
+
+_EVAL_BELIEF_NO_EVIDENCE = """
+;;; BEGIN MemoryCluster mc-ev-d
+(MemoryCluster mc-ev-d)
+(SchemaVersion mc-ev-d medium-memory-v1)
+(ClusterType mc-ev-d belief-promotion)
+(ObservedEvent oe-ev-d)
+(EventText oe-ev-d "no evidence for planning domain hypothesis")
+(ClusterOpenedAt mc-ev-d "2026-08-30 14:03 PDT")
+(ClusterSource mc-ev-d src-test)
+(Contains mc-ev-d pe-ev-d)
+(Contains mc-ev-d b-ev-d)
+(ClusterStatus mc-ev-d active)
+(PromotionEvent pe-ev-d)
+(PromotesFrom pe-ev-d qc-ev-d)
+(PromotesTo pe-ev-d b-ev-d)
+(PromotionRule pe-ev-d exploratory-hypothesis)
+(PromotionTrust pe-ev-d 0.40)
+(PromotionDomain pe-ev-d planning)
+(DerivedBelief b-ev-d)
+(BeliefContent b-ev-d (Requires MemoryTarget3 PlanningStep))
+(TruthValue b-ev-d (stv 0.50 0.35))
+(EvidenceFor b-ev-d qc-ev-d)
+(EvidenceSupportCount b-ev-d 0.0)
+(EvidenceOppositionCount b-ev-d 0.0)
+;;; END MemoryCluster mc-ev-d
+"""
+
+_EVAL_BELIEF_HIGH_STV_LOW_EC = """
+;;; BEGIN MemoryCluster mc-ev-e
+(MemoryCluster mc-ev-e)
+(SchemaVersion mc-ev-e medium-memory-v1)
+(ClusterType mc-ev-e belief-promotion)
+(ObservedEvent oe-ev-e)
+(EventText oe-ev-e "high STV but minimal evidence for reasoning domain")
+(ClusterOpenedAt mc-ev-e "2026-08-30 14:04 PDT")
+(ClusterSource mc-ev-e src-test)
+(Contains mc-ev-e pe-ev-e)
+(Contains mc-ev-e b-ev-e)
+(ClusterStatus mc-ev-e active)
+(PromotionEvent pe-ev-e)
+(PromotesFrom pe-ev-e qc-ev-e)
+(PromotesTo pe-ev-e b-ev-e)
+(PromotionRule pe-ev-e explicit-reasoning-promotion)
+(PromotionTrust pe-ev-e 0.80)
+(PromotionDomain pe-ev-e reasoning)
+(DerivedBelief b-ev-e)
+(BeliefContent b-ev-e (Requires MemoryTarget4 ReasoningChain))
+(TruthValue b-ev-e (stv 0.85 0.75))
+(EvidenceFor b-ev-e qc-ev-e)
+(EvidenceSupportCount b-ev-e 1.0)
+(EvidenceOppositionCount b-ev-e 0.0)
+;;; END MemoryCluster mc-ev-e
+"""
+
+_EVAL_BELIEF_MID_RANGE = """
+;;; BEGIN MemoryCluster mc-ev-f
+(MemoryCluster mc-ev-f)
+(SchemaVersion mc-ev-f medium-memory-v1)
+(ClusterType mc-ev-f belief-promotion)
+(ObservedEvent oe-ev-f)
+(EventText oe-ev-f "mid-range evidence for memory architecture")
+(ClusterOpenedAt mc-ev-f "2026-08-30 14:05 PDT")
+(ClusterSource mc-ev-f src-test)
+(Contains mc-ev-f pe-ev-f)
+(Contains mc-ev-f b-ev-f)
+(ClusterStatus mc-ev-f active)
+(PromotionEvent pe-ev-f)
+(PromotesFrom pe-ev-f qc-ev-f)
+(PromotesTo pe-ev-f b-ev-f)
+(PromotionRule pe-ev-f explicit-architecture-promotion)
+(PromotionTrust pe-ev-f 0.70)
+(PromotionDomain pe-ev-f memory-architecture)
+(DerivedBelief b-ev-f)
+(BeliefContent b-ev-f (Requires MemoryTarget5 PLNReadyViews))
+(TruthValue b-ev-f (stv 0.72 0.62))
+(EvidenceFor b-ev-f qc-ev-f)
+(EvidenceSupportCount b-ev-f 7.0)
+(EvidenceOppositionCount b-ev-f 3.0)
+;;; END MemoryCluster mc-ev-f
+"""
+
+
+class PipelineEvaluationTests(unittest.TestCase):
+    """Evaluate chained_inference_pipeline discrimination on a rich 6-belief store.
+
+    The fixture has 3 domains (memory-architecture, planning, reasoning) with
+    diverse EC profiles: overwhelming support, balanced, strongly conflicting,
+    no evidence, high STV with minimal EC, and mid-range.  These tests verify
+    the pipeline correctly ranks, filters, and discriminates beliefs based on
+    their composite evidence quality.
+    """
+
+    _CLUSTERS = [
+        _EVAL_BELIEF_OVERWHELMING,
+        _EVAL_BELIEF_BALANCED,
+        _EVAL_BELIEF_STRONG_CONFLICTING,
+        _EVAL_BELIEF_NO_EVIDENCE,
+        _EVAL_BELIEF_HIGH_STV_LOW_EC,
+        _EVAL_BELIEF_MID_RANGE,
+    ]
+
+    def _store(self, td: str):
+        from petta_memory.store import MediumMemoryStore
+        store = MediumMemoryStore(Path(td) / "eval_memory.metta")
+        for cluster in self._CLUSTERS:
+            store.append_cluster(cluster)
+        return store
+
+    def _handoff(self, store):
+        cache = store.pettachainer_handoff_cache()
+        return patham9_pln_handoff_sentences(cache)
+
+    def test_fixture_produces_six_diverse_beliefs(self):
+        """The fixture has 6 beliefs with 3 domains and diverse EC profiles."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store(td)
+            handoff = self._handoff(store)
+
+        self.assertEqual(handoff["item_count"], 6)
+        domains = {item["promotion_domain"] for item in handoff["items"]}
+        self.assertEqual(domains, {"memory-architecture", "planning", "reasoning"})
+        # Verify EC diversity
+        all_packets = []
+        for item in handoff["items"]:
+            all_packets.extend(item["pi_pln_extension"]["contextual_evidence_packets"])
+        supports = [float(p["support"]) for p in all_packets]
+        oppositions = [float(p["opposition"]) for p in all_packets]
+        self.assertTrue(any(s > 40 for s in supports))  # overwhelming
+        self.assertTrue(any(s == 0 for s in supports))  # no evidence
+        self.assertTrue(any(o > 15 for o in oppositions))  # strong conflicting
+
+    def test_pipeline_ranks_overwhelming_support_first(self):
+        """The belief with overwhelming evidence (50/2) ranks first by composite score."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store(td)
+            handoff = self._handoff(store)
+
+        result = chained_inference_pipeline(handoff)
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-inference-pipeline-v1")
+        ranking = result["ranking"]
+        self.assertGreater(len(ranking), 0)
+        # The overwhelming-support belief (b-ev-a) should rank first
+        top = ranking[0]
+        self.assertEqual(top["item_index"], 0)
+        # Its composite score should be the highest
+        for r in ranking[1:]:
+            self.assertGreaterEqual(top["composite_score"], r["composite_score"])
+
+    def test_pipeline_conflicting_evidence_lowers_composite_score(self):
+        """Beliefs with strongly conflicting EC (1/20) have lower composite scores.
+
+        The strongly conflicting belief (b-ev-c, STV 0.70/0.60, EC 1/20) should
+        have a lower composite score than the mid-range belief (b-ev-f, STV
+        0.72/0.62, EC 7/3) despite similar base STVs, because the EC projection
+        lowers confidence when opposition dominates.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store(td)
+            handoff = self._handoff(store)
+
+        result = chained_inference_pipeline(handoff)
+        items_by_index = {item["item_index"]: item for item in result["items"]}
+        # b-ev-c is index 2, b-ev-f is index 5
+        conflicting_score = items_by_index[2]["composite_score"]
+        midrange_score = items_by_index[5]["composite_score"]
+        self.assertGreater(
+            midrange_score, conflicting_score,
+            f"mid-range (7/3) should outscore strongly conflicting (1/20); "
+            f"got mid={midrange_score}, conflicting={conflicting_score}",
+        )
+
+    def test_pipeline_no_evidence_belief_has_low_composite_score(self):
+        """The belief with zero evidence (0/0) should have a low composite score.
+
+        With no EC, the projected STV falls back to the base STV (0.50/0.35),
+        producing a lower composite score than beliefs with supporting evidence.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store(td)
+            handoff = self._handoff(store)
+
+        result = chained_inference_pipeline(handoff)
+        items_by_index = {item["item_index"]: item for item in result["items"]}
+        no_ev_score = items_by_index[3]["composite_score"]
+        # Should be lower than the overwhelming (index 0) and mid-range (index 5)
+        self.assertLess(no_ev_score, items_by_index[0]["composite_score"])
+        self.assertLess(no_ev_score, items_by_index[5]["composite_score"])
+
+    def test_pipeline_domain_filter_isolates_reasoning(self):
+        """Domain filter for 'reasoning' isolates 2 beliefs: conflicting and high-stv-low-ec."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store(td)
+            handoff = self._handoff(store)
+
+        result = chained_inference_pipeline(handoff, domain="reasoning")
+        self.assertEqual(result["input_count"], 6)
+        self.assertEqual(result["stage1_output_count"], 2)
+        # Stage 1 should filter out 4 non-reasoning items
+        self.assertEqual(len(result["stage1_filtered_indices"]), 4)
+        # The 2 surviving items should be the reasoning-domain beliefs: b-ev-c and b-ev-e
+        belief_ids = {item["belief_id"] for item in result["items"]}
+        self.assertEqual(belief_ids, {"b-ev-c", "b-ev-e"})
+
+    def test_pipeline_top_k_selects_highest_composite(self):
+        """top_k=2 selects exactly the 2 highest-composite beliefs."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store(td)
+            handoff = self._handoff(store)
+
+        result = chained_inference_pipeline(handoff, top_k=2)
+        selected = result["selected_indices"]
+        self.assertEqual(len(selected), 2)
+        # The top-2 should be the overwhelming and either mid-range or high-stv-low-ec
+        self.assertIn(0, selected)  # overwhelming (b-ev-a)
+        # Verify the selected items have the highest composite scores
+        all_scores = {item["item_index"]: item["composite_score"] for item in result["items"]}
+        selected_scores = [all_scores[i] for i in selected]
+        all_ranked = sorted(all_scores.values(), reverse=True)
+        self.assertEqual(selected_scores, all_ranked[:2])
+
+    def test_pipeline_min_confidence_filters_low_confidence(self):
+        """min_confidence=0.60 filters out beliefs with projected confidence below 0.60."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store(td)
+            handoff = self._handoff(store)
+
+        result = chained_inference_pipeline(handoff, min_confidence=0.60)
+        for item in result["items"]:
+            if item.get("included"):
+                proj_conf = item.get("projected_stv", {}).get("confidence", 0)
+                self.assertGreaterEqual(
+                    proj_conf, 0.60,
+                    f"Item {item['item_index']} was included but has projected confidence {proj_conf} < 0.60",
+                )
+
+    def test_pipeline_combined_domain_and_confidence_filters(self):
+        """Combining domain='planning' and min_confidence=0.40 filters correctly."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store(td)
+            handoff = self._handoff(store)
+
+        result = chained_inference_pipeline(
+            handoff, domain="planning", min_confidence=0.40,
+        )
+        # Planning domain has 2 beliefs: balanced (0.55/0.50, EC 10/10) and no-evidence (0.50/0.35, EC 0/0)
+        self.assertEqual(result["stage1_output_count"], 2)
+        # The no-evidence belief (0.50/0.35) should be filtered by min_confidence=0.40
+        # because its projected confidence with no EC is just the base 0.35 < 0.40
+        included = [item for item in result["items"] if item.get("included")]
+        excluded = [item for item in result["items"] if not item.get("included")]
+        self.assertTrue(any(i["belief_id"] == "b-ev-b" for i in included))  # balanced passes
+        self.assertTrue(any(i["belief_id"] == "b-ev-d" for i in excluded))  # no-evidence filtered
+
+    def test_ec_projection_on_no_evidence_returns_base_stv(self):
+        """EC projection with zero evidence returns the base STV unchanged."""
+        result = ec_projected_stv(0.50, 0.35, [])
+        self.assertEqual(result["projected_strength"], 0.5)
+        self.assertEqual(result["projected_confidence"], 0.35)
+        self.assertEqual(result["packet_count"], 0)
+
+    def test_ec_projection_on_overwhelming_support_stays_high(self):
+        """EC projection with overwhelming support (50/2) stays close to base strength."""
+        result = ec_projected_stv(0.95, 0.90, [{"support": 50, "opposition": 2}])
+        # ec_strength = 50/52 ≈ 0.962, ec_confidence = 52/54 ≈ 0.963
+        # weighted: (0.95*0.90 + 0.962*0.963) / (0.90 + 0.963) ≈ 0.957
+        self.assertGreater(result["projected_strength"], 0.94)
+        self.assertGreater(result["projected_confidence"], 0.95)
+
+    def test_ec_projection_on_strong_conflict_lowers_strength(self):
+        """EC projection with strong conflict (1/20) lowers the projected strength."""
+        result = ec_projected_stv(0.70, 0.60, [{"support": 1, "opposition": 20}])
+        # ec_strength = 1/21 ≈ 0.048, ec_confidence = 21/23 ≈ 0.913
+        # weighted: (0.70*0.60 + 0.048*0.913) / (0.60 + 0.913) ≈ 0.304
+        self.assertLess(result["projected_strength"], 0.50)
+        self.assertGreater(result["projected_confidence"], 0.85)  # confidence stays high (lots of evidence)
+
+    def test_ec_projection_on_balanced_evidence_stays_moderate(self):
+        """EC projection with balanced evidence (10/10) stays near 0.5 strength."""
+        result = ec_projected_stv(0.55, 0.50, [{"support": 10, "opposition": 10}])
+        # ec_strength = 0.5, ec_confidence = 20/22 ≈ 0.909
+        # weighted: (0.55*0.50 + 0.5*0.909) / (0.50 + 0.909) ≈ 0.518
+        self.assertAlmostEqual(result["projected_strength"], 0.518, delta=0.02)
+        # confidence = max(0.50, 0.909) = 0.909
+        self.assertGreater(result["projected_confidence"], 0.90)
+
+
 if __name__ == "__main__":
     unittest.main()
