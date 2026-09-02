@@ -34,6 +34,8 @@
 (PromotesFrom pe-belief-pln-view-required se-20260627-140725-001)
 (PromotesTo pe-belief-pln-view-required belief-pln-view-required)
 (PromotionRule pe-belief-pln-view-required explicit-design-constraint)
+(PromotionTrust pe-belief-pln-view-required 0.90)
+(PromotionDomain pe-belief-pln-view-required memory-architecture)
 (DerivedBelief belief-pln-view-required)
 (EpistemicRole belief-pln-view-required derived-belief)
 (BeliefContent belief-pln-view-required (Requires MediumPeTTaMemory PLNReadyViews))

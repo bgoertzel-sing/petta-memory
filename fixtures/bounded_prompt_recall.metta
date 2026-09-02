@@ -1,0 +1,33 @@
+;;; BEGIN MemoryCluster mc-prompt-target
+(MemoryCluster mc-prompt-target)
+(SchemaVersion mc-prompt-target medium-memory-v1)
+(ClusterType mc-prompt-target prompt-recall-fixture)
+(ClusterOpenedAt mc-prompt-target "2026-06-30T21:00:00-07:00")
+(ClusterSource mc-prompt-target empirical-test-fixture)
+(Contains mc-prompt-target commit-prompt-target)
+(Commitment commit-prompt-target)
+(CommitmentText commit-prompt-target "Target bounded prompt recall should stay visible under topic/status preferences.")
+(About commit-prompt-target MediumPeTTaMemory)
+(HasStatus commit-prompt-target active)
+(SalienceEvent salience-prompt-target)
+(SalienceSubject salience-prompt-target commit-prompt-target)
+(SalienceValue salience-prompt-target high)
+(EpistemicRole commit-prompt-target commitment)
+;;; END MemoryCluster mc-prompt-target
+
+;;; BEGIN MemoryCluster mc-prompt-distractor
+(MemoryCluster mc-prompt-distractor)
+(SchemaVersion mc-prompt-distractor medium-memory-v1)
+(ClusterType mc-prompt-distractor prompt-recall-fixture)
+(ClusterOpenedAt mc-prompt-distractor "2026-06-30T21:05:00-07:00")
+(ClusterSource mc-prompt-distractor empirical-test-fixture)
+(Contains mc-prompt-distractor commit-prompt-distractor)
+(Commitment commit-prompt-distractor)
+(CommitmentText commit-prompt-distractor "Distractor recency should not outrank requested memory topic and active status.")
+(About commit-prompt-distractor OtherTopic)
+(HasStatus commit-prompt-distractor pending)
+(SalienceEvent salience-prompt-distractor)
+(SalienceSubject salience-prompt-distractor commit-prompt-distractor)
+(SalienceValue salience-prompt-distractor high)
+(EpistemicRole commit-prompt-distractor commitment)
+;;; END MemoryCluster mc-prompt-distractor

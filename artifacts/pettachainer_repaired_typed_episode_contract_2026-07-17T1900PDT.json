@@ -1,0 +1,203 @@
+{
+  "boundaries": {
+    "exact_stored_fact_query_only": true,
+    "no_episode_manifest": true,
+    "no_inferred_result_promotion_or_memory_write": true,
+    "no_live_integration": true,
+    "not_a_derived_pln_result": true,
+    "single_compiler_emitted_statement": true
+  },
+  "chart_fingerprint": "2699ff8992a3fb8e0a811cf743fa42c8cc0d8aaa326f60c4be4881eb1ae9b18c",
+  "diagnostic_stream_classification": "opaque-runtime-diagnostics-content-addressed",
+  "episode_id": "episode-repaired-exact-fact-20260717",
+  "query_term": "(S a)",
+  "result_classification": "stored-fact-retrieval",
+  "runtime_admitted": true,
+  "runtime_gate": {
+    "boundaries": {
+      "bounded_query_steps": 1,
+      "content_addressed_process_streams": true,
+      "exact_answer_only": true,
+      "isolated_candidate_only": true,
+      "no_inferred_result_promotion_or_memory_write": true,
+      "no_live_integration": true,
+      "single_compileadd_then_exact_fact_query": true
+    },
+    "inspection": {
+      "compile_definition": {
+        "calls": [
+          "=",
+          "Implication",
+          "bi-backward",
+          "bi-forward",
+          "bidirectional-implication-type?",
+          "build-implication-plan",
+          "compile-adapter-chain",
+          "compile-fact-kb",
+          "compile-implication-forward-rules",
+          "compile-outputs",
+          "compile_",
+          "compiled-implication",
+          "cons",
+          "empty",
+          "if",
+          "inverse-implication",
+          "inverted",
+          "is-var",
+          "kbctx",
+          "let",
+          "let*",
+          "not",
+          "or",
+          "superpose"
+        ],
+        "file": "pettachainer/metta/chainer/compile.metta",
+        "line_count": 24,
+        "line_end": 611,
+        "line_start": 588,
+        "recursive": true,
+        "snippet": "(= (compile_ $kb (@ $stmt (: $prf $Type $tv)))\n   (if (is-var $Type) (empty)\n      (if (= $Type (Implication (cons Premises $premises) (cons Conclusions $conclusions)))\n         (let*\n            (($plan (build-implication-plan $kb $prf $premises $conclusions))\n              ((compiled-implication $shape-kb $a $pair-a $b $nb $na $skip-inverse $execs $proofs $atv) $plan))\n            (superpose (\n                 (compile-implication-forward-rules $kb $shape-kb (kbctx $kb) $prf $tv $a $pair-a $b $execs $proofs $atv)\n                 (if (not $skip-inverse) (inverse-implication $kb $prf $na $b $tv) (empty))\n\t                 (if (or $skip-inverse (is-var $na)) (empty)\n\t                    (compile-outputs (: ((inverted $prf $pa $pb1) $pb2) $na $natv)))\n\t                 (if (or $skip-inverse (is-var $b)) (empty) (compile-adapter-chain plain (: $pb2 $b $btv2))))))\n         (if (bidirectional-implication-type? $Type)\n            (let ($_head (cons Premises $left) (cons Conclusions $right)) $Type\n               (superpose (\n                  (compile_ $kb (: (bi-forward $prf)\n                     (Implication (cons Premises $left) (cons Conclusions $right))\n                     $tv))\n                  (compile_ $kb (: (bi-backward $prf)\n                     (Implication (cons Premises $right) (cons Conclusions $left))\n                     $tv)))))\n            (let $fact-kb (compile-fact-kb $kb)\n               (superpose ((() |- ((: $fact-kb $prf $Type $tv)))\n                           (compile-outputs (: $fact-kb $prf $Type $tv)))))))))",
+        "symbol": "compile_"
+      },
+      "configured_bidirectional_heads": [
+        "BiImplication"
+      ],
+      "gates": [
+        "Source inspection only; no PeTTaChainer runtime, compileadd, query, GoalChainer, or OmegaClaw path is invoked.",
+        "Do not treat branch mapping as inferred belief evidence; it only narrows instrumentation targets.",
+        "Keep handoff caches non-live until a separate add/query runtime gate passes."
+      ],
+      "next_instrumentation_targets": [
+        {
+          "reason": "Still the first timed-out compileadd binding before any compile_ branch can be reached.",
+          "symbol": "materialize-stmt-lambdas"
+        },
+        {
+          "reason": "Owns context clearing, broad compile dispatch, and generated ctx atom collection.",
+          "symbol": "mm2compile"
+        },
+        {
+          "reason": "The petta-memory promoted-belief STV shape should avoid implication/rule branches; future probes can instrument this fact path specifically.",
+          "symbol": "compile_ fact-assertion branch"
+        }
+      ],
+      "parsed_statement": {
+        "proof_id": "pm-7f1e0c5b36342044a8354418b7d69c2059877cf64a979cedeb3871dd9b402c13",
+        "truth_value": "(STV 0.8 0.6)",
+        "type": "(S a)",
+        "type_head": "S"
+      },
+      "reason": "Type is a concrete non-Implication expression, so compile_ should use compile-fact-kb plus compile-outputs.",
+      "repo_path": "/tmp/petta-contract-gate.sKJ90z/PeTTaChainer-candidate",
+      "selected_compile_branch": "fact-assertion",
+      "source": "pettachainer compile_ dispatch source inspection",
+      "statement": "(: pm-7f1e0c5b36342044a8354418b7d69c2059877cf64a979cedeb3871dd9b402c13 (S a) (STV 0.8 0.6))"
+    },
+    "mm2compile_inspection": {
+      "boundaries": {
+        "no_compileadd_or_query": true,
+        "no_upstream_semantic_change": true,
+        "source_inspection_only": true
+      },
+      "definition": {
+        "calls": [
+          "=",
+          "compile",
+          "get-atoms",
+          "mm2compile",
+          "mm2stmt",
+          "progn",
+          "remove-all-atoms",
+          "superpose"
+        ],
+        "line_count": 2,
+        "line_end": 658,
+        "line_start": 657,
+        "recursive": false,
+        "snippet": "(= (mm2compile $kb $stmt)\n   (progn (remove-all-atoms ctx) (superpose ((mm2stmt (compile $kb $stmt)) (get-atoms ctx)))))",
+        "symbol": "mm2compile"
+      },
+      "interpretation": "The pinned mm2compile collector clears ctx and superposes mm2stmt output with ctx atoms.",
+      "repo_path": "/tmp/petta-contract-gate.sKJ90z/PeTTaChainer-candidate",
+      "shape_confirmed": true,
+      "source": "pettachainer mm2compile collection-shape inspection"
+    },
+    "repair_inspection": {
+      "baseline_hashes": {
+        "pettachainer/metta/chainer/compile.metta": "197c84dfa619c2b136c7b097b1ae3315fcb7929a709cf4085e9dcb9bed909ee9",
+        "pettachainer/metta/context/context_from_kb.metta": "d39db823b78f17245e6b64d72179efe68bded0e7e3352d4979c7940fb970ce95",
+        "pettachainer/metta/context/context_generation.metta": "7f936d984e8cf48dba94fac86452a6645efb7ceddfdea2da3061ee3d13d1cfa9",
+        "pettachainer/metta/petta_chainer.metta": "641a8e75dcd45bd1cc089e896ded438234ecf4af3b1fd18dde8f143a2a3c2325"
+      },
+      "baseline_repo_path": "/home/openclaw/research-agent/projects/petta-memory/repos/PeTTaChainer",
+      "boundaries": {
+        "candidate_checkout_only": true,
+        "no_compileadd_or_query": true,
+        "source_inspection_only": true
+      },
+      "candidate_hashes": {
+        "pettachainer/metta/chainer/compile.metta": "197c84dfa619c2b136c7b097b1ae3315fcb7929a709cf4085e9dcb9bed909ee9",
+        "pettachainer/metta/context/context_from_kb.metta": "d39db823b78f17245e6b64d72179efe68bded0e7e3352d4979c7940fb970ce95",
+        "pettachainer/metta/context/context_generation.metta": "02d03accf36302d47e9e797e2962519b423302de595761cf7aba18c1b572e32a",
+        "pettachainer/metta/petta_chainer.metta": "641a8e75dcd45bd1cc089e896ded438234ecf4af3b1fd18dde8f143a2a3c2325"
+      },
+      "candidate_repo_path": "/tmp/petta-contract-gate.sKJ90z/PeTTaChainer-candidate",
+      "exact_targeted_import_removal": true,
+      "source": "isolated PeTTaChainer duplicate compile-import repair inspection",
+      "target_import_occurrences": 1,
+      "unchanged_paths": [
+        "pettachainer/metta/petta_chainer.metta",
+        "pettachainer/metta/context/context_from_kb.metta",
+        "pettachainer/metta/chainer/compile.metta"
+      ]
+    },
+    "runtime_event": {
+      "add_call_text": "!(compileadd kb22c4afe43f5f4282aca148d96367bdb0 (: pm-7f1e0c5b36342044a8354418b7d69c2059877cf64a979cedeb3871dd9b402c13 (S a) (STV 0.8 0.6)))",
+      "add_output_count": 1,
+      "exact_answer_only": true,
+      "exact_answer_present": true,
+      "expected_answer": "(: pm-7f1e0c5b36342044a8354418b7d69c2059877cf64a979cedeb3871dd9b402c13 (S a) (STV 0.8 0.6))",
+      "expected_internal_stored": true,
+      "label": "repaired_compileadd_exact_fact_query",
+      "query": "(: $prf (S a) $tv)",
+      "query_answer_count": 1,
+      "query_answer_items": [
+        "(: pm-7f1e0c5b36342044a8354418b7d69c2059877cf64a979cedeb3871dd9b402c13 (S a) (STV 0.8 0.6))"
+      ],
+      "query_answer_truncated": false,
+      "query_call_text": "!(query 1 kb22c4afe43f5f4282aca148d96367bdb0 (: $prf (S a) $tv))",
+      "query_steps": 1,
+      "query_unique_answer_count": 1,
+      "seconds": 0.368514,
+      "status": "ok",
+      "stderr_bytes": 152,
+      "stderr_chars": 152,
+      "stderr_sha256": "92326bcdce521cb7f503265c7afb9f2b897590c6e8ccd2411b3da7adae7a1d2f",
+      "stdout_bytes": 608182,
+      "stdout_chars": 608182,
+      "stdout_sha256": "c4019558e2b4984b41f4b3b5a82955b79b628c01a2203446faefba8bf9cd15e2",
+      "stored_check_call_text": "!(match &kb ((S a) (kb22c4afe43f5f4282aca148d96367bdb0 MAIN Nil) pm-7f1e0c5b36342044a8354418b7d69c2059877cf64a979cedeb3871dd9b402c13 (STV 0.8 0.6)) ((S a) (kb22c4afe43f5f4282aca148d96367bdb0 MAIN Nil) pm-7f1e0c5b36342044a8354418b7d69c2059877cf64a979cedeb3871dd9b402c13 (STV 0.8 0.6)))",
+      "unexpected_answer_count": 0
+    },
+    "source": "non-live repaired PeTTaChainer exact-fact query gate",
+    "status": "completed"
+  },
+  "schema": "petta-memory-repaired-pettachainer-contract-gate-v1",
+  "statement_digest": "7f1e0c5b36342044a8354418b7d69c2059877cf64a979cedeb3871dd9b402c13",
+  "validation_event": {
+    "label": "validate_repaired_episode_contract",
+    "query_result": 1.0,
+    "seconds": 0.070499,
+    "statement_results": [
+      1.0
+    ],
+    "status": "ok",
+    "stderr_bytes": 0,
+    "stderr_chars": 0,
+    "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stdout_bytes": 4392,
+    "stdout_chars": 4392,
+    "stdout_sha256": "7e9857f14b1b29b449cb19205a80b72352f454d7c9631db8aab2c724a83b9a6f"
+  },
+  "validators_admitted": true
+}

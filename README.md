@@ -13,11 +13,57 @@ Design source:
 
 - Append complete `MemoryCluster` records only, serialized with explicit begin/end delimiters.
 - Require `(SchemaVersion <cluster-id> medium-memory-v1)` in each cluster.
-- Validate basic MeTTa-like syntax, required metadata, and size limits.
+- Validate basic MeTTa-like syntax, required metadata, delimited record envelope/atom id consistency, unary ID-declaration and binary metadata/retrieval relation arity, symbol IDs, local `Contains` boundaries including self-containment rejection, and size limits.
+- Allow a caller-supplied parse-check hook for external PeTTa/MeTTa runtime validation; `make_petta_parse_checker(...)` wires this to a local PeTTa runtime when explicitly requested.
 - Query by cluster/id, type, `About`, status, and epistemic role, returning whole clusters.
-- Generate bounded prompt context.
-- Export a PLN-safe view that excludes raw quoted utterance text and unpromoted quoted claims.
+- Generate a bounded audit view of complete canonical `MemoryCluster` records for human/review tooling, preserving begin/end delimiters instead of slicing through records.
+- Generate a bounded `MM-index` view for id/type/about/status/role retrieval edges, with id edges for valid identifier arguments so generated index recall can match direct `query_id` recall; bounded index output preserves complete atom lines.
+- Generate bounded prompt context, with optional topic/status preferences and
+  salience/recency ordering; fixture tests cover relevance under a tight prompt
+  character budget, negative bounds are rejected, and bounded output preserves
+  complete atom lines.
+- Export a PLN-safe view that excludes raw quoted utterance text and unpromoted quoted claims; optional PLN-view character bounds preserve complete atom lines.
+- Export promoted beliefs as PeTTaChainer-compatible `(: proof-id statement (STV strength confidence))` statements via `pettachainer-view`; confidence is capped by `PromotionTrust`.
+- Export promoted beliefs with explicit `EvidenceSupportCount`/`EvidenceOppositionCount` atoms as PeTTaChainer `EvidencePacket` atoms via `pettachainer-packets-view`; EC counts are never inferred from truth values.
+- Emit a non-live JSON handoff cache via `pettachainer-handoff-cache`, packaging promoted STV statements and EvidencePackets as PLN-ready inputs for review/OmegaClaw/GoalChainer mapping while explicitly labeling them as not inferred beliefs and keeping PeTTaChainer `compileadd`/query gated.
+- Emit a non-live `patham9/PLN` bridge via `patham9-pln-handoff`, mapping promoted handoff STV items into `(Sentence $Term (stv S C) ($EvidenceID))` atoms while preserving contextual EvidencePacket/EC/provenance metadata for a later reviewed π-PLN extension layer.
+- Run a bounded read-only `patham9/PLN` query smoke via `patham9-pln-smoke`; it loads one generated Sentence into the local chainer with a numeric runtime stamp for compatibility, parses semantic `Passed:` markers, and keeps full petta-memory provenance in the result sidecar without appending inferred beliefs or enabling live integration.
+- Run a bounded read-only two-premise `patham9/PLN` derivation smoke via `patham9-pln-derivation-smoke`; it loads one generated Sentence plus one synthetic bridge implication, verifies the derived term with semantic `Passed:` parsing, and keeps numeric runtime stamps mapped to PMEvidence/synthetic-bridge sidecar provenance without promoting inferred beliefs.
+- Build a non-live ranked inference-control plan via `pi-pln-ranked-plan`; it combines PLN-estimator EDCall ranking with continuation-predicate controller checks and reports recommended versus held branches before any future `PLN.Derive` call.
+- Build and persist a typed piPLN `EpisodeManifest` audit artifact over caller-supplied completed-run data; it binds the complete bounded program, stamp map, chart/snapshot/compiler/result provenance, kernel/controller identities, budget/seed/timestamps, and captured outputs without invoking the kernel or authorizing promotion.
+- Admit a frozen Phase-0 stock-kernel replay anchor only after its manifest schema, source/output content hashes, output byte count, duplicate-run determinism hashes, semantic pass marker, pinned runtime/kernel identities, and non-live boundaries close exactly.
+- Assemble a deterministic bounded stock patham9 `PLN.Query` program from immutable compiled Sentences and one canonical declarative query; import/init/query controls are fixed by the adapter and callers cannot inject rule or executable program text.
+- Adapt the same immutable compiled episode into an inert PeTTaChainer checked-add/query contract: each patham9 `Sentence` becomes exactly `(: pm-<sentence-digest> term (STV strength confidence))`, the query becomes `(: $prf term $tv)`, and stamps/evidence bases remain attached as audit-only sidecars because PeTTaChainer's public statement schema has no stamp field. This does not invoke `compileadd` or claim runtime readiness.
+- Probe that contract through a bounded fail-closed PeTTaChainer runtime gate: every statement and the query must first receive exact public-validator admission, then add/query runs in one isolated subprocess. Timeout, error, malformed stage output, or an empty query answer remains a non-admission. The pinned local runtime currently validates the exact schema but times out in `compileadd`, so manifests and inferred-result claims remain gated.
+- Diagnose the exact contract add path with separately bounded materialization and `mm2compile` rungs. Materializer artifacts preserve total/unique fan-out counts while retaining at most 16 result samples; this is profiling evidence only and cannot admit a query result.
+- Isolate PeTTaChainer's `compile` dispatcher below materialization but above `mm2compile` with a source-gated, bounded fact-assertion probe. Runtime samples are capped and the probe never adds compiled atoms or admits a query result.
+- Compare that public `compile` call with direct `compile_` under an exact source gate. On the pinned runtime the wrapper returns 256 copies while direct dispatch returns 128 copies of the same unique fact clause, localizing one 2x evaluator factor to the wrapper boundary while leaving nested dispatch multiplicity diagnostic.
+- Rebuild the source-confirmed concrete-fact `compile_` predicate ladder over a literal KB clause without calling `compile`: the literal branch returns one clause, adding `bidirectional-implication-type?` raises that to four identical clauses, and the surrounding implication/variable-type predicates add no further copies. This localizes 4x of the remaining direct-dispatch fan-out while leaving annotation/definition dispatch and `compile-fact-kb` separately diagnostic.
+- Confirm the two pinned import paths that register `chainer/compile`, then compare direct `compile_` with one source-equivalent locally registered fact definition. The single registration returns 64 copies and direct dispatch returns 128 copies of the same unique clause, assigning the remaining 2x direct-dispatch factor to duplicate module registration without changing upstream imports.
+- Admit an isolated duplicate-import repair only when critical-file hashes prove the candidate removes exactly `context_generation.metta`'s sole `chainer/compile` import. On pinned PeTTaChainer `e4db5ca`, this reduced direct `compile_` from 128 duplicate-equivalent outputs to one normalized-equivalent clause, showing the diagnostic factors are coupled under duplicate registration; all downstream rungs remain gated for remeasurement before another source change or `compileadd` retry.
+- Remeasure public `compile` versus direct `compile_` only after the same exact repair/source gate passes. On the single-import candidate both entry points return one identical clause (rather than the baseline's 256 versus 128 copies), retiring the pre-repair wrapper factor while leaving fact-KB, predicate, annotation, conversion, and collection rungs gated for fresh measurement.
+- Remeasure the one-clause `mm2stmt` conversion and copied `mm2compile` collector only inside that exact single-import candidate, stopping before `compileadd` or query and failing closed if either repaired source shape drifts.
+- Run the real `mm2compile` compile/conversion/collection entry point only inside that same exact candidate. The repaired one-statement fact path now completes with one expected output under the bound; `compileadd`, query/result admission, promotion, writes, and live integration remain separate gates.
+- Retry one real `compileadd` only inside the exact single-import candidate and verify the exact internalized fact by direct `&kb` membership. The tested promoted-fact shape completes with one external output and one stored match; query compilation/execution, result admission, promotion, writes, and live integration remain separate gates.
+- Query that same stored fact only inside the exact single-import candidate, with a positive bounded step count and an answer constructed from the added statement. The one-step runtime returned exactly the added proof/type/STV (allowing numeric rendering normalization); inferred-result promotion, memory writes, and live integration remain closed.
+- Admit that exact-fact query only when every non-empty runtime answer structurally equals the added proof/type/STV. Merely finding the expected fact among unrelated answers now fails closed; a fresh repaired one-step probe returned one answer, one unique answer, and zero unexpected answers.
+- Content-address both OS-level streams from completed isolated PeTTaChainer stages with exact byte counts and SHA-256 digests. The repaired exact-fact query now fails closed when either stream identity is missing or malformed; the fresh admitted probe recorded 608,129 stdout bytes and 138 stderr bytes without treating diagnostic content as an inferred result.
+- Bind the repaired exact-fact path back to one immutable compiler-emitted `PeTTaChainerEpisodeContract`. The gate requires exact public validator admission, the exact single-import source repair, exact internal storage, and an answer set containing only the typed input fact. Successful output is classified only as `stored-fact-retrieval`; opaque content-addressed diagnostics, derived PLN results, manifests, promotion, writes, and live integration remain separate boundaries.
+- Run a separately bounded one-fact/one-rule derivation gate only inside the same exact single-import candidate. It requires a query different from the stored fact, the exact `(rule-proof <rule> <fact>)` proof, target-only answers, and finite unit-interval STVs. The first admitted result derived `(T a)` from `(S a)` and `S→T`; manifests, promotion, writes, and live integration remain closed.
+- Bind that derived STV to the exact source-confirmed `TotalMpFormula` path. The gate verifies the unary implication's `(STV 0.2 0.2)` absent-complement fallback and recomputes every answer; the pinned result exactly matched `(STV 0.7600000000000001 0.52)`. Immutable compiler rule binding, manifests, promotion/write, and live integration remain closed.
+- Close an admitted compiler-bound rule gate into immutable typed `PeTTaChainerStageCapture` and `PeTTaChainerDerivedResultCapture` records. The derived record commits the unique retained proof/query/STV answer, exact compiler fact/rule identities and audit sidecars, and content identities for both bounded isolated stages. Create-once checksummed JSON persistence reconstructs both nested captures and closes fact/rule provenance against the supplied immutable episode contract. Diagnostic content remains opaque; manifest adaptation, promotion/write, and live integration remain separate gates.
+- Adapt that typed capture into a distinct non-promoting `PeTTaChainerEpisodeManifest`. It content-addresses the complete checked-add/query contract and binds the derived result, validator/runtime stream identities, repaired-source profile, runtime/controller identities, budget, seed, and timestamps. It deliberately does not reuse the stock patham9 manifest's raw-stream or single-stamp-set semantics, and its typed invariant forbids promotion authorization.
+- Convert one source-equivalent, deduplicated fact clause through a bounded `mm2stmt` gate and inspect the cleared temporary `ctx` space separately. This bypasses compiler fan-out for diagnosis only and never invokes `compile`, `mm2compile`, `compileadd`, or query.
+- Inspect the pinned `mm2stmt` definition exactly before attributing fact-conversion multiplicity: its specialized `(() |- ($ccl))` arm overlaps the general `($prms |- ($ccl))` arm when premises are empty, source-explaining the observed two identical outputs while failing closed if the upstream definition drifts.
+- Reproduce the pinned `mm2compile` clear/convert/collect shape over one canonical compiled fact clause after source verification. This diagnostic removes the 256-copy `compile` input fan-out and shows the collector returning four copies of one unique expected fact; it does not invoke `compile`, `compileadd`, or query.
+- Run an already-assembled program through a bounded shell-free subprocess capture primitive with explicit argv, bounded optional working-directory and explicit-environment inputs (including OS framing bytes), optional exact executable SHA-256 pinning over the same strictly resolved path used for launch, a post-resolution argv budget recheck, timeout, per-stream byte ceilings, strict UTF-8 decoding, and a content commitment to the exact delivered program; the raw capture is not itself a validated result or promotion authority.
+- Emit a non-live admitted handoff subset via `pi-pln-admitted-handoff`; it copies only ranked-plan recommended branches into the existing patham9/PLN handoff schema for a later separately reviewed derive gate.
+- Emit a GoalChainer-facing non-live JSON handoff via `goalchainer-handoff-cache`, mapping promoted evidence into appraisal/acceptability input slots with explicit no-task-claim/no-live-skill boundaries; see `docs/goalchainer_handoff.md`.
+- Run the first read-only live bridge via `live-goal-bridge`; it consumes the selected append-only memory journal, builds the pi-PLN ranked/admitted handoff gate, can optionally run a bounded patham9/PLN derivation smoke over the admitted handoff with `--run-patham9-runtime`, then invokes local GoalChainer appraisal over the promoted evidence without loading an OmegaClaw skill, accepting a directive/task claim, writing memory, or promoting inferred beliefs.
+- Run a bounded non-live GoalChainer decision smoke via `goalchainer-smoke`, using a promoted handoff cache as read-only provenance and requiring ranked decisions from `goal_chainer.cli demo --json` without loading an OmegaClaw skill, claiming a task/directive, or writing memory. The current external gate still fails in GoalChainer's PeTTaChainer `compileadd` path and is recorded as a blocker artifact.
+- Generate narrow PeTTaChainer profile workloads with `python -m petta_memory.pettachainer_profile`, covering promoted-belief STV proof statements and EvidencePacket exports; opt-in runtime constructor, direct-vs-eval-control internal `compileadd` probes, proof/contextual add-only, and add+query stages run in bounded subprocesses via `--stage-timeout-sec` because they are noisy/slow locally. Source/runtime helpers also map PeTTaChainer add APIs, `compileadd` bottleneck definitions, the `compile_` branch selected by petta-memory's tiny STV proof statement, PeTTa `static-import!` bulk-load limitations, and bounded temporary-directory `static-import!` loader microbenchmarks over Prolog-safe normalized scratch atoms without invoking PeTTaChainer `compileadd`/query or OmegaClaw paths.
 - Compute current status from append-only `StatusEvent` plus `Supersedes` atoms.
+- Require explicit promotion rule, bounded trust, and domain metadata before derived beliefs are exported as PLN premises; `pln-view --normalized` adds normalized `MM-PLN*` mapping atoms for eligible beliefs.
 
 ## Non-goals for v0
 
@@ -25,6 +71,52 @@ Design source:
 - No autonomous external actions.
 - No database service.
 - No raw transcript mirroring.
+
+## OmegaClaw integration sketch: feature flags and boundary
+
+See also `docs/omegaclaw_migration.md` for proposed migration/API names.
+
+`petta_memory.omegaclaw` contains a local-only wrapper sketch for future OmegaClaw
+prompt assembly. It is not imported by OmegaClaw and does not touch any live agent
+state.
+
+Feature flags are explicit and default-safe:
+
+- `prompt_view_reads_enabled=False` by default. When false, the wrapper returns an
+  empty prompt fragment. When true, it returns only the bounded `prompt_view` atoms
+  from a caller-supplied local `MediumMemoryStore`, wrapped in a read-only MeTTa
+  envelope with a validated symbol id and escaped generated-at string.
+- `index_view_reads_enabled=False` by default. When true, the wrapper returns a
+  separately bounded, read-only-derived `MM-index` envelope for id/type/about/status/role
+  retrieval checks; the generated index is never appended back into the journal.
+- `autonomous_writes_enabled=False` is enforced. Setting it to true raises
+  `LiveWriteDisabled`, and `OmegaClawMemoryBridge.append_from_omegaclaw(...)`
+  always raises in v0.
+
+Intended read/write boundary:
+
+1. **Prompt-view reads:** OmegaClaw may later read a bounded read-only fragment via
+   `OmegaClawMemoryBridge.prompt_view_metta()` after an integration review. These
+   atoms are prompt context, not new authority.
+2. **Generated-index reads:** OmegaClaw may later read a bounded derived retrieval
+   fragment via `OmegaClawMemoryBridge.index_view_metta()` after the same review;
+   these atoms are lookup hints, not canonical memory.
+3. **Manual/local writes:** repository tests and reviewed migration scripts may use
+   `MediumMemoryStore.append_cluster(...)` directly against local files.
+4. **Autonomous memory writes:** disabled until a separate design review defines
+   validation, provenance, failure handling, audit logging, and rollback semantics.
+
+Example wrapper shape:
+
+```text
+;;; BEGIN OmegaClawPromptView oc-prompt-memory-view
+(OmegaClawPromptView oc-prompt-memory-view)
+(PromptViewSource oc-prompt-memory-view petta-memory)
+(PromptViewMode oc-prompt-memory-view read-only)
+(PromptViewGeneratedAt oc-prompt-memory-view "2026-06-29T18:10:00+00:00")
+...
+;;; END OmegaClawPromptView oc-prompt-memory-view
+```
 
 ## Canonical record format
 
@@ -38,6 +130,10 @@ Each journal record is one cluster:
 ;;; END MemoryCluster mc-example
 ```
 
-The implementation validates the full cluster before writing, then writes through a
-temporary file replacement. This is conservative and local-first; a later OmegaClaw
-integration can replace it with file locking or an AtomSpace-backed journal.
+The implementation validates the full cluster before writing, optionally runs a
+caller-supplied parse-check hook over the canonicalized cluster, then writes through
+a temporary file replacement. `petta_memory.make_petta_parse_checker(...)` can be
+passed as that hook to check the canonical cluster with an explicitly configured
+local PeTTa runtime; it is opt-in and does not enable live OmegaClaw writes. This
+is conservative and local-first; a later OmegaClaw integration can replace it
+with an AtomSpace-backed journal.

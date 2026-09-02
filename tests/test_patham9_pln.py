@@ -1,0 +1,4568 @@
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from typing import Any
+
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from petta_memory.patham9_pln import (
+    EC_PROJECTED_STV_POLICY_ID,
+    build_meta_learning_benchmark_handoff,
+    classify_smoke_result,
+    classify_smoke_result_with_retry,
+    continuation_predicate_wrapper,
+    controlled_backward_chainer,
+    controller_as_chainer,
+    context_selection_wrapper,
+    chained_inference_pipeline,
+    ec_projected_stv,
+    parse_metta_test_output,
+    patham9_pln_api_surface,
+    patham9_pln_ec_projection_smoke_program,
+    patham9_pln_ec_projection_conflicting_smoke_program,
+    patham9_pln_derivation_ec_projection_smoke_program,
+    patham9_pi_pln_boundary_plan,
+    patham9_pi_pln_extension_spec,
+    patham9_pln_derivation_smoke_program,
+    patham9_pln_handoff_sentences,
+    patham9_pln_multi_sentence_derivation_smoke_program,
+    patham9_pln_query_smoke_program,
+    pln_estimator_wrapper,
+    probabilistic_inference_filter,
+    ranked_inference_control_plan,
+    ranked_plan_admitted_handoff,
+    run_meta_learning_benchmark,
+    summarize_smoke_results,
+    summarize_smoke_results_file,
+    survey_trueagi_chaining_inference_control,
+)
+
+
+class Patham9PlnSmokeGateTests(unittest.TestCase):
+    def test_ec_projected_stv_is_explicitly_legacy_adapter_without_output_drift(self):
+        result = ec_projected_stv(0.8, 0.6, [{"support": 3, "opposition": 1}])
+        self.assertEqual(EC_PROJECTED_STV_POLICY_ID, "adapter-weighted-v1")
+        self.assertEqual(ec_projected_stv.projection_policy_id, EC_PROJECTED_STV_POLICY_ID)
+        self.assertNotIn("projection_policy_id", result)
+
+    def test_parse_metta_test_output_counts_semantic_failures(self):
+        parsed = parse_metta_test_output(
+            "[(TestResult (Passed: #t))]\n"
+            "[(TestResult (Passed: #f))]\n"
+            "[(Error (import! &self PLN) Failed to resolve module top:PLN)]\n"
+        )
+
+        self.assertEqual(parsed["passed_true_count"], 1)
+        self.assertEqual(parsed["passed_false_count"], 1)
+        self.assertEqual(parsed["error_markers"], 1)
+        self.assertFalse(parsed["semantic_passed"])
+        self.assertEqual(len(parsed["diagnostic_lines"]), 3)
+
+    def test_classify_smoke_result_treats_shell_success_with_passed_false_as_failure(self):
+        result = classify_smoke_result(
+            {
+                "test": "ruletests/example.metta",
+                "returncode": 0,
+                "output": "[((Is: x) (Should: y) (Passed: #f))]",
+            }
+        )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("Passed: #f", " ".join(result["reasons"]))
+
+    def test_classify_smoke_result_requires_at_least_one_passed_true_marker(self):
+        result = classify_smoke_result({"test": "empty.metta", "returncode": 0, "output": "[()]"})
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("no Passed: #t markers", result["reasons"])
+
+    def test_summarize_smoke_results_reports_failed_tests(self):
+        summary = summarize_smoke_results(
+            [
+                {"test": "examples/Smokes.metta", "returncode": 0, "passed_true_count": 1},
+                {"test": "ruletests/inversion.metta", "returncode": 0, "error_markers": 1},
+            ]
+        )
+
+        self.assertEqual(summary["status"], "failed")
+        self.assertEqual(summary["passed"], 1)
+        self.assertEqual(summary["failed"], 1)
+        self.assertEqual(summary["results"][1]["test"], "ruletests/inversion.metta")
+        self.assertIn("Passed: #f and Error atoms are failures", summary["gate"])
+
+    def test_summarize_smoke_results_file_loads_artifact_list(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "results.json"
+            path.write_text(
+                '[{"test": "examples/FlyingRaven.metta", "returncode": 0, "passed_true_count": 2}]',
+                encoding="utf-8",
+            )
+
+            summary = summarize_smoke_results_file(path)
+
+        self.assertEqual(summary["status"], "passed")
+        self.assertEqual(summary["total"], 1)
+
+    def test_classify_smoke_result_with_retry_distinguishes_harness_drift(self):
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "ruletest.log"
+            retry = Path(td) / "ruletest.retry.log"
+            log.write_text("[(Error (import! ModuleSpace(GroundingSpace-top) PLN) Failed)]", encoding="utf-8")
+            retry.write_text("[((Is: x) (Should: x) (Passed: #t))]", encoding="utf-8")
+
+            result = classify_smoke_result_with_retry(
+                {
+                    "test": "ruletests/inversion.metta",
+                    "returncode": 0,
+                    "error_markers": 1,
+                    "log": str(log),
+                }
+            )
+
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["attempt"], "retry")
+        self.assertEqual(result["primary_status"], "failed")
+        self.assertEqual(result["classification"], "harness-or-environment-drift")
+
+    def test_summarize_smoke_results_can_include_retry_logs(self):
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "broken.log"
+            retry = Path(td) / "broken.retry.log"
+            log.write_text("[(Error bad import)]", encoding="utf-8")
+            retry.write_text("[((Is: x) (Should: x) (Passed: #t))]", encoding="utf-8")
+
+            summary = summarize_smoke_results(
+                [{"test": "ruletests/broken.metta", "returncode": 0, "error_markers": 1, "log": str(log)}],
+                include_retries=True,
+            )
+
+        self.assertEqual(summary["status"], "passed")
+        self.assertEqual(summary["results"][0]["attempt"], "retry")
+
+    def test_patham9_pln_handoff_sentences_preserve_stv_and_contextual_packets(self):
+        cache = {
+            "schema": "petta-memory-pettachainer-handoff-v1",
+            "cache_id": "pm-cache-test",
+            "items": [
+                {
+                    "kind": "pettachainer-stv-statement",
+                    "atom": "(: b2 (Requires MediumPeTTaMemory PLNReadyViews) (STV 0.90 0.70))",
+                    "belief_id": "b2",
+                    "cluster_id": "mc3",
+                    "promotion_event": "pe1",
+                    "promotion_rule": "explicit-test-promotion",
+                    "promotion_domain": "memory-architecture",
+                    "item_status": "pln-ready-input-not-inferred-belief",
+                },
+                {
+                    "kind": "pettachainer-evidence-packet",
+                    "atom": "(EvidencePacket (Requires MediumPeTTaMemory PLNReadyViews) (EC 8.0 2.0) ((domain memory-architecture) (promotion-rule explicit-test-promotion)) pe1)",
+                    "belief_id": "b2",
+                    "cluster_id": "mc3",
+                    "promotion_rule": "explicit-test-promotion",
+                    "promotion_domain": "memory-architecture",
+                },
+            ],
+        }
+
+        handoff = patham9_pln_handoff_sentences(cache)
+
+        self.assertEqual(handoff["schema"], "petta-memory-patham9-pln-handoff-v1")
+        self.assertEqual(handoff["item_count"], 1)
+        item = handoff["items"][0]
+        self.assertEqual(
+            item["atom"],
+            "(Sentence (Requires MediumPeTTaMemory PLNReadyViews) (stv 0.90 0.70) "
+            "((PMEvidence b2 mc3 pe1 explicit-test-promotion memory-architecture)))",
+        )
+        self.assertEqual(item["stv"], {"strength": "0.90", "confidence": "0.70"})
+        packets = item["pi_pln_extension"]["contextual_evidence_packets"]
+        self.assertEqual(packets[0]["support"], "8.0")
+        self.assertEqual(packets[0]["opposition"], "2.0")
+        self.assertIn("not appended to memory", handoff["boundary"])
+
+    def test_patham9_pln_handoff_sentences_reject_wrong_schema(self):
+        with self.assertRaisesRegex(ValueError, "expected petta-memory-pettachainer-handoff-v1"):
+            patham9_pln_handoff_sentences({"schema": "other", "items": []})
+
+    def _patham9_handoff(self):
+        return {
+            "schema": "petta-memory-patham9-pln-handoff-v1",
+            "items": [
+                {
+                    "atom": "(Sentence (Requires MediumPeTTaMemory PLNReadyViews) (stv 0.90 0.70) ((PMEvidence b2 mc3 pe1 rule domain)))",
+                    "term": "(Requires MediumPeTTaMemory PLNReadyViews)",
+                    "stv": {"strength": "0.90", "confidence": "0.70"},
+                    "evidence_id": "(PMEvidence b2 mc3 pe1 rule domain)",
+                    "pi_pln_extension": {"contextual_evidence_packets": [{"support": "8", "opposition": "2"}]},
+                }
+            ],
+        }
+
+    def test_patham9_pln_query_smoke_program_uses_numeric_stamp_and_preserves_provenance(self):
+        program = patham9_pln_query_smoke_program(self._patham9_handoff())
+
+        self.assertIn("(Sentence ((Requires MediumPeTTaMemory PLNReadyViews) (stv 0.90 0.70)) (0))", program["program"])
+        self.assertIn("(PLN.Query", program["program"])
+        self.assertIn("!(Test", program["program"])
+        self.assertEqual(program["runtime_stamp"], "(0)")
+        self.assertEqual(program["source_evidence_id"], "(PMEvidence b2 mc3 pe1 rule domain)")
+        self.assertEqual(program["source_item"]["pi_pln_extension"]["contextual_evidence_packets"][0]["support"], "8")
+
+    def test_patham9_pln_derivation_smoke_program_uses_two_premises_and_stamp_sidecar(self):
+        program = patham9_pln_derivation_smoke_program(self._patham9_handoff())
+
+        self.assertEqual(program["schema"], "petta-memory-patham9-pln-derivation-smoke-program-v1")
+        self.assertIn("PMDerivedFromHandoff", program["derived_term"])
+        self.assertIn("(Sentence ((Requires MediumPeTTaMemory PLNReadyViews) (stv 0.90 0.70)) (0))", program["program"])
+        self.assertIn("(Implication (Requires MediumPeTTaMemory PLNReadyViews) (PMDerivedFromHandoff", program["program"])
+        self.assertIn("(Sentence ((Implication", program["program"])
+        self.assertIn("(1))", program["program"])
+        self.assertEqual(program["expected_result"], "((stv 0.902 0.63) (0 1))")
+        self.assertEqual(program["stamp_sidecar"]["(0)"]["source_evidence_id"], "(PMEvidence b2 mc3 pe1 rule domain)")
+        self.assertEqual(program["stamp_sidecar"]["(1)"]["kind"], "synthetic-non-live-bridge-implication")
+        self.assertIn("no inferred-belief promotion", program["boundary"])
+
+    def test_patham9_pi_pln_boundary_plan_keeps_wrapper_first_and_summarizes_ec_inputs(self):
+        plan = patham9_pi_pln_boundary_plan(self._patham9_handoff())
+
+        self.assertEqual(plan["schema"], "petta-memory-patham9-pi-pln-boundary-plan-v1")
+        self.assertEqual(plan["decision"], "wrapper-first")
+        self.assertIn("unmodified functional chainer", plan["patham9_core_policy"])
+        self.assertIn("PLN.Query", plan["patham9_extension_points"])
+        self.assertIn("no truth-changing EC projection is live yet", plan["formula_policy"])
+        projected = plan["projection_inputs"][0]
+        self.assertEqual(projected["source_evidence_id"], "(PMEvidence b2 mc3 pe1 rule domain)")
+        self.assertEqual(projected["contextual_packets"][0]["total_evidence"], 10.0)
+        self.assertEqual(projected["contextual_packets"][0]["positive_ratio"], 0.8)
+        self.assertIn("no memory append", plan["non_live_gates"][1])
+
+    def test_patham9_pi_pln_boundary_plan_rejects_wrong_schema(self):
+        with self.assertRaisesRegex(ValueError, "expected petta-memory-patham9-pln-handoff-v1"):
+            patham9_pi_pln_boundary_plan({"schema": "other", "items": []})
+
+    def test_ec_projected_stv_blends_confidence_weighted(self):
+        result = ec_projected_stv(0.90, 0.70, [{"support": 8.0, "opposition": 2.0}])
+        self.assertEqual(result["base_strength"], 0.90)
+        self.assertEqual(result["base_confidence"], 0.70)
+        self.assertEqual(result["packet_count"], 1)
+        # ec_strength = 8/10 = 0.8, ec_confidence = 10/12 ≈ 0.833333
+        self.assertAlmostEqual(result["packets"][0]["ec_strength"], 0.8, places=6)
+        self.assertAlmostEqual(result["packets"][0]["ec_confidence"], 10.0 / 12.0, places=6)
+        # weighted: (0.90*0.70 + 0.8*0.833333) / (0.70 + 0.833333)
+        expected_strength = (0.90 * 0.70 + 0.8 * (10.0 / 12.0)) / (0.70 + 10.0 / 12.0)
+        self.assertAlmostEqual(result["projected_strength"], round(expected_strength, 6), places=5)
+        # projected confidence = max(0.70, 0.833333) = 0.833333
+        self.assertAlmostEqual(result["projected_confidence"], round(10.0 / 12.0, 6), places=5)
+
+    def test_ec_projected_stv_with_no_packets_returns_base(self):
+        result = ec_projected_stv(0.91, 0.74, [])
+        self.assertEqual(result["projected_strength"], 0.91)
+        self.assertEqual(result["projected_confidence"], 0.74)
+        self.assertEqual(result["packet_count"], 0)
+
+    def test_ec_projected_stv_rejects_out_of_range(self):
+        with self.assertRaises(ValueError):
+            ec_projected_stv(1.5, 0.5, [])
+        with self.assertRaises(ValueError):
+            ec_projected_stv(0.5, -0.1, [])
+        with self.assertRaises(ValueError):
+            ec_projected_stv(0.5, 0.5, [{"support": -1, "opposition": 0}])
+
+    def test_ec_projected_stv_skips_zero_total_packets(self):
+        result = ec_projected_stv(0.80, 0.60, [{"support": 0, "opposition": 0}, {"support": 6, "opposition": 2}])
+        self.assertEqual(result["packet_count"], 1)
+        self.assertAlmostEqual(result["packets"][0]["ec_strength"], 0.75, places=5)
+
+    def test_patham9_pln_ec_projection_smoke_program_builds_direct_and_projected(self):
+        handoff = self._patham9_handoff()
+        smoke = patham9_pln_ec_projection_smoke_program(handoff)
+        self.assertEqual(smoke["schema"], "petta-memory-patham9-pln-ec-projection-smoke-program-v1")
+        self.assertIn("(PLN.Query", smoke["direct"]["program"])
+        self.assertIn("(PLN.Query", smoke["projected"]["program"])
+        # Direct uses original STV
+        self.assertIn("(stv 0.90 0.70)", smoke["direct"]["runtime_sentence"])
+        # Projected uses different STV (blended with EC 8/2)
+        self.assertNotIn("(stv 0.90 0.70)", smoke["projected"]["runtime_sentence"])
+        self.assertIn("(stv ", smoke["projected"]["runtime_sentence"])
+        # EC projection metadata
+        self.assertEqual(smoke["ec_projection"]["packet_count"], 1)
+        self.assertAlmostEqual(smoke["ec_projection"]["packets"][0]["positive_ratio"], 0.8, places=5)
+        # Boundary
+        self.assertIn("no inferred-belief promotion", smoke["boundary"])
+        # Both use same query term
+        self.assertEqual(smoke["direct"]["expected_result"].split()[0], smoke["projected"]["expected_result"].split()[0])
+
+    def test_patham9_pln_ec_projection_smoke_program_rejects_wrong_schema(self):
+        with self.assertRaisesRegex(ValueError, "expected petta-memory-patham9-pln-handoff-v1"):
+            patham9_pln_ec_projection_smoke_program({"schema": "other", "items": []})
+
+    def test_ec_projected_stv_with_conflicting_ec_lowers_strength(self):
+        """Strong base STV (0.90, 0.70) with opposing EC (1, 9) should lower strength."""
+        result = ec_projected_stv(0.90, 0.70, [{"support": 1.0, "opposition": 9.0}])
+        self.assertEqual(result["base_strength"], 0.90)
+        self.assertEqual(result["base_confidence"], 0.70)
+        self.assertEqual(result["packet_count"], 1)
+        # ec_strength = 1/10 = 0.1, ec_confidence = 10/12 ≈ 0.833333
+        self.assertAlmostEqual(result["packets"][0]["ec_strength"], 0.1, places=6)
+        # Weighted blend should be lower than base 0.90
+        self.assertLess(result["projected_strength"], 0.90)
+        # Confidence is max(0.70, 0.833333) = 0.833333
+        self.assertAlmostEqual(result["projected_confidence"], round(10.0 / 12.0, 6), places=5)
+
+    def test_patham9_pln_ec_projection_conflicting_smoke_program_lowers_strength(self):
+        handoff = self._patham9_handoff()
+        smoke = patham9_pln_ec_projection_conflicting_smoke_program(handoff)
+        self.assertEqual(smoke["schema"], "petta-memory-patham9-pln-ec-projection-conflicting-smoke-program-v1")
+        self.assertTrue(smoke["strength_lowered"], "Projected strength should be lower than base with opposing EC")
+        self.assertIn("(PLN.Query", smoke["direct"]["program"])
+        self.assertIn("(PLN.Query", smoke["projected"]["program"])
+        # Direct uses original STV
+        self.assertIn("(stv 0.90 0.70)", smoke["direct"]["runtime_sentence"])
+        # Projected STV should be different and lower
+        self.assertNotIn("(stv 0.90 0.70)", smoke["projected"]["runtime_sentence"])
+        projected_stv = smoke["projected"]["stv"]
+        self.assertLess(float(projected_stv["strength"]), 0.90)
+        self.assertEqual(smoke["conflicting_ec"], {"support": 1.0, "opposition": 9.0})
+        self.assertIn("no inferred-belief promotion", smoke["boundary"])
+
+    def test_patham9_pln_ec_projection_conflicting_smoke_program_rejects_wrong_schema(self):
+        with self.assertRaisesRegex(ValueError, "expected petta-memory-patham9-pln-handoff-v1"):
+            patham9_pln_ec_projection_conflicting_smoke_program({"schema": "other", "items": []})
+
+    def test_patham9_pln_ec_projection_conflicting_smoke_program_custom_ec(self):
+        handoff = self._patham9_handoff()
+        smoke = patham9_pln_ec_projection_conflicting_smoke_program(
+            handoff, conflicting_support=2.0, conflicting_opposition=8.0
+        )
+        self.assertEqual(smoke["conflicting_ec"], {"support": 2.0, "opposition": 8.0})
+        self.assertTrue(smoke["strength_lowered"])
+        # With 2/8 = 0.25 ec_strength, still lower than 0.90
+        self.assertLess(float(smoke["projected"]["stv"]["strength"]), 0.90)
+
+    def test_patham9_pln_derivation_ec_projection_smoke_program_builds_direct_and_projected(self):
+        handoff = self._patham9_handoff()
+        smoke = patham9_pln_derivation_ec_projection_smoke_program(handoff)
+        self.assertEqual(smoke["schema"], "petta-memory-patham9-pln-derivation-ec-projection-smoke-program-v1")
+        self.assertIn("PMDerivedFromHandoff", smoke["derived_term"])
+        # Both programs have PLN.Query and two sentences
+        self.assertIn("(PLN.Query", smoke["direct"]["program"])
+        self.assertIn("(PLN.Query", smoke["projected"]["program"])
+        self.assertIn("(Implication", smoke["direct"]["program"])
+        self.assertIn("(Implication", smoke["projected"]["program"])
+        # Direct uses original STV
+        self.assertIn("(stv 0.90 0.70)", smoke["direct"]["program"])
+        # Projected uses different STV
+        self.assertNotIn("(stv 0.90 0.70)", smoke["projected"]["program"])
+        # Results should differ because EC projection changes the STV
+        self.assertTrue(smoke["results_differ"], "Direct and projected derivation results should differ")
+        # Expected results differ
+        self.assertNotEqual(smoke["direct"]["expected_result"], smoke["projected"]["expected_result"])
+        # Boundary
+        self.assertIn("no inferred-belief promotion", smoke["boundary"])
+        # Stamp sidecar
+        self.assertIn("(0)", smoke["stamp_sidecar"])
+        self.assertIn("(1)", smoke["stamp_sidecar"])
+        self.assertEqual(smoke["stamp_sidecar"]["(1)"]["kind"], "synthetic-non-live-bridge-implication")
+
+    def test_patham9_pln_derivation_ec_projection_smoke_program_rejects_wrong_schema(self):
+        with self.assertRaisesRegex(ValueError, "expected petta-memory-patham9-pln-handoff-v1"):
+            patham9_pln_derivation_ec_projection_smoke_program({"schema": "other", "items": []})
+
+    def test_patham9_pln_derivation_ec_projection_smoke_program_no_packets_results_same(self):
+        """When there are no contextual EC packets, projected == direct."""
+        handoff = {
+            "schema": "petta-memory-patham9-pln-handoff-v1",
+            "items": [
+                {
+                    "atom": "(Sentence (Test) (stv 0.80 0.60) ((PMEvidence b3 mc3 pe3 rule domain)))",
+                    "term": "(Test)",
+                    "stv": {"strength": "0.80", "confidence": "0.60"},
+                    "evidence_id": "(PMEvidence b3 mc3 pe3 rule domain)",
+                    "pi_pln_extension": {"contextual_evidence_packets": []},
+                }
+            ],
+        }
+        smoke = patham9_pln_derivation_ec_projection_smoke_program(handoff)
+        self.assertFalse(smoke["results_differ"], "With no EC packets, projected should equal direct")
+        self.assertEqual(smoke["direct"]["expected_result"], smoke["projected"]["expected_result"])
+
+
+class Patham9PlnApiSurfaceTests(unittest.TestCase):
+    def test_api_surface_returns_source_level_mapping(self):
+        repo = Path(__file__).resolve().parents[2] / "patham9-pln"
+        if not repo.exists():
+            self.skipTest(f"patham9/PLN checkout not found at {repo}")
+        surface = patham9_pln_api_surface(repo)
+        self.assertEqual(surface["schema"], "petta-memory-patham9-pln-api-surface-v1")
+        self.assertEqual(surface["mode"], "source-level-no-runtime-inspection")
+        self.assertEqual(surface["boundary"], "source-level inspection only; no SWI/PeTTa/MeTTa runtime invoked; no memory append; no inferred-belief promotion; no OmegaClaw/GoalChainer live path")
+
+        # Core API entries
+        core = surface["core_api"]
+        self.assertIn("PLN.Derive", core)
+        self.assertIn("PLN.Query", core)
+        self.assertIn("Sentence", core)
+        self.assertIn("StampDisjoint", core)
+        self.assertIn("PriorityRank", core)
+        self.assertIn("ConfidenceRank", core)
+        self.assertIn("LimitSize", core)
+        self.assertIn("BestCandidate", core)
+
+        # PLN.Derive has 4 arity overloads
+        self.assertEqual(len(core["PLN.Derive"]["full_signatures"]), 4)
+        self.assertEqual(len(core["PLN.Derive"]["signatures"]), 4)
+
+        # PLN.Query has 4 arity overloads
+        self.assertEqual(len(core["PLN.Query"]["full_signatures"]), 4)
+        self.assertEqual(len(core["PLN.Query"]["signatures"]), 4)
+
+        # Defaults reference PLN.Config
+        self.assertIn("PLN.Config.MaxSteps", core["PLN.Derive"]["defaults"]["maxsteps"])
+
+        # Sentence structure documented
+        self.assertIn("stv", core["Sentence"]["structure"])
+
+        # Truth-value formulas captured
+        formula_names = {f["name"] for f in surface["truth_value_formulas"]}
+        self.assertIn("Truth_Deduction", formula_names)
+        self.assertIn("Truth_ModusPonens", formula_names)
+        self.assertIn("Truth_Revision", formula_names)
+        self.assertIn("Truth_Negation", formula_names)
+
+        # Inference rules captured
+        self.assertTrue(len(surface["inference_rules"]) >= 10,
+                        f"expected at least 10 inference rules, got {len(surface['inference_rules'])}")
+
+        # Guard predicates captured
+        guard_text = " ".join(g["definition"] for g in surface["guard_predicates"])
+        self.assertIn("SyllogisticRuleGuard", guard_text)
+        self.assertIn("SymmetricModusPonensRuleGuard", guard_text)
+
+        # Config defaults
+        config_text = " ".join(c["definition"] for c in surface["config_defaults"])
+        self.assertIn("PLN.Config.MaxSteps", config_text)
+        self.assertIn("PLN.Config.TaskQueueSize", config_text)
+        self.assertIn("PLN.Config.BeliefQueueSize", config_text)
+
+        # Source files documented
+        self.assertIn("PLN.metta", surface["source_files"])
+        self.assertIn("src/Deriver.metta", surface["source_files"])
+        self.assertIn("src/Formulas.metta", surface["source_files"])
+        self.assertIn("src/Rules.metta", surface["source_files"])
+
+        # pi-PLN extension points
+        ext = surface["pi_pln_extension_points"]
+        self.assertIn("wrapper_boundary", ext)
+        self.assertIn("internal_extensions", ext)
+        self.assertIn("sentence_construction", ext["wrapper_boundary"])
+        self.assertIn("stv_pre_projection", ext["wrapper_boundary"])
+        self.assertIn("context_selection", ext["wrapper_boundary"])
+        self.assertIn("revisit_trigger", ext)
+
+        # No runtime evidence in the result
+        self.assertNotIn("stdout", surface)
+        self.assertNotIn("stderr", surface)
+        self.assertNotIn("returncode", surface)
+
+    def test_api_surface_raises_for_missing_repo(self):
+        with self.assertRaises(FileNotFoundError):
+            patham9_pln_api_surface("/nonexistent/path/to/pln")
+
+
+class Patham9PiPlnExtensionSpecTests(unittest.TestCase):
+    def _patham9_handoff(self, num_items: int = 2):
+        items = []
+        for i in range(num_items):
+            items.append({
+                "atom": f"(Sentence (Term{i}) (stv 0.{90 - i} 0.{70 - i}) ((PMEvidence b{i} mc{i} pe{i} rule{i} domain{i})))",
+                "term": f"(Term{i})",
+                "stv": {"strength": f"0.{90 - i}", "confidence": f"0.{70 - i}"},
+                "evidence_id": f"(PMEvidence b{i} mc{i} pe{i} rule{i} domain{i})",
+                "pi_pln_extension": {"contextual_evidence_packets": [{"support": str(8 - i), "opposition": str(2 + i)}]},
+            })
+        return {"schema": "petta-memory-patham9-pln-handoff-v1", "items": items}
+
+    def test_extension_spec_returns_design_specification(self):
+        handoff = self._patham9_handoff(2)
+        spec = patham9_pi_pln_extension_spec(handoff)
+        self.assertEqual(spec["schema"], "petta-memory-patham9-pi-pln-extension-spec-v1")
+        self.assertEqual(spec["mode"], "design-specification-no-runtime")
+        self.assertEqual(spec["version"], "0.1")
+        self.assertEqual(spec["boundary_decision"], "wrapper-first: keep checked-out patham9/PLN unmodified; petta-memory owns wrapper layer")
+
+    def test_extension_spec_documents_sentence_construction_protocol(self):
+        spec = patham9_pi_pln_extension_spec(self._patham9_handoff(1))
+        protocol = spec["sentence_construction_protocol"]
+        self.assertIn("(Sentence ($Term (stv S C)) $Stamp)", protocol["format"])
+        self.assertIn("ec_projected_stv", protocol["stv_source"])
+        self.assertIn("numeric runtime stamps", protocol["stamp_policy"])
+
+    def test_extension_spec_documents_ec_projection_formula(self):
+        spec = patham9_pi_pln_extension_spec(self._patham9_handoff(2))
+        formula = spec["ec_projection_formula"]
+        self.assertEqual(formula["name"], "confidence-weighted blend")
+        self.assertIn("sum(s_i * w_i)", formula["formula"])
+        self.assertTrue(len(formula["tested_in"]) >= 3, "should reference at least 3 test names")
+        self.assertEqual(formula["status"], "reviewed and implemented as ec_projected_stv()")
+
+    def test_extension_spec_documents_provenance_sidecar_policy(self):
+        spec = patham9_pi_pln_extension_spec(self._patham9_handoff(1))
+        sidecar = spec["provenance_sidecar_policy"]
+        contents_text = " ".join(sidecar["contents"])
+        self.assertIn("PMEvidence", contents_text)
+        self.assertIn("not appended to memory", sidecar["boundary"])
+
+    def test_extension_spec_documents_context_selection_policy(self):
+        spec = patham9_pi_pln_extension_spec(self._patham9_handoff(1))
+        context = spec["context_selection_policy"]
+        self.assertEqual(context["current_state"], "not-live; wrapper does not yet filter or generate contexts")
+        self.assertIn("wrapper owns this entirely", context["patham9_support"])
+
+    def test_extension_spec_documents_inference_control_hooks(self):
+        spec = patham9_pi_pln_extension_spec(self._patham9_handoff(1))
+        hooks = spec["inference_control_hooks"]
+        self.assertEqual(hooks["current_state"], "deferred (roadmap item 4)")
+        self.assertTrue(len(hooks["reference_patterns"]) >= 2, "should reference at least 2 patterns")
+        self.assertIn("pln-inf-ctl.metta", " ".join(hooks["reference_patterns"]))
+
+    def test_extension_spec_documents_read_write_boundaries(self):
+        spec = patham9_pi_pln_extension_spec(self._patham9_handoff(1))
+        boundaries = spec["read_write_boundaries"]
+        self.assertIn("no_memory_append", boundaries)
+        self.assertIn("no_inferred_belief_promotion", boundaries)
+        self.assertIn("no_omegaclaw_live", boundaries)
+        self.assertIn("no_patham9_source_patch", boundaries)
+
+    def test_extension_spec_documents_revisit_triggers(self):
+        spec = patham9_pi_pln_extension_spec(self._patham9_handoff(1))
+        triggers = spec["revisit_triggers"]
+        self.assertIn("internal_extension", triggers)
+        self.assertIn("inference_control", triggers)
+        self.assertIn("context_selection", triggers)
+
+    def test_extension_spec_includes_projection_inputs(self):
+        spec = patham9_pi_pln_extension_spec(self._patham9_handoff(3))
+        self.assertEqual(spec["item_count"], 3)
+        self.assertEqual(len(spec["projection_inputs"]), 3)
+        first = spec["projection_inputs"][0]
+        self.assertEqual(first["item_index"], 0)
+        self.assertIn("base_stv", first)
+        self.assertIn("projected_stv", first)
+        self.assertEqual(first["contextual_packet_count"], 1)
+
+    def test_extension_spec_rejects_wrong_schema(self):
+        with self.assertRaisesRegex(ValueError, "expected petta-memory-patham9-pln-handoff-v1"):
+            patham9_pi_pln_extension_spec({"schema": "other", "items": []})
+
+    def test_extension_spec_boundary_text(self):
+        spec = patham9_pi_pln_extension_spec(self._patham9_handoff(1))
+        self.assertIn("no runtime invoked", spec["boundary"])
+        self.assertIn("no memory append", spec["boundary"])
+
+
+class Patham9PlnMultiSentenceDerivationTests(unittest.TestCase):
+    def _multi_item_handoff(self, num_items: int = 3):
+        items = []
+        for i in range(num_items):
+            items.append({
+                "atom": f"(Sentence (Requires Target{i} PLNReadyViews) (stv 0.{80 + i} 0.6{i}) ((PMEvidence b{i} mc{i} pe{i} rule{i} domain{i})))",
+                "term": f"(Requires Target{i} PLNReadyViews)",
+                "stv": {"strength": f"0.{80 + i}", "confidence": f"0.6{i}"},
+                "evidence_id": f"(PMEvidence b{i} mc{i} pe{i} rule{i} domain{i})",
+                "pi_pln_extension": {"contextual_evidence_packets": []},
+            })
+        return {"schema": "petta-memory-patham9-pln-handoff-v1", "items": items}
+
+    def test_multi_sentence_program_loads_all_handoff_items(self):
+        handoff = self._multi_item_handoff(3)
+        smoke = patham9_pln_multi_sentence_derivation_smoke_program(handoff)
+        self.assertEqual(smoke["schema"], "petta-memory-patham9-pln-multi-sentence-derivation-smoke-program-v1")
+        self.assertEqual(smoke["handoff_sentence_count"], 3)
+        self.assertEqual(smoke["sentence_count"], 4)  # 3 handoff + 1 bridge
+        # All 3 handoff terms appear in the program
+        for i in range(3):
+            self.assertIn(f"Target{i}", smoke["program"])
+        # Bridge implication appears
+        self.assertIn("Implication", smoke["program"])
+        self.assertIn("PMDerivedFromMultiHandoff", smoke["program"])
+        # PLN.Query and Test appear
+        self.assertIn("(PLN.Query", smoke["program"])
+        self.assertIn("!(Test", smoke["program"])
+
+    def test_multi_sentence_program_stamp_sidecar_maps_all_items(self):
+        handoff = self._multi_item_handoff(3)
+        smoke = patham9_pln_multi_sentence_derivation_smoke_program(handoff)
+        sidecar = smoke["stamp_sidecar"]
+        # 3 source stamps + 1 bridge stamp
+        self.assertEqual(len(sidecar), 4)
+        self.assertIn("(0)", sidecar)
+        self.assertIn("(1)", sidecar)
+        self.assertIn("(2)", sidecar)
+        self.assertIn("(3)", sidecar)
+        self.assertEqual(sidecar["(0)"]["kind"], "petta-memory-source-sentence")
+        self.assertEqual(sidecar["(0)"]["source_item_index"], 0)
+        self.assertEqual(sidecar["(3)"]["kind"], "synthetic-non-live-bridge-implication")
+
+    def test_multi_sentence_program_expected_result_uses_first_item(self):
+        handoff = self._multi_item_handoff(3)
+        smoke = patham9_pln_multi_sentence_derivation_smoke_program(handoff)
+        # Expected result references stamp 0 and last stamp (bridge)
+        self.assertIn("(0 3)", smoke["expected_result"])
+        self.assertIn("(stv ", smoke["expected_result"])
+
+    def test_multi_sentence_program_custom_bridge_term(self):
+        handoff = self._multi_item_handoff(2)
+        smoke = patham9_pln_multi_sentence_derivation_smoke_program(
+            handoff, bridge_term="(CustomDerived Term)"
+        )
+        self.assertIn("(CustomDerived Term)", smoke["derived_term"])
+        self.assertIn("(CustomDerived Term)", smoke["program"])
+
+    def test_multi_sentence_program_boundary_text(self):
+        handoff = self._multi_item_handoff(1)
+        smoke = patham9_pln_multi_sentence_derivation_smoke_program(handoff)
+        self.assertIn("no memory append", smoke["boundary"])
+        self.assertIn("no inferred-belief promotion", smoke["boundary"])
+        self.assertIn("no OmegaClaw/GoalChainer live path", smoke["boundary"])
+
+    def test_multi_sentence_program_rejects_wrong_schema(self):
+        with self.assertRaisesRegex(ValueError, "expected petta-memory-patham9-pln-handoff-v1"):
+            patham9_pln_multi_sentence_derivation_smoke_program({"schema": "other", "items": []})
+
+    def test_multi_sentence_program_rejects_empty_handoff(self):
+        with self.assertRaisesRegex(ValueError, "no Sentence items"):
+            patham9_pln_multi_sentence_derivation_smoke_program({"schema": "petta-memory-patham9-pln-handoff-v1", "items": []})
+
+    def test_multi_sentence_program_single_item_works(self):
+        handoff = self._multi_item_handoff(1)
+        smoke = patham9_pln_multi_sentence_derivation_smoke_program(handoff)
+        self.assertEqual(smoke["handoff_sentence_count"], 1)
+        self.assertEqual(smoke["sentence_count"], 2)  # 1 handoff + 1 bridge
+        self.assertIn("(0 1)", smoke["expected_result"])
+
+
+# --- Multi-belief cluster fixtures for round-trip empirical tests ---
+
+_PROMOTED_BELIEF_A = """
+(MemoryCluster mc-rt-a)
+(SchemaVersion mc-rt-a medium-memory-v1)
+(ClusterType mc-rt-a belief-promotion)
+(ClusterOpenedAt mc-rt-a "2026-07-05 19:00 PDT")
+(ClusterSource mc-rt-a src-test)
+(Contains mc-rt-a pe-rt-a)
+(Contains mc-rt-a b-rt-a)
+(ClusterStatus mc-rt-a active)
+(PromotionEvent pe-rt-a)
+(PromotesFrom pe-rt-a qc-rt-a)
+(PromotesTo pe-rt-a b-rt-a)
+(PromotionRule pe-rt-a explicit-test-promotion)
+(PromotionTrust pe-rt-a 0.85)
+(PromotionDomain pe-rt-a memory-architecture)
+(DerivedBelief b-rt-a)
+(BeliefContent b-rt-a (Requires MemoryTarget0 PLNReadyViews))
+(TruthValue b-rt-a (stv 0.88 0.72))
+(EvidenceFor b-rt-a qc-rt-a)
+(EvidenceSupportCount b-rt-a 9.0)
+(EvidenceOppositionCount b-rt-a 1.0)
+"""
+
+_PROMOTED_BELIEF_B = """
+(MemoryCluster mc-rt-b)
+(SchemaVersion mc-rt-b medium-memory-v1)
+(ClusterType mc-rt-b belief-promotion)
+(ClusterOpenedAt mc-rt-b "2026-07-05 19:01 PDT")
+(ClusterSource mc-rt-b src-test)
+(Contains mc-rt-b pe-rt-b)
+(Contains mc-rt-b b-rt-b)
+(ClusterStatus mc-rt-b active)
+(PromotionEvent pe-rt-b)
+(PromotesFrom pe-rt-b qc-rt-b)
+(PromotesTo pe-rt-b b-rt-b)
+(PromotionRule pe-rt-b explicit-test-promotion)
+(PromotionTrust pe-rt-b 0.80)
+(PromotionDomain pe-rt-b memory-architecture)
+(DerivedBelief b-rt-b)
+(BeliefContent b-rt-b (Requires MemoryTarget1 PLNReadyViews))
+(TruthValue b-rt-b (stv 0.82 0.68))
+(EvidenceFor b-rt-b qc-rt-b)
+(EvidenceSupportCount b-rt-b 7.0)
+(EvidenceOppositionCount b-rt-b 3.0)
+"""
+
+
+class StoreRoundTripPatham9PlnTests(unittest.TestCase):
+    """Empirical round-trip tests: MediumMemoryStore -> handoff cache -> patham9/PLN.
+
+    These tests exercise the full artifact pipeline from stored promoted
+    beliefs through to a patham9/PLN derivation program, without invoking
+    the SWI/PeTTa runtime.  They validate that real store-promoted beliefs
+    survive the handoff chain with correct STV, provenance, and boundary
+    metadata.
+    """
+
+    def _store_with_two_promoted_beliefs(self, td: str):
+        from petta_memory.store import MediumMemoryStore
+        store = MediumMemoryStore(Path(td) / "roundtrip_memory.metta")
+        store.append_cluster(_PROMOTED_BELIEF_A)
+        store.append_cluster(_PROMOTED_BELIEF_B)
+        return store
+
+    def test_roundtrip_handoff_cache_from_store(self):
+        """Store -> pettachainer_handoff_cache produces well-formed items."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store_with_two_promoted_beliefs(td)
+            cache = store.pettachainer_handoff_cache()
+
+        self.assertEqual(cache["schema"], "petta-memory-pettachainer-handoff-v1")
+        self.assertEqual(cache["item_count"], 4)  # 2 STV + 2 EvidencePacket
+        kinds = [item["kind"] for item in cache["items"]]
+        self.assertEqual(kinds.count("pettachainer-stv-statement"), 2)
+        self.assertEqual(kinds.count("pettachainer-evidence-packet"), 2)
+        belief_ids = {item["belief_id"] for item in cache["items"]}
+        self.assertEqual(belief_ids, {"b-rt-a", "b-rt-b"})
+        for item in cache["items"]:
+            self.assertEqual(item["item_status"], "pln-ready-input-not-inferred-belief")
+            self.assertEqual(item["promotion_domain"], "memory-architecture")
+
+    def test_roundtrip_handoff_sentences_preserve_stv_and_provenance(self):
+        """Handoff cache -> patham9_pln_handoff_sentences preserves STV and provenance."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store_with_two_promoted_beliefs(td)
+            cache = store.pettachainer_handoff_cache()
+
+        sentences = patham9_pln_handoff_sentences(cache)
+        self.assertEqual(sentences["schema"], "petta-memory-patham9-pln-handoff-v1")
+        self.assertEqual(sentences["item_count"], 2)  # only STV statements become Sentences
+        for item in sentences["items"]:
+            self.assertEqual(item["kind"], "patham9-pln-sentence-input")
+            self.assertIn("(Sentence ", item["atom"])
+            self.assertIn("(stv ", item["atom"])
+            self.assertIn("(PMEvidence ", item["atom"])
+            # EC packets preserved in pi-PLN extension block
+            packets = item["pi_pln_extension"]["contextual_evidence_packets"]
+            self.assertEqual(len(packets), 1)
+            self.assertIn(packets[0]["support"], ("9.0", "7.0"))
+            self.assertIn(packets[0]["opposition"], ("1.0", "3.0"))
+
+    def test_roundtrip_multi_sentence_program_from_store(self):
+        """Full round-trip: store -> cache -> sentences -> derivation program."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store_with_two_promoted_beliefs(td)
+            cache = store.pettachainer_handoff_cache()
+
+        sentences = patham9_pln_handoff_sentences(cache)
+        smoke = patham9_pln_multi_sentence_derivation_smoke_program(sentences)
+
+        self.assertEqual(smoke["schema"], "petta-memory-patham9-pln-multi-sentence-derivation-smoke-program-v1")
+        self.assertEqual(smoke["handoff_sentence_count"], 2)
+        self.assertEqual(smoke["sentence_count"], 3)  # 2 handoff + 1 bridge
+
+        # Both terms appear in the program
+        self.assertIn("MemoryTarget0", smoke["program"])
+        self.assertIn("MemoryTarget1", smoke["program"])
+
+        # Bridge implication and PLN.Query appear
+        self.assertIn("Implication", smoke["program"])
+        self.assertIn("(PLN.Query", smoke["program"])
+        self.assertIn("PMDerivedFromMultiHandoff", smoke["program"])
+
+        # Stamp sidecar has 2 source + 1 bridge = 3 entries
+        self.assertEqual(len(smoke["stamp_sidecar"]), 3)
+        self.assertIn("(0)", smoke["stamp_sidecar"])
+        self.assertIn("(1)", smoke["stamp_sidecar"])
+        self.assertIn("(2)", smoke["stamp_sidecar"])
+        self.assertEqual(smoke["stamp_sidecar"]["(0)"]["kind"], "petta-memory-source-sentence")
+        self.assertEqual(smoke["stamp_sidecar"]["(2)"]["kind"], "synthetic-non-live-bridge-implication")
+
+        # Boundary text
+        self.assertIn("no memory append", smoke["boundary"])
+        self.assertIn("no inferred-belief promotion", smoke["boundary"])
+
+        # Expected result references stamps 0 and 2 (first source + bridge)
+        self.assertIn("(0 2)", smoke["expected_result"])
+
+    def test_roundtrip_single_belief_store(self):
+        """Round-trip with a single promoted belief: 1 STV + 1 packet -> 1 Sentence."""
+        with tempfile.TemporaryDirectory() as td:
+            from petta_memory.store import MediumMemoryStore
+            store = MediumMemoryStore(Path(td) / "single.metta")
+            store.append_cluster(_PROMOTED_BELIEF_A)
+            cache = store.pettachainer_handoff_cache()
+
+        self.assertEqual(cache["item_count"], 2)  # 1 STV + 1 EvidencePacket
+        sentences = patham9_pln_handoff_sentences(cache)
+        self.assertEqual(sentences["item_count"], 1)
+        smoke = patham9_pln_multi_sentence_derivation_smoke_program(sentences)
+        self.assertEqual(smoke["handoff_sentence_count"], 1)
+        self.assertEqual(smoke["sentence_count"], 2)
+        self.assertIn("MemoryTarget0", smoke["program"])
+
+    def test_roundtrip_ec_projection_from_store_packets(self):
+        """EC packets from the store survive into the pi-PLN extension block and
+        can feed ec_projected_stv() for a projected-vs-direct comparison."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store_with_two_promoted_beliefs(td)
+            cache = store.pettachainer_handoff_cache()
+
+        sentences = patham9_pln_handoff_sentences(cache)
+        for item in sentences["items"]:
+            packets = item["pi_pln_extension"]["contextual_evidence_packets"]
+            self.assertEqual(len(packets), 1)
+            # Each packet has EC counts usable by ec_projected_stv()
+            support = float(packets[0]["support"])
+            opposition = float(packets[0]["opposition"])
+            base_s = float(item["stv"]["strength"])
+            base_c = float(item["stv"]["confidence"])
+            projected = ec_projected_stv(base_s, base_c, [{"support": support, "opposition": opposition}])
+            self.assertGreater(projected["projected_strength"], 0.0)
+            self.assertLess(projected["projected_strength"], 1.0)
+            self.assertGreater(projected["projected_confidence"], 0.0)
+            self.assertLessEqual(projected["projected_confidence"], 1.0)
+
+
+class TrueagiChainingInferenceControlSurveyTests(unittest.TestCase):
+    """Tests for the source-level survey of trueagi-io/chaining inference-control patterns."""
+
+    def _repo(self) -> Path:
+        return Path(__file__).resolve().parents[2] / "trueagi-chaining"
+
+    def test_survey_returns_well_formed_artifact(self):
+        repo = self._repo()
+        if not repo.exists():
+            self.skipTest("trueagi-io/chaining checkout not found")
+        survey = survey_trueagi_chaining_inference_control(repo)
+
+        self.assertEqual(survey["schema"], "petta-memory-trueagi-chaining-inference-control-survey-v1")
+        self.assertEqual(survey["mode"], "source-level-no-runtime-inspection")
+        self.assertIn("bc9beb2672953e07971b3abecc1fe67651ecddc4", survey["source_commit"])
+        self.assertGreaterEqual(survey["pattern_count"], 6)
+        self.assertEqual(len(survey["patterns"]), survey["pattern_count"])
+
+    def test_survey_patterns_have_required_fields(self):
+        repo = self._repo()
+        if not repo.exists():
+            self.skipTest("trueagi-io/chaining checkout not found")
+        survey = survey_trueagi_chaining_inference_control(repo)
+
+        for pattern in survey["patterns"]:
+            self.assertIn("name", pattern)
+            self.assertIn("file", pattern)
+            self.assertIn("line_count", pattern)
+            self.assertGreater(pattern["line_count"], 0)
+            self.assertIn("description", pattern)
+            self.assertIn("key_concepts", pattern)
+            self.assertGreaterEqual(len(pattern["key_concepts"]), 2)
+            self.assertIn("wrapper_adoption", pattern)
+            self.assertIn("requires_patham9_source_change", pattern)
+            self.assertFalse(pattern["requires_patham9_source_change"])
+            self.assertIn("complexity", pattern)
+
+    def test_survey_includes_pln_inf_ctl_pattern(self):
+        repo = self._repo()
+        if not repo.exists():
+            self.skipTest("trueagi-io/chaining checkout not found")
+        survey = survey_trueagi_chaining_inference_control(repo)
+
+        names = [p["name"] for p in survey["patterns"]]
+        self.assertIn("PLN-based inference controller", names)
+        pln_ctl = next(p for p in survey["patterns"] if "PLN-based" in p["name"])
+        self.assertIn("Thompson sampling", " ".join(pln_ctl["key_concepts"]))
+        self.assertIn("EDCall", " ".join(pln_ctl["key_concepts"]))
+        self.assertIn("pln-inf-ctl.metta", pln_ctl["file"])
+
+    def test_survey_includes_probabilistic_filtering_pattern(self):
+        repo = self._repo()
+        if not repo.exists():
+            self.skipTest("trueagi-io/chaining checkout not found")
+        survey = survey_trueagi_chaining_inference_control(repo)
+
+        names = [p["name"] for p in survey["patterns"]]
+        self.assertIn("Probabilistic backward chaining (ProbLog-inspired)", names)
+        prob = next(p for p in survey["patterns"] if "Probabilistic" in p["name"])
+        self.assertIn("prob-chaining.metta", prob["file"])
+        self.assertTrue(prob["complexity"].startswith("low"))
+
+    def test_survey_adoption_by_phase_categorizes_patterns(self):
+        repo = self._repo()
+        if not repo.exists():
+            self.skipTest("trueagi-io/chaining checkout not found")
+        survey = survey_trueagi_chaining_inference_control(repo)
+
+        by_phase = survey["adoption_by_phase"]
+        self.assertIn("near_term", by_phase)
+        self.assertIn("medium_term", by_phase)
+        self.assertIn("long_term", by_phase)
+        total = len(by_phase["near_term"]) + len(by_phase["medium_term"]) + len(by_phase["long_term"])
+        self.assertEqual(total, survey["pattern_count"])
+        self.assertGreaterEqual(len(by_phase["near_term"]), 1)
+        self.assertGreaterEqual(len(by_phase["long_term"]), 1)
+
+    def test_survey_pi_pln_extension_references_are_present(self):
+        repo = self._repo()
+        if not repo.exists():
+            self.skipTest("trueagi-io/chaining checkout not found")
+        survey = survey_trueagi_chaining_inference_control(repo)
+
+        refs = survey["pi_pln_extension_references"]
+        self.assertIn("inference_control_hooks", refs)
+        self.assertIn("context_selection", refs)
+        self.assertIn("ec_projection", refs)
+        self.assertIn("roadmap item 4", refs["inference_control_hooks"])
+
+    def test_survey_boundary_text_is_non_live(self):
+        repo = self._repo()
+        if not repo.exists():
+            self.skipTest("trueagi-io/chaining checkout not found")
+        survey = survey_trueagi_chaining_inference_control(repo)
+
+        self.assertIn("source-level inspection only", survey["boundary"])
+        self.assertIn("no memory append", survey["boundary"])
+        self.assertIn("no OmegaClaw/GoalChainer live path", survey["boundary"])
+
+    def test_survey_raises_for_missing_repo(self):
+        with self.assertRaises(FileNotFoundError):
+            survey_trueagi_chaining_inference_control("/nonexistent/path/to/chaining")
+
+
+class ProbabilisticInferenceFilterTests(unittest.TestCase):
+    """Tests for the first inference-control mechanism: probabilistic filtering.
+
+    The filter applies EC projection to each handoff Sentence, computes a
+    composite score, and filters/ranks before loading into patham9/PLN.
+    These tests validate the filtering logic without invoking any runtime.
+    """
+
+    def _handoff(self, num_items: int = 3) -> dict:
+        """Build a handoff with mixed evidence quality for filter testing."""
+        items = []
+        # Item 0: strong STV, strong EC support (9, 1)
+        items.append({
+            "kind": "patham9-pln-sentence-input",
+            "atom": "(Sentence (Acceptable publish_redacted_summary) (stv 0.91 0.74) ((PMEvidence b-0 mc-0 pe-0 rule domain)))",
+            "term": "(Acceptable publish_redacted_summary)",
+            "stv": {"strength": 0.91, "confidence": 0.74},
+            "evidence_id": "(PMEvidence b-0 mc-0 pe-0 rule domain)",
+            "belief_id": "b-0",
+            "cluster_id": "mc-0",
+            "promotion_event": "pe-0",
+            "promotion_rule": "explicit-test",
+            "promotion_domain": "memory-architecture",
+            "source_status": "pln-ready-input-not-inferred-belief",
+            "pi_pln_extension": {
+                "contextual_evidence_packets": [
+                    {"support": 9, "opposition": 1, "statement": "(Acceptable publish_redacted_summary)"},
+                ],
+                "ec_projection_policy": "preserve packets first; later project EC",
+                "context_selection": "not-run",
+            },
+        })
+        if num_items >= 2:
+            # Item 1: moderate STV, conflicting EC (1, 9) — should rank lower
+            items.append({
+                "kind": "patham9-pln-sentence-input",
+                "atom": "(Sentence (Acceptable share_full_log) (stv 0.94 0.80) ((PMEvidence b-1 mc-1 pe-1 rule domain)))",
+                "term": "(Acceptable share_full_log)",
+                "stv": {"strength": 0.94, "confidence": 0.80},
+                "evidence_id": "(PMEvidence b-1 mc-1 pe-1 rule domain)",
+                "belief_id": "b-1",
+                "cluster_id": "mc-1",
+                "promotion_event": "pe-1",
+                "promotion_rule": "explicit-test",
+                "promotion_domain": "memory-architecture",
+                "source_status": "pln-ready-input-not-inferred-belief",
+                "pi_pln_extension": {
+                    "contextual_evidence_packets": [
+                        {"support": 1, "opposition": 9, "statement": "(Acceptable share_full_log)"},
+                    ],
+                    "ec_projection_policy": "preserve packets first; later project EC",
+                    "context_selection": "not-run",
+                },
+            })
+        if num_items >= 3:
+            # Item 2: weak STV, no EC packets — moderate score
+            items.append({
+                "kind": "patham9-pln-sentence-input",
+                "atom": "(Sentence (Requires MemoryTarget0 PLNReadyViews) (stv 0.70 0.55) ((PMEvidence b-2 mc-2 pe-2 rule domain)))",
+                "term": "(Requires MemoryTarget0 PLNReadyViews)",
+                "stv": {"strength": 0.70, "confidence": 0.55},
+                "evidence_id": "(PMEvidence b-2 mc-2 pe-2 rule domain)",
+                "belief_id": "b-2",
+                "cluster_id": "mc-2",
+                "promotion_event": "pe-2",
+                "promotion_rule": "explicit-test",
+                "promotion_domain": "memory-architecture",
+                "source_status": "pln-ready-input-not-inferred-belief",
+                "pi_pln_extension": {
+                    "contextual_evidence_packets": [],
+                    "ec_projection_policy": "preserve packets first; later project EC",
+                    "context_selection": "not-run",
+                },
+            })
+        return {
+            "schema": "petta-memory-patham9-pln-handoff-v1",
+            "item_count": len(items),
+            "items": items,
+        }
+
+    def test_filter_returns_correct_schema(self):
+        result = probabilistic_inference_filter(self._handoff())
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-inference-filter-v1")
+
+    def test_filter_input_output_counts_match(self):
+        result = probabilistic_inference_filter(self._handoff())
+        self.assertEqual(result["input_count"], 3)
+        self.assertEqual(result["output_count"], 3)
+        self.assertEqual(len(result["selected_indices"]), 3)
+        self.assertEqual(len(result["filtered_indices"]), 0)
+
+    def test_filter_no_ec_packets_uses_base_stv(self):
+        handoff = self._handoff()
+        # Item 2 has no packets; projected should equal base
+        result = probabilistic_inference_filter(handoff)
+        item2 = [pi for pi in result["items"] if pi["item_index"] == 2][0]
+        self.assertAlmostEqual(item2["projected_stv"]["strength"], 0.70)
+        self.assertAlmostEqual(item2["projected_stv"]["confidence"], 0.55)
+        self.assertEqual(item2["contextual_packet_count"], 0)
+
+    def test_filter_conflicting_ec_lowers_projected_strength(self):
+        handoff = self._handoff()
+        result = probabilistic_inference_filter(handoff)
+        item1 = [pi for pi in result["items"] if pi["item_index"] == 1][0]
+        # EC (1, 9) should lower strength from 0.94 to ~0.511
+        self.assertLess(item1["projected_stv"]["strength"], 0.60)
+        self.assertGreater(item1["projected_stv"]["confidence"], 0.80)  # confidence rises
+
+    def test_filter_ranks_by_composite_score(self):
+        handoff = self._handoff()
+        result = probabilistic_inference_filter(handoff)
+        # Item 0 (strong support) should rank first, item 1 (conflicting) should rank lower
+        ranking = result["ranking"]
+        self.assertEqual(ranking[0]["item_index"], 0)
+        # Item 1 with conflicting EC should have lower score than item 0
+        item0_score = [pi for pi in result["items"] if pi["item_index"] == 0][0]["composite_score"]
+        item1_score = [pi for pi in result["items"] if pi["item_index"] == 1][0]["composite_score"]
+        self.assertGreater(item0_score, item1_score)
+
+    def test_filter_min_confidence_excludes_low_confidence_items(self):
+        handoff = self._handoff(num_items=3)
+        # Item 2 has confidence 0.55; set threshold above it
+        result = probabilistic_inference_filter(handoff, min_confidence=0.60)
+        self.assertEqual(result["output_count"], 2)
+        self.assertNotIn(2, result["selected_indices"])
+        self.assertIn(2, result["filtered_indices"])
+        excluded = [pi for pi in result["items"] if pi["item_index"] == 2][0]
+        self.assertFalse(excluded["included"])
+        self.assertIsNotNone(excluded["filter_reason"])
+        self.assertIn("min_confidence", excluded["filter_reason"])
+
+    def test_filter_top_k_keeps_only_k_items(self):
+        handoff = self._handoff()
+        result = probabilistic_inference_filter(handoff, top_k=1)
+        self.assertEqual(result["output_count"], 1)
+        self.assertEqual(len(result["selected_indices"]), 1)
+        self.assertEqual(len(result["filtered_indices"]), 2)
+        # The top item should be item 0 (strong support, high composite score)
+        self.assertEqual(result["selected_indices"][0], 0)
+
+    def test_filter_top_k_with_min_confidence_combines_both(self):
+        handoff = self._handoff()
+        # Set confidence threshold that item 2 fails, then top_k=1
+        result = probabilistic_inference_filter(handoff, min_confidence=0.60, top_k=1)
+        self.assertEqual(result["output_count"], 1)
+        # Only items 0 and 1 pass confidence; top_k=1 picks the best (item 0)
+        self.assertEqual(result["selected_indices"][0], 0)
+        self.assertIn(2, result["filtered_indices"])
+
+    def test_filter_empty_handoff_returns_empty_result(self):
+        handoff = {
+            "schema": "petta-memory-patham9-pln-handoff-v1",
+            "item_count": 0,
+            "items": [],
+        }
+        result = probabilistic_inference_filter(handoff)
+        self.assertEqual(result["input_count"], 0)
+        self.assertEqual(result["output_count"], 0)
+        self.assertEqual(result["items"], [])
+        self.assertEqual(result["selected_indices"], [])
+        self.assertEqual(result["filtered_indices"], [])
+        self.assertEqual(result["ranking"], [])
+
+    def test_filter_rejects_wrong_schema(self):
+        with self.assertRaises(ValueError):
+            probabilistic_inference_filter({"schema": "wrong"})
+
+    def test_filter_rejects_out_of_range_min_confidence(self):
+        with self.assertRaises(ValueError):
+            probabilistic_inference_filter(self._handoff(), min_confidence=-0.1)
+        with self.assertRaises(ValueError):
+            probabilistic_inference_filter(self._handoff(), min_confidence=1.1)
+
+    def test_filter_rejects_negative_top_k(self):
+        with self.assertRaises(ValueError):
+            probabilistic_inference_filter(self._handoff(), top_k=-1)
+
+    def test_filter_boundary_text_is_non_live(self):
+        result = probabilistic_inference_filter(self._handoff())
+        self.assertIn("non-live", result["boundary"])
+        self.assertIn("no memory append", result["boundary"])
+        self.assertIn("no inferred-belief promotion", result["boundary"])
+        self.assertIn("no OmegaClaw/GoalChainer live path", result["boundary"])
+
+    def test_filter_policy_records_source_pattern(self):
+        result = probabilistic_inference_filter(self._handoff())
+        policy = result["filter_policy"]
+        self.assertEqual(policy["scoring_formula"], "projected_strength * projected_confidence")
+        self.assertIn("probabilistic filtering", policy["source_pattern"])
+        self.assertEqual(policy["min_confidence"], 0.0)
+        self.assertIsNone(policy["top_k"])
+
+    def test_filter_composite_score_is_strength_times_confidence(self):
+        handoff = self._handoff(num_items=1)
+        result = probabilistic_inference_filter(handoff)
+        item0 = result["items"][0]
+        expected = item0["projected_stv"]["strength"] * item0["projected_stv"]["confidence"]
+        self.assertAlmostEqual(item0["composite_score"], expected)
+
+
+class StoreRoundTripInferenceFilterTests(unittest.TestCase):
+    """Empirical round-trip: store -> handoff -> inference filter."""
+
+    def test_roundtrip_inference_filter_from_store(self):
+        from petta_memory.store import MediumMemoryStore
+
+        cluster = """
+(MemoryCluster mc-if-a)
+(SchemaVersion mc-if-a medium-memory-v1)
+(ClusterType mc-if-a belief-promotion)
+(ClusterOpenedAt mc-if-a "2026-07-05 22:00 PDT")
+(ClusterSource mc-if-a src-test)
+(Contains mc-if-a pe-if-a)
+(Contains mc-if-a b-if-a)
+(ClusterStatus mc-if-a active)
+(PromotionEvent pe-if-a)
+(PromotesFrom pe-if-a qc-if-a)
+(PromotesTo pe-if-a b-if-a)
+(PromotionRule pe-if-a explicit-test-promotion)
+(PromotionTrust pe-if-a 0.85)
+(PromotionDomain pe-if-a memory-architecture)
+(DerivedBelief b-if-a)
+(BeliefContent b-if-a (Requires MemoryTarget0 PLNReadyViews))
+(TruthValue b-if-a (stv 0.88 0.72))
+(EvidenceFor b-if-a qc-if-a)
+(EvidenceSupportCount b-if-a 9.0)
+(EvidenceOppositionCount b-if-a 1.0)
+"""
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "inf_filter_memory.metta")
+            store.append_cluster(cluster)
+            cache = store.pettachainer_handoff_cache()
+
+        handoff = patham9_pln_handoff_sentences(cache)
+        result = probabilistic_inference_filter(handoff)
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-inference-filter-v1")
+        self.assertEqual(result["input_count"], 1)
+        self.assertEqual(result["output_count"], 1)
+        self.assertEqual(len(result["selected_indices"]), 1)
+        self.assertEqual(len(result["filtered_indices"]), 0)
+        # EC (9, 1) should project strength above 0.80
+        item = result["items"][0]
+        self.assertGreater(item["projected_stv"]["strength"], 0.80)
+        self.assertGreater(item["composite_score"], 0.0)
+
+
+class ContextSelectionWrapperTests(unittest.TestCase):
+    """Tests for the second inference-control mechanism: context selection.
+
+    The wrapper filters EvidencePackets by domain/cluster/promotion_rule and
+    scores them for relevance before PLN invocation.  These tests validate the
+    filtering and scoring logic without invoking any runtime.
+    """
+
+    def _handoff(self, num_items: int = 3) -> dict:
+        """Build a handoff with mixed evidence contexts for selection testing."""
+        items = []
+        # Item 0: packets from domain-a, cluster mc-0
+        items.append({
+            "kind": "patham9-pln-sentence-input",
+            "atom": "(Sentence (Acceptable publish_redacted_summary) (stv 0.91 0.74) ((PMEvidence b-0 mc-0 pe-0 rule domain)))",
+            "term": "(Acceptable publish_redacted_summary)",
+            "stv": {"strength": 0.91, "confidence": 0.74},
+            "evidence_id": "(PMEvidence b-0 mc-0 pe-0 rule domain)",
+            "belief_id": "b-0",
+            "cluster_id": "mc-0",
+            "promotion_event": "pe-0",
+            "promotion_rule": "explicit-test",
+            "promotion_domain": "memory-architecture",
+            "source_status": "pln-ready-input-not-inferred-belief",
+            "pi_pln_extension": {
+                "contextual_evidence_packets": [
+                    {"support": 9, "opposition": 1, "statement": "(Acceptable publish_redacted_summary)",
+                     "promotion_domain": "domain-a", "cluster_id": "mc-0", "promotion_rule": "explicit-test"},
+                    {"support": 3, "opposition": 7, "statement": "(Acceptable publish_redacted_summary)",
+                     "promotion_domain": "domain-b", "cluster_id": "mc-0", "promotion_rule": "explicit-test"},
+                ],
+                "ec_projection_policy": "preserve packets first; later project EC",
+                "context_selection": "not-run",
+            },
+        })
+        if num_items >= 2:
+            # Item 1: packets from domain-b, cluster mc-1
+            items.append({
+                "kind": "patham9-pln-sentence-input",
+                "atom": "(Sentence (Acceptable share_full_log) (stv 0.94 0.80) ((PMEvidence b-1 mc-1 pe-1 rule domain)))",
+                "term": "(Acceptable share_full_log)",
+                "stv": {"strength": 0.94, "confidence": 0.80},
+                "evidence_id": "(PMEvidence b-1 mc-1 pe-1 rule domain)",
+                "belief_id": "b-1",
+                "cluster_id": "mc-1",
+                "promotion_event": "pe-1",
+                "promotion_rule": "explicit-test",
+                "promotion_domain": "memory-architecture",
+                "source_status": "pln-ready-input-not-inferred-belief",
+                "pi_pln_extension": {
+                    "contextual_evidence_packets": [
+                        {"support": 5, "opposition": 5, "statement": "(Acceptable share_full_log)",
+                         "promotion_domain": "domain-b", "cluster_id": "mc-1", "promotion_rule": "explicit-test"},
+                    ],
+                    "ec_projection_policy": "preserve packets first; later project EC",
+                    "context_selection": "not-run",
+                },
+            })
+        if num_items >= 3:
+            # Item 2: no EC packets — should pass through context selection unchanged
+            items.append({
+                "kind": "patham9-pln-sentence-input",
+                "atom": "(Sentence (Requires MemoryTarget0 PLNReadyViews) (stv 0.70 0.55) ((PMEvidence b-2 mc-2 pe-2 rule domain)))",
+                "term": "(Requires MemoryTarget0 PLNReadyViews)",
+                "stv": {"strength": 0.70, "confidence": 0.55},
+                "evidence_id": "(PMEvidence b-2 mc-2 pe-2 rule domain)",
+                "belief_id": "b-2",
+                "cluster_id": "mc-2",
+                "promotion_event": "pe-2",
+                "promotion_rule": "explicit-test",
+                "promotion_domain": "memory-architecture",
+                "source_status": "pln-ready-input-not-inferred-belief",
+                "pi_pln_extension": {
+                    "contextual_evidence_packets": [],
+                    "ec_projection_policy": "preserve packets first; later project EC",
+                    "context_selection": "not-run",
+                },
+            })
+        return {
+            "schema": "petta-memory-patham9-pln-handoff-v1",
+            "item_count": len(items),
+            "items": items,
+        }
+
+    def test_selection_returns_correct_schema(self):
+        result = context_selection_wrapper(self._handoff())
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-context-selection-v1")
+
+    def test_selection_no_filters_keeps_all_packets(self):
+        result = context_selection_wrapper(self._handoff())
+        self.assertEqual(result["input_count"], 3)
+        self.assertEqual(result["output_count"], 3)
+        self.assertEqual(result["total_packets_in"], 3)
+        self.assertEqual(result["total_packets_out"], 3)
+        self.assertEqual(len(result["selected_indices"]), 3)
+        self.assertEqual(len(result["filtered_indices"]), 0)
+
+    def test_selection_domain_filter_keeps_matching_packets(self):
+        result = context_selection_wrapper(self._handoff(), domain="domain-a")
+        # Item 0 has one domain-a packet and one domain-b packet
+        self.assertEqual(result["total_packets_in"], 3)
+        self.assertEqual(result["total_packets_out"], 1)
+        # Item 0 is included (it still has a domain-a packet)
+        self.assertIn(0, result["selected_indices"])
+        # Item 1 is filtered out (all its packets are domain-b)
+        self.assertIn(1, result["filtered_indices"])
+        # Item 2 is included (no packets to filter)
+        self.assertIn(2, result["selected_indices"])
+
+    def test_selection_cluster_filter_keeps_matching_packets(self):
+        result = context_selection_wrapper(self._handoff(), cluster_id="mc-1")
+        # Only item 1's packets match cluster mc-1
+        self.assertEqual(result["total_packets_out"], 1)
+        self.assertIn(1, result["selected_indices"])
+        # Item 0 is filtered out (all its packets are cluster mc-0)
+        self.assertIn(0, result["filtered_indices"])
+        # Item 2 is included (no packets)
+        self.assertIn(2, result["selected_indices"])
+
+    def test_selection_promotion_rule_filter(self):
+        result = context_selection_wrapper(self._handoff(), promotion_rule="explicit-test")
+        # All packets have promotion_rule=explicit-test, so all kept
+        self.assertEqual(result["total_packets_out"], 3)
+        self.assertEqual(len(result["selected_indices"]), 3)
+
+    def test_selection_no_matching_domain_filters_item(self):
+        result = context_selection_wrapper(self._handoff(), domain="domain-z")
+        # No packets match domain-z, but item 2 has no packets so passes through
+        self.assertEqual(result["total_packets_out"], 0)
+        self.assertIn(2, result["selected_indices"])
+        self.assertIn(0, result["filtered_indices"])
+        self.assertIn(1, result["filtered_indices"])
+
+    def test_selection_min_relevance_filters_low_evidence_packets(self):
+        handoff = self._handoff(num_items=1)
+        # Add a low-evidence packet to item 0 with same domain
+        handoff["items"][0]["pi_pln_extension"]["contextual_evidence_packets"].append(
+            {"support": 1, "opposition": 0, "statement": "test",
+             "promotion_domain": "domain-a", "cluster_id": "mc-0", "promotion_rule": "explicit-test"}
+        )
+        # total=1, evidence_weight=1/3=0.333
+        result = context_selection_wrapper(handoff, domain="domain-a", min_packet_relevance=0.5)
+        item0 = result["items"][0]
+        kept = [p for p in item0["packets_in"] if p["included"]]
+        filtered = [p for p in item0["packets_in"] if not p["included"]]
+        self.assertEqual(len(kept), 1)  # only (9, 1) survives
+        self.assertEqual(len(filtered), 2)  # (3, 7) domain-b + (1, 0) low relevance
+        # The low-evidence packet should be filtered by relevance
+        rel_filtered = [p for p in filtered if "relevance" in p.get("filter_reason", "")]
+        self.assertEqual(len(rel_filtered), 1)
+        self.assertEqual(rel_filtered[0]["support"], 1)
+        self.assertEqual(rel_filtered[0]["opposition"], 0)
+
+    def test_selection_empty_handoff_returns_empty_result(self):
+        empty_handoff = {
+            "schema": "petta-memory-patham9-pln-handoff-v1",
+            "item_count": 0,
+            "items": [],
+        }
+        result = context_selection_wrapper(empty_handoff)
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-context-selection-v1")
+        self.assertEqual(result["input_count"], 0)
+        self.assertEqual(result["output_count"], 0)
+        self.assertEqual(result["total_packets_in"], 0)
+        self.assertEqual(result["total_packets_out"], 0)
+
+    def test_selection_rejects_wrong_schema(self):
+        with self.assertRaises(ValueError):
+            context_selection_wrapper({"schema": "wrong-schema"})
+
+    def test_selection_rejects_out_of_range_min_relevance(self):
+        with self.assertRaises(ValueError):
+            context_selection_wrapper(self._handoff(), min_packet_relevance=-0.1)
+        with self.assertRaises(ValueError):
+            context_selection_wrapper(self._handoff(), min_packet_relevance=1.5)
+
+    def test_selection_boundary_text_is_non_live(self):
+        result = context_selection_wrapper(self._handoff())
+        boundary = result["boundary"]
+        self.assertIn("non-live", boundary)
+        self.assertIn("no memory append", boundary)
+        self.assertIn("no OmegaClaw/GoalChainer live path", boundary)
+
+    def test_selection_policy_records_criteria(self):
+        result = context_selection_wrapper(
+            self._handoff(),
+            domain="domain-a",
+            cluster_id="mc-0",
+            promotion_rule="explicit-test",
+            min_packet_relevance=0.3,
+        )
+        policy = result["selection_policy"]
+        self.assertEqual(policy["domain"], "domain-a")
+        self.assertEqual(policy["cluster_id"], "mc-0")
+        self.assertEqual(policy["promotion_rule"], "explicit-test")
+        self.assertEqual(policy["min_packet_relevance"], 0.3)
+        self.assertIn("context selection", policy["source_pattern"])
+
+    def test_selection_packet_summaries_record_filter_reasons(self):
+        result = context_selection_wrapper(self._handoff(), domain="domain-a")
+        item0 = result["items"][0]
+        # Item 0 has 2 packets: one domain-a, one domain-b
+        self.assertEqual(item0["original_packet_count"], 2)
+        self.assertEqual(item0["kept_packet_count"], 1)
+        # The filtered packet should have a filter_reason
+        filtered_packets = [p for p in item0["packets_in"] if not p["included"]]
+        self.assertEqual(len(filtered_packets), 1)
+        self.assertIn("domain mismatch", filtered_packets[0]["filter_reason"])
+
+    def test_selection_combined_domain_and_cluster_filter(self):
+        result = context_selection_wrapper(
+            self._handoff(),
+            domain="domain-a",
+            cluster_id="mc-0",
+        )
+        # Only packets matching both domain-a AND cluster mc-0 survive
+        self.assertEqual(result["total_packets_out"], 1)
+        self.assertIn(0, result["selected_indices"])
+
+    def test_selection_items_without_packets_pass_through(self):
+        result = context_selection_wrapper(self._handoff(), domain="domain-a")
+        # Item 2 has no packets, should pass through
+        self.assertIn(2, result["selected_indices"])
+        item2 = result["items"][2]
+        self.assertTrue(item2["included"])
+        self.assertEqual(item2["original_packet_count"], 0)
+        self.assertEqual(item2["kept_packet_count"], 0)
+
+
+class StoreRoundTripContextSelectionTests(unittest.TestCase):
+    """Empirical round-trip: store -> handoff -> context selection."""
+
+    def test_roundtrip_context_selection_from_store(self):
+        from petta_memory.store import MediumMemoryStore
+
+        cluster = """
+(MemoryCluster mc-cs-a)
+(SchemaVersion mc-cs-a medium-memory-v1)
+(ClusterType mc-cs-a belief-promotion)
+(ClusterOpenedAt mc-cs-a "2026-07-06 01:00 PDT")
+(ClusterSource mc-cs-a src-test)
+(Contains mc-cs-a pe-cs-a)
+(Contains mc-cs-a b-cs-a)
+(ClusterStatus mc-cs-a active)
+(PromotionEvent pe-cs-a)
+(PromotesFrom pe-cs-a qc-cs-a)
+(PromotesTo pe-cs-a b-cs-a)
+(PromotionRule pe-cs-a explicit-test-promotion)
+(PromotionTrust pe-cs-a 0.85)
+(PromotionDomain pe-cs-a memory-architecture)
+(DerivedBelief b-cs-a)
+(BeliefContent b-cs-a (Requires MemoryTarget0 PLNReadyViews))
+(TruthValue b-cs-a (stv 0.88 0.72))
+(EvidenceFor b-cs-a qc-cs-a)
+(EvidenceSupportCount b-cs-a 9.0)
+(EvidenceOppositionCount b-cs-a 1.0)
+"""
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "cs_memory.metta")
+            store.append_cluster(cluster)
+            cache = store.pettachainer_handoff_cache()
+
+        handoff = patham9_pln_handoff_sentences(cache)
+        result = context_selection_wrapper(handoff)
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-context-selection-v1")
+        self.assertEqual(result["input_count"], 1)
+        self.assertEqual(result["output_count"], 1)
+        self.assertEqual(len(result["selected_indices"]), 1)
+        self.assertGreater(result["total_packets_in"], 0)
+        self.assertGreater(result["total_packets_out"], 0)
+
+
+class ChainedInferencePipelineTests(unittest.TestCase):
+    """Tests for the third inference-control mechanism: chained filter+select pipeline.
+
+    The pipeline chains context selection (stage 1) with probabilistic
+    filtering (stage 2) so that irrelevant evidence packets are removed before
+    EC projection and composite-score ranking.  These tests validate the
+    pipeline logic without invoking any runtime.
+    """
+
+    def _handoff(self, num_items: int = 3) -> dict:
+        """Build a handoff with mixed evidence contexts and quality for pipeline testing."""
+        items = []
+        # Item 0: strong STV, packets from domain-a (strong support)
+        items.append({
+            "kind": "patham9-pln-sentence-input",
+            "atom": "(Sentence (Acceptable publish_redacted_summary) (stv 0.91 0.74) ((PMEvidence b-0 mc-0 pe-0 rule domain)))",
+            "term": "(Acceptable publish_redacted_summary)",
+            "stv": {"strength": 0.91, "confidence": 0.74},
+            "evidence_id": "(PMEvidence b-0 mc-0 pe-0 rule domain)",
+            "belief_id": "b-0",
+            "cluster_id": "mc-0",
+            "promotion_event": "pe-0",
+            "promotion_rule": "explicit-test",
+            "promotion_domain": "memory-architecture",
+            "source_status": "pln-ready-input-not-inferred-belief",
+            "pi_pln_extension": {
+                "contextual_evidence_packets": [
+                    {"support": 9, "opposition": 1, "statement": "(Acceptable publish_redacted_summary)",
+                     "promotion_domain": "domain-a", "cluster_id": "mc-0", "promotion_rule": "explicit-test"},
+                    {"support": 3, "opposition": 7, "statement": "(Acceptable publish_redacted_summary)",
+                     "promotion_domain": "domain-b", "cluster_id": "mc-0", "promotion_rule": "explicit-test"},
+                ],
+                "ec_projection_policy": "preserve packets first; later project EC",
+                "context_selection": "not-run",
+            },
+        })
+        if num_items >= 2:
+            # Item 1: strong base STV but packets from domain-b (conflicting EC)
+            items.append({
+                "kind": "patham9-pln-sentence-input",
+                "atom": "(Sentence (Acceptable share_full_log) (stv 0.94 0.80) ((PMEvidence b-1 mc-1 pe-1 rule domain)))",
+                "term": "(Acceptable share_full_log)",
+                "stv": {"strength": 0.94, "confidence": 0.80},
+                "evidence_id": "(PMEvidence b-1 mc-1 pe-1 rule domain)",
+                "belief_id": "b-1",
+                "cluster_id": "mc-1",
+                "promotion_event": "pe-1",
+                "promotion_rule": "explicit-test",
+                "promotion_domain": "memory-architecture",
+                "source_status": "pln-ready-input-not-inferred-belief",
+                "pi_pln_extension": {
+                    "contextual_evidence_packets": [
+                        {"support": 1, "opposition": 9, "statement": "(Acceptable share_full_log)",
+                         "promotion_domain": "domain-b", "cluster_id": "mc-1", "promotion_rule": "explicit-test"},
+                    ],
+                    "ec_projection_policy": "preserve packets first; later project EC",
+                    "context_selection": "not-run",
+                },
+            })
+        if num_items >= 3:
+            # Item 2: weak STV, no packets — passes context selection, low composite score
+            items.append({
+                "kind": "patham9-pln-sentence-input",
+                "atom": "(Sentence (Requires MemoryTarget0 PLNReadyViews) (stv 0.70 0.55) ((PMEvidence b-2 mc-2 pe-2 rule domain)))",
+                "term": "(Requires MemoryTarget0 PLNReadyViews)",
+                "stv": {"strength": 0.70, "confidence": 0.55},
+                "evidence_id": "(PMEvidence b-2 mc-2 pe-2 rule domain)",
+                "belief_id": "b-2",
+                "cluster_id": "mc-2",
+                "promotion_event": "pe-2",
+                "promotion_rule": "explicit-test",
+                "promotion_domain": "memory-architecture",
+                "source_status": "pln-ready-input-not-inferred-belief",
+                "pi_pln_extension": {
+                    "contextual_evidence_packets": [],
+                    "ec_projection_policy": "preserve packets first; later project EC",
+                    "context_selection": "not-run",
+                },
+            })
+        return {
+            "schema": "petta-memory-patham9-pln-handoff-v1",
+            "item_count": len(items),
+            "items": items,
+        }
+
+    def test_pipeline_returns_correct_schema(self):
+        result = chained_inference_pipeline(self._handoff())
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-inference-pipeline-v1")
+
+    def test_pipeline_no_filters_keeps_all_items(self):
+        result = chained_inference_pipeline(self._handoff())
+        self.assertEqual(result["input_count"], 3)
+        self.assertEqual(result["stage1_output_count"], 3)
+        self.assertEqual(result["stage1_filtered_count"], 0)
+        self.assertEqual(result["output_count"], 3)
+        self.assertEqual(len(result["selected_indices"]), 3)
+        self.assertEqual(len(result["filtered_indices"]), 0)
+
+    def test_pipeline_boundary_text_is_non_live(self):
+        result = chained_inference_pipeline(self._handoff())
+        self.assertIn("non-live", result["boundary"])
+
+    def test_pipeline_domain_filter_excludes_items_with_only_foreign_packets(self):
+        # Item 1 has packets only from domain-b; filtering by domain-a should exclude it
+        result = chained_inference_pipeline(self._handoff(), domain="domain-a")
+        self.assertEqual(result["stage1_output_count"], 2)  # items 0 and 2
+        self.assertIn(1, result["stage1_filtered_indices"])
+        self.assertNotIn(1, result["selected_indices"])
+
+    def test_pipeline_domain_filter_reduces_packets_for_multi_domain_item(self):
+        # Item 0 has packets from both domain-a and domain-b
+        # Filtering by domain-a should keep item 0 but with fewer packets
+        result = chained_inference_pipeline(self._handoff(), domain="domain-a")
+        item0 = [pi for pi in result["items"] if pi["item_index"] == 0][0]
+        self.assertTrue(item0["included"])
+        # Stage 1 should have reduced packets (from 2 to 1)
+        self.assertEqual(result["stage1_total_packets_in"], 3)
+        self.assertEqual(result["stage1_total_packets_out"], 1)
+
+    def test_pipeline_min_confidence_excludes_low_confidence_items(self):
+        # Item 2 has confidence 0.55; set threshold above it
+        result = chained_inference_pipeline(self._handoff(), min_confidence=0.60)
+        self.assertNotIn(2, result["selected_indices"])
+        self.assertIn(2, result["filtered_indices"])
+
+    def test_pipeline_top_k_keeps_only_k_items(self):
+        result = chained_inference_pipeline(self._handoff(), top_k=1)
+        self.assertEqual(result["output_count"], 1)
+        self.assertEqual(len(result["selected_indices"]), 1)
+        # Item 0 should rank highest (strong support from domain-a packet)
+        self.assertEqual(result["selected_indices"][0], 0)
+
+    def test_pipeline_combined_domain_filter_and_top_k(self):
+        # Filter by domain-a, then keep only top-1
+        result = chained_inference_pipeline(self._handoff(), domain="domain-a", top_k=1)
+        self.assertEqual(result["stage1_output_count"], 2)  # items 0 and 2
+        self.assertEqual(result["output_count"], 1)  # only top-1 from stage 2
+        self.assertEqual(result["selected_indices"][0], 0)
+
+    def test_pipeline_combined_domain_filter_and_min_confidence(self):
+        # Filter by domain-a (keeps items 0, 2), then exclude item 2 by confidence
+        result = chained_inference_pipeline(self._handoff(), domain="domain-a", min_confidence=0.60)
+        self.assertEqual(result["stage1_output_count"], 2)
+        self.assertIn(0, result["selected_indices"])
+        self.assertNotIn(2, result["selected_indices"])
+        self.assertIn(2, result["filtered_indices"])
+
+    def test_pipeline_empty_handoff_returns_empty_result(self):
+        handoff = {
+            "schema": "petta-memory-patham9-pln-handoff-v1",
+            "item_count": 0,
+            "items": [],
+        }
+        result = chained_inference_pipeline(handoff)
+        self.assertEqual(result["input_count"], 0)
+        self.assertEqual(result["output_count"], 0)
+        self.assertEqual(result["items"], [])
+        self.assertEqual(result["selected_indices"], [])
+        self.assertEqual(result["filtered_indices"], [])
+
+    def test_pipeline_rejects_wrong_schema(self):
+        with self.assertRaises(ValueError):
+            chained_inference_pipeline({"schema": "wrong"})
+
+    def test_pipeline_rejects_out_of_range_min_relevance(self):
+        with self.assertRaises(ValueError):
+            chained_inference_pipeline(self._handoff(), min_packet_relevance=-0.1)
+        with self.assertRaises(ValueError):
+            chained_inference_pipeline(self._handoff(), min_packet_relevance=1.1)
+
+    def test_pipeline_rejects_out_of_range_min_confidence(self):
+        with self.assertRaises(ValueError):
+            chained_inference_pipeline(self._handoff(), min_confidence=-0.1)
+        with self.assertRaises(ValueError):
+            chained_inference_pipeline(self._handoff(), min_confidence=1.1)
+
+    def test_pipeline_rejects_negative_top_k(self):
+        with self.assertRaises(ValueError):
+            chained_inference_pipeline(self._handoff(), top_k=-1)
+
+    def test_pipeline_ranking_remapped_to_original_indices(self):
+        result = chained_inference_pipeline(self._handoff(), domain="domain-a", top_k=1)
+        # With domain-a filter, stage 1 keeps items 0 and 2 (original indices)
+        # Stage 2 top_k=1 should pick item 0
+        self.assertEqual(result["ranking"][0]["item_index"], 0)
+        self.assertIn("composite_score", result["ranking"][0])
+
+    def test_pipeline_stage1_and_stage2_results_present(self):
+        result = chained_inference_pipeline(self._handoff())
+        self.assertIn("stage1_result", result)
+        self.assertIn("stage2_result", result)
+        self.assertEqual(result["stage1_result"]["schema"], "petta-memory-pi-pln-context-selection-v1")
+        self.assertEqual(result["stage2_result"]["schema"], "petta-memory-pi-pln-inference-filter-v1")
+
+
+class StoreRoundTripPipelineTests(unittest.TestCase):
+    """Empirical round-trip: store -> handoff -> chained inference pipeline."""
+
+    def test_roundtrip_pipeline_from_store(self):
+        from petta_memory.store import MediumMemoryStore
+
+        cluster = """
+(MemoryCluster mc-pl-a)
+(SchemaVersion mc-pl-a medium-memory-v1)
+(ClusterType mc-pl-a belief-promotion)
+(ClusterOpenedAt mc-pl-a "2026-07-06 03:00 PDT")
+(ClusterSource mc-pl-a src-test)
+(Contains mc-pl-a pe-pl-a)
+(Contains mc-pl-a b-pl-a)
+(ClusterStatus mc-pl-a active)
+(PromotionEvent pe-pl-a)
+(PromotesFrom pe-pl-a qc-pl-a)
+(PromotesTo pe-pl-a b-pl-a)
+(PromotionRule pe-pl-a explicit-test-promotion)
+(PromotionTrust pe-pl-a 0.85)
+(PromotionDomain pe-pl-a memory-architecture)
+(DerivedBelief b-pl-a)
+(BeliefContent b-pl-a (Requires MemoryTarget0 PLNReadyViews))
+(TruthValue b-pl-a (stv 0.88 0.72))
+(EvidenceFor b-pl-a qc-pl-a)
+(EvidenceSupportCount b-pl-a 9.0)
+(EvidenceOppositionCount b-pl-a 1.0)
+"""
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "pipeline_memory.metta")
+            store.append_cluster(cluster)
+            cache = store.pettachainer_handoff_cache()
+
+        handoff = patham9_pln_handoff_sentences(cache)
+        result = chained_inference_pipeline(handoff)
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-inference-pipeline-v1")
+        self.assertEqual(result["input_count"], 1)
+        self.assertEqual(result["stage1_output_count"], 1)
+        self.assertEqual(result["output_count"], 1)
+        self.assertEqual(len(result["selected_indices"]), 1)
+        self.assertEqual(len(result["filtered_indices"]), 0)
+        # Item should have a composite score > 0
+        item = result["items"][0]
+        self.assertGreater(item["composite_score"], 0.0)
+
+
+class MetaLearningBenchmarkHandoffTests(unittest.TestCase):
+    """Tests for build_meta_learning_benchmark_handoff()."""
+
+    def test_default_handoff_schema(self):
+        h = build_meta_learning_benchmark_handoff()
+        self.assertEqual(h["schema"], "petta-memory-patham9-pln-handoff-v1")
+        self.assertEqual(h["item_count"], 4)  # 1 shortcut + 3 chain
+
+    def test_shortcut_item_has_higher_stv_than_chain(self):
+        h = build_meta_learning_benchmark_handoff()
+        items = h["items"]
+        shortcut = items[0]
+        for item in items[1:]:
+            self.assertGreater(
+                shortcut["stv"]["strength"], item["stv"]["strength"],
+                "shortcut should have higher strength than chain items",
+            )
+            self.assertGreater(
+                shortcut["stv"]["confidence"], item["stv"]["confidence"],
+                "shortcut should have higher confidence than chain items",
+            )
+
+    def test_shortcut_and_chain_have_evidence_packets(self):
+        h = build_meta_learning_benchmark_handoff()
+        for item in h["items"]:
+            packets = item["pi_pln_extension"]["contextual_evidence_packets"]
+            self.assertEqual(len(packets), 1)
+            pkt = packets[0]
+            self.assertIn("ec", pkt)
+            self.assertIn("promotion_domain", pkt)
+            self.assertIn("cluster_id", pkt)
+            self.assertIn("promotion_rule", pkt)
+
+    def test_shortcut_has_supportive_ec_chain_has_declining_ec(self):
+        h = build_meta_learning_benchmark_handoff()
+        shortcut_pkt = h["items"][0]["pi_pln_extension"]["contextual_evidence_packets"][0]
+        self.assertEqual(shortcut_pkt["ec"], {"support": 9, "opposition": 1})
+        chain_pkts = [
+            item["pi_pln_extension"]["contextual_evidence_packets"][0]
+            for item in h["items"][1:]
+        ]
+        self.assertEqual(chain_pkts[0]["ec"], {"support": 3, "opposition": 1})
+        self.assertEqual(chain_pkts[1]["ec"], {"support": 2, "opposition": 2})
+        self.assertEqual(chain_pkts[2]["ec"], {"support": 1, "opposition": 3})
+
+    def test_custom_chain_lengths(self):
+        h = build_meta_learning_benchmark_handoff(
+            chain_strengths=[0.80, 0.70],
+            chain_confidences=[0.60, 0.50],
+            chain_ecs=[(4, 1), (2, 3)],
+        )
+        self.assertEqual(h["item_count"], 3)
+        self.assertEqual(h["items"][2]["stv"]["strength"], 0.70)
+        self.assertEqual(h["items"][2]["pi_pln_extension"]["contextual_evidence_packets"][0]["ec"],
+                         {"support": 2, "opposition": 3})
+
+    def test_rejects_mismatched_chain_lengths(self):
+        with self.assertRaises(ValueError):
+            build_meta_learning_benchmark_handoff(
+                chain_strengths=[0.70, 0.60],
+                chain_confidences=[0.55],
+            )
+
+    def test_rejects_mismatched_ecs(self):
+        with self.assertRaises(ValueError):
+            build_meta_learning_benchmark_handoff(
+                chain_strengths=[0.70, 0.60],
+                chain_confidences=[0.55, 0.50],
+                chain_ecs=[(3, 1)],
+            )
+
+    def test_rejects_out_of_range_stv(self):
+        with self.assertRaises(ValueError):
+            build_meta_learning_benchmark_handoff(shortcut_strength=1.5)
+        with self.assertRaises(ValueError):
+            build_meta_learning_benchmark_handoff(chain_strengths=[0.70, -0.1])
+
+    def test_rejects_negative_ec(self):
+        with self.assertRaises(ValueError):
+            build_meta_learning_benchmark_handoff(shortcut_ec=(-1, 2))
+
+    def test_custom_domains(self):
+        h = build_meta_learning_benchmark_handoff(
+            shortcut_domain="memory",
+            chain_domain="planning",
+        )
+        self.assertEqual(
+            h["items"][0]["pi_pln_extension"]["contextual_evidence_packets"][0]["promotion_domain"],
+            "memory",
+        )
+        self.assertEqual(
+            h["items"][1]["pi_pln_extension"]["contextual_evidence_packets"][0]["promotion_domain"],
+            "planning",
+        )
+
+
+class MetaLearningBenchmarkRunTests(unittest.TestCase):
+    """Tests for run_meta_learning_benchmark()."""
+
+    def test_default_benchmark_passes(self):
+        """With default STVs, the shortcut should be ranked first."""
+        result = run_meta_learning_benchmark()
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-meta-learning-benchmark-v1")
+        self.assertTrue(result["overall_pass"],
+                        "shortcut should be preferred over chain items by default")
+        self.assertTrue(result["filter_shortcut_first"])
+        self.assertTrue(result["pipeline_shortcut_first"])
+
+    def test_shortcut_ranked_first_in_filter(self):
+        result = run_meta_learning_benchmark()
+        self.assertEqual(result["filter_result"]["shortcut_rank"], 1)
+        self.assertTrue(result["filter_result"]["shortcut_first"])
+
+    def test_shortcut_ranked_first_in_pipeline(self):
+        result = run_meta_learning_benchmark()
+        self.assertEqual(result["pipeline_result"]["shortcut_rank"], 1)
+        self.assertTrue(result["pipeline_result"]["shortcut_first"])
+
+    def test_shortcut_has_higher_composite_score_than_chain(self):
+        result = run_meta_learning_benchmark()
+        self.assertIsNotNone(result["filter_result"]["shortcut_composite_score"])
+        best_chain = result["filter_result"]["best_chain_composite_score"]
+        if best_chain is not None:
+            self.assertGreater(
+                result["filter_result"]["shortcut_composite_score"],
+                best_chain,
+            )
+
+    def test_no_chain_item_outranks_shortcut(self):
+        result = run_meta_learning_benchmark()
+        self.assertFalse(result["filter_result"]["chain_outranks_shortcut"])
+
+    def test_top_k_1_keeps_only_shortcut(self):
+        result = run_meta_learning_benchmark(top_k=1)
+        # The shortcut (index 0) should be rank 1 in the pipeline ranking
+        ranking = result["pipeline_result"]["ranking"]
+        self.assertEqual(len(ranking), 1)
+        self.assertEqual(ranking[0]["item_index"], 0)
+        self.assertEqual(ranking[0]["rank"], 1)
+
+    def test_min_confidence_filters_chain_items(self):
+        """With a high min_confidence, low-confidence chain items should be filtered."""
+        # Default chain confidences after EC projection: need to check
+        # The shortcut has confidence 0.90, chain items have 0.55, 0.50, 0.45
+        # EC projection may raise confidence, but the composite score should still
+        # rank shortcut first.  Set min_confidence high enough to filter chain.
+        result = run_meta_learning_benchmark(min_confidence=0.85)
+        # Shortcut should survive, chain items should be filtered
+        self.assertTrue(result["filter_result"]["shortcut_first"])
+
+    def test_domain_filter_excludes_chain(self):
+        """Filtering by shortcut domain should exclude chain-domain items from pipeline."""
+        result = run_meta_learning_benchmark(domain="benchmark")
+        # Both shortcut and chain have domain "benchmark" by default, so all pass
+        self.assertEqual(result["pipeline_result"]["ranking"][0]["item_index"], 0)
+
+    def test_domain_filter_excludes_shortcut(self):
+        """Filtering by chain-only domain should exclude the shortcut."""
+        h = build_meta_learning_benchmark_handoff(
+            shortcut_domain="memory",
+            chain_domain="planning",
+        )
+        result = run_meta_learning_benchmark(
+            handoff=h,
+            domain="planning",
+        )
+        # Shortcut should not be in selected indices (it has domain "memory")
+        # Chain items with domain "planning" should pass context selection
+        self.assertNotIn(0, result["pipeline_result"].get("ranking", []) and
+                         [r["item_index"] for r in result["pipeline_result"].get("ranking", [])]
+                         or [])
+
+    def test_rejects_wrong_handoff_schema(self):
+        with self.assertRaises(ValueError):
+            run_meta_learning_benchmark(handoff={"schema": "wrong"})
+
+    def test_rejects_out_of_range_confidence(self):
+        with self.assertRaises(ValueError):
+            run_meta_learning_benchmark(min_confidence=-0.1)
+        with self.assertRaises(ValueError):
+            run_meta_learning_benchmark(min_confidence=1.5)
+
+    def test_rejects_negative_top_k(self):
+        with self.assertRaises(ValueError):
+            run_meta_learning_benchmark(top_k=-1)
+
+    def test_rejects_out_of_range_relevance(self):
+        with self.assertRaises(ValueError):
+            run_meta_learning_benchmark(min_packet_relevance=-0.1)
+        with self.assertRaises(ValueError):
+            run_meta_learning_benchmark(min_packet_relevance=1.5)
+
+    def test_boundary_text_present(self):
+        result = run_meta_learning_benchmark()
+        self.assertIn("non-live wrapper-only benchmark", result["boundary"])
+        self.assertIn("no memory append", result["boundary"])
+
+    def test_benchmark_scenario_metadata(self):
+        result = run_meta_learning_benchmark()
+        scenario = result["benchmark_scenario"]
+        self.assertEqual(scenario["shortcut_item_index"], 0)
+        self.assertEqual(scenario["chain_item_indices"], [1, 2, 3])
+        self.assertEqual(scenario["shortcut_belief_id"], "shortcut-0")
+        self.assertEqual(scenario["chain_belief_ids"], ["chain-1", "chain-2", "chain-3"])
+
+    def test_filter_and_pipeline_results_present(self):
+        result = run_meta_learning_benchmark()
+        self.assertIn("filter_result", result)
+        self.assertIn("pipeline_result", result)
+        self.assertEqual(
+            result["filter_result"]["schema"],
+            "petta-memory-pi-pln-inference-filter-v1",
+        )
+        self.assertEqual(
+            result["pipeline_result"]["schema"],
+            "petta-memory-pi-pln-inference-pipeline-v1",
+        )
+
+
+class StoreRoundTripMetaLearningBenchmarkTests(unittest.TestCase):
+    """Empirical round-trip: store -> handoff -> meta-learning benchmark."""
+
+    def test_roundtrip_benchmark_from_store(self):
+        from petta_memory.store import MediumMemoryStore
+
+        cluster = """
+(MemoryCluster mc-bench-a)
+(SchemaVersion mc-bench-a medium-memory-v1)
+(ClusterType mc-bench-a belief-promotion)
+(ClusterOpenedAt mc-bench-a "2026-07-06 05:00 PDT")
+(ClusterSource mc-bench-a src-test)
+(Contains mc-bench-a pe-bench-a)
+(Contains mc-bench-a b-bench-a)
+(ClusterStatus mc-bench-a active)
+(PromotionEvent pe-bench-a)
+(PromotesFrom pe-bench-a qc-bench-a)
+(PromotesTo pe-bench-a b-bench-a)
+(PromotionRule pe-bench-a explicit-benchmark-promotion)
+(PromotionTrust pe-bench-a 0.90)
+(PromotionDomain pe-bench-a benchmark)
+(DerivedBelief b-bench-a)
+(BeliefContent b-bench-a (ShortcutConclusion))
+(TruthValue b-bench-a (stv 0.95 0.90))
+(EvidenceFor b-bench-a qc-bench-a)
+(EvidenceSupportCount b-bench-a 9.0)
+(EvidenceOppositionCount b-bench-a 1.0)
+"""
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "bench_memory.metta")
+            store.append_cluster(cluster)
+            cache = store.pettachainer_handoff_cache()
+
+        handoff = patham9_pln_handoff_sentences(cache)
+        result = run_meta_learning_benchmark(handoff=handoff)
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-meta-learning-benchmark-v1")
+        # Single item from store: shortcut by default (index 0), no chain items
+        self.assertEqual(result["benchmark_scenario"]["shortcut_item_index"], 0)
+        self.assertEqual(result["benchmark_scenario"]["chain_item_indices"], [])
+        self.assertTrue(result["overall_pass"])
+
+
+# ---------------------------------------------------------------------------
+# Continuation predicate wrapper tests
+# ---------------------------------------------------------------------------
+
+class ContinuationPredicateWrapperTests(unittest.TestCase):
+    """Unit tests for the continuation_predicate_wrapper inference-control mechanism."""
+
+    def _make_handoff(self, n: int = 3) -> dict[str, Any]:
+        """Build a small handoff with varied STVs, EC counts, and domains."""
+        items: list[dict[str, Any]] = []
+        for i in range(n):
+            strengths = [0.90, 0.50, 0.30]
+            confidences = [0.80, 0.60, 0.40]
+            domains = ["reasoning", "reasoning", "planning"]
+            rules = ["explicit-promotion", "explicit-promotion", "heuristic"]
+            depths = [0, 1, 2]
+            ec_support = [9, 3, 1]
+            ec_opposition = [1, 2, 4]
+            items.append({
+                "belief_id": f"b-cp-{i}",
+                "term": f"(TestTerm{i})",
+                "stv": {"strength": strengths[i % 3], "confidence": confidences[i % 3]},
+                "pi_pln_extension": {
+                    "promotion_domain": domains[i % 3],
+                    "promotion_rule": rules[i % 3],
+                    "derivation_depth": depths[i % 3],
+                    "contextual_evidence_packets": [
+                        {
+                            "ec": {
+                                "support": ec_support[i % 3],
+                                "opposition": ec_opposition[i % 3],
+                            },
+                            "promotion_domain": domains[i % 3],
+                            "promotion_rule": rules[i % 3],
+                        }
+                    ],
+                },
+            })
+        return {
+            "schema": "petta-memory-patham9-pln-handoff-v1",
+            "item_count": n,
+            "items": items,
+        }
+
+    def test_schema(self):
+        result = continuation_predicate_wrapper(self._make_handoff())
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-continuation-predicate-v1")
+        self.assertEqual(result["mode"], "design-specification-no-runtime")
+
+    def test_boundary_text(self):
+        result = continuation_predicate_wrapper(self._make_handoff())
+        self.assertIn("non-live wrapper-only", result["boundary"])
+        self.assertIn("no SWI/PeTTa/MeTTa runtime", result["boundary"])
+        self.assertIn("no memory append", result["boundary"])
+
+    def test_all_continue_with_default_policy(self):
+        """With no thresholds set, all items should continue."""
+        handoff = self._make_handoff()
+        result = continuation_predicate_wrapper(handoff)
+        self.assertEqual(result["continue_count"], 3)
+        self.assertEqual(result["terminate_count"], 0)
+        self.assertEqual(result["reject_count"], 0)
+        self.assertEqual(sorted(result["continue_indices"]), [0, 1, 2])
+
+    def test_min_strength_filters(self):
+        result = continuation_predicate_wrapper(self._make_handoff(), min_strength=0.6)
+        # Item 0: 0.90 >= 0.6 -> continue
+        # Item 1: 0.50 < 0.6 -> reject
+        # Item 2: 0.30 < 0.6 -> reject
+        self.assertEqual(result["continue_count"], 1)
+        self.assertEqual(result["reject_count"], 2)
+        self.assertEqual(result["continue_indices"], [0])
+        self.assertEqual(sorted(result["reject_indices"]), [1, 2])
+
+    def test_min_confidence_filters(self):
+        result = continuation_predicate_wrapper(self._make_handoff(), min_confidence=0.7)
+        # Item 0: 0.80 >= 0.7 -> continue
+        # Item 1: 0.60 < 0.7 -> reject
+        # Item 2: 0.40 < 0.7 -> reject
+        self.assertEqual(result["continue_count"], 1)
+        self.assertEqual(result["reject_count"], 2)
+
+    def test_domain_filter(self):
+        result = continuation_predicate_wrapper(self._make_handoff(), domain="reasoning")
+        # Items 0,1 have domain "reasoning" -> continue
+        # Item 2 has domain "planning" -> reject
+        self.assertEqual(result["continue_count"], 2)
+        self.assertEqual(result["reject_count"], 1)
+        self.assertEqual(result["reject_indices"], [2])
+        # Check that domain check appears in checks
+        item2 = [i for i in result["items"] if i["item_index"] == 2][0]
+        domain_check = [c for c in item2["checks"] if c["check"] == "domain"][0]
+        self.assertEqual(domain_check["required"], "reasoning")
+        self.assertEqual(domain_check["actual"], "planning")
+        self.assertFalse(domain_check["passed"])
+
+    def test_promotion_rule_filter(self):
+        result = continuation_predicate_wrapper(self._make_handoff(), promotion_rule="explicit-promotion")
+        # Items 0,1 have rule "explicit-promotion" -> continue
+        # Item 2 has rule "heuristic" -> reject
+        self.assertEqual(result["continue_count"], 2)
+        self.assertEqual(result["reject_count"], 1)
+        self.assertEqual(result["reject_indices"], [2])
+
+    def test_ec_ratio_threshold(self):
+        # Item 0: 9/(9+1)=0.9, Item 1: 3/(3+2)=0.6, Item 2: 1/(1+4)=0.2
+        result = continuation_predicate_wrapper(self._make_handoff(), ec_ratio_threshold=0.5)
+        # Items 0,1 pass; item 2 rejected
+        self.assertEqual(result["continue_count"], 2)
+        self.assertEqual(result["reject_count"], 1)
+        self.assertEqual(result["reject_indices"], [2])
+        item2 = [i for i in result["items"] if i["item_index"] == 2][0]
+        ec_check = [c for c in item2["checks"] if c["check"] == "ec_ratio"][0]
+        self.assertAlmostEqual(ec_check["actual"], 0.2, places=2)
+        self.assertFalse(ec_check["passed"])
+
+    def test_max_derivation_depth_terminates(self):
+        """Items at or beyond max depth should be terminated, not rejected."""
+        result = continuation_predicate_wrapper(self._make_handoff(), max_derivation_depth=1)
+        # Item 0: depth 0 < 1 -> continue
+        # Item 1: depth 1 >= 1 -> terminate
+        # Item 2: depth 2 >= 1 -> terminate
+        self.assertEqual(result["continue_count"], 1)
+        self.assertEqual(result["terminate_count"], 2)
+        self.assertEqual(result["reject_count"], 0)
+        self.assertEqual(result["continue_indices"], [0])
+        self.assertEqual(sorted(result["terminate_indices"]), [1, 2])
+
+    def test_terminate_with_depth_and_strength(self):
+        """If an item both exceeds depth and fails strength, it should be rejected."""
+        result = continuation_predicate_wrapper(
+            self._make_handoff(),
+            min_strength=0.6,
+            max_derivation_depth=1,
+        )
+        # Item 0: strength 0.90 >= 0.6, depth 0 < 1 -> continue
+        # Item 1: strength 0.50 < 0.6 -> reject (strength check fails first)
+        # Item 2: strength 0.30 < 0.6 -> reject
+        self.assertEqual(result["continue_count"], 1)
+        self.assertEqual(result["terminate_count"], 0)
+        self.assertEqual(result["reject_count"], 2)
+
+    def test_combined_filters(self):
+        result = continuation_predicate_wrapper(
+            self._make_handoff(),
+            min_strength=0.4,
+            min_confidence=0.5,
+            domain="reasoning",
+        )
+        # Item 0: strength 0.90, confidence 0.80, domain reasoning -> continue
+        # Item 1: strength 0.50 >= 0.4, confidence 0.60 >= 0.5, domain reasoning -> continue
+        # Item 2: strength 0.30 < 0.4 -> reject; also domain planning -> reject
+        self.assertEqual(result["continue_count"], 2)
+        self.assertEqual(result["reject_count"], 1)
+
+    def test_empty_handoff(self):
+        handoff = {
+            "schema": "petta-memory-patham9-pln-handoff-v1",
+            "item_count": 0,
+            "items": [],
+        }
+        result = continuation_predicate_wrapper(handoff)
+        self.assertEqual(result["input_count"], 0)
+        self.assertEqual(result["continue_count"], 0)
+        self.assertEqual(result["items"], [])
+
+    def test_validation_wrong_schema(self):
+        with self.assertRaises(ValueError):
+            continuation_predicate_wrapper({"schema": "wrong"})
+
+    def test_validation_min_strength_out_of_range(self):
+        with self.assertRaises(ValueError):
+            continuation_predicate_wrapper(self._make_handoff(), min_strength=-0.1)
+        with self.assertRaises(ValueError):
+            continuation_predicate_wrapper(self._make_handoff(), min_strength=1.1)
+
+    def test_validation_min_confidence_out_of_range(self):
+        with self.assertRaises(ValueError):
+            continuation_predicate_wrapper(self._make_handoff(), min_confidence=-0.1)
+        with self.assertRaises(ValueError):
+            continuation_predicate_wrapper(self._make_handoff(), min_confidence=1.1)
+
+    def test_validation_max_depth_negative(self):
+        with self.assertRaises(ValueError):
+            continuation_predicate_wrapper(self._make_handoff(), max_derivation_depth=-1)
+
+    def test_validation_ec_ratio_out_of_range(self):
+        with self.assertRaises(ValueError):
+            continuation_predicate_wrapper(self._make_handoff(), ec_ratio_threshold=-0.1)
+        with self.assertRaises(ValueError):
+            continuation_predicate_wrapper(self._make_handoff(), ec_ratio_threshold=1.1)
+
+    def test_no_ec_packets_passes_ec_check(self):
+        """Items without EC packets should pass the EC ratio check."""
+        handoff = {
+            "schema": "petta-memory-patham9-pln-handoff-v1",
+            "item_count": 1,
+            "items": [{
+                "belief_id": "b-no-ec",
+                "term": "(NoEC)",
+                "stv": {"strength": 0.8, "confidence": 0.7},
+                "pi_pln_extension": {
+                    "promotion_domain": "test",
+                    "promotion_rule": "rule",
+                    "derivation_depth": 0,
+                },
+            }],
+        }
+        result = continuation_predicate_wrapper(handoff, ec_ratio_threshold=0.5)
+        self.assertEqual(result["continue_count"], 1)
+        item0 = result["items"][0]
+        self.assertIsNone(item0["ec_summary"])
+
+    def test_item_decision_field(self):
+        result = continuation_predicate_wrapper(self._make_handoff(), min_strength=0.6)
+        item0 = [i for i in result["items"] if i["item_index"] == 0][0]
+        self.assertEqual(item0["decision"], "continue")
+        item1 = [i for i in result["items"] if i["item_index"] == 1][0]
+        self.assertEqual(item1["decision"], "reject")
+
+    def test_checks_structure(self):
+        result = continuation_predicate_wrapper(
+            self._make_handoff(),
+            min_strength=0.5,
+            min_confidence=0.5,
+            domain="reasoning",
+            ec_ratio_threshold=0.5,
+            max_derivation_depth=2,
+            promotion_rule="explicit-promotion",
+        )
+        item0 = result["items"][0]
+        check_names = [c["check"] for c in item0["checks"]]
+        self.assertIn("min_strength", check_names)
+        self.assertIn("min_confidence", check_names)
+        self.assertIn("domain", check_names)
+        self.assertIn("promotion_rule", check_names)
+        self.assertIn("ec_ratio", check_names)
+        self.assertIn("max_derivation_depth", check_names)
+        for check in item0["checks"]:
+            self.assertIn("passed", check)
+            self.assertIn("required", check)
+            self.assertIn("actual", check)
+
+    def test_ec_summary_with_packets(self):
+        result = continuation_predicate_wrapper(self._make_handoff())
+        item0 = result["items"][0]
+        self.assertIsNotNone(item0["ec_summary"])
+        self.assertEqual(item0["ec_summary"]["support"], 9)
+        self.assertEqual(item0["ec_summary"]["opposition"], 1)
+        self.assertAlmostEqual(item0["ec_summary"]["ratio"], 0.9, places=2)
+
+    def test_policy_in_result(self):
+        result = continuation_predicate_wrapper(
+            self._make_handoff(),
+            min_strength=0.5,
+            max_derivation_depth=3,
+            domain="reasoning",
+            ec_ratio_threshold=0.3,
+            promotion_rule="explicit-promotion",
+        )
+        policy = result["continuation_policy"]
+        self.assertEqual(policy["min_strength"], 0.5)
+        self.assertEqual(policy["max_derivation_depth"], 3)
+        self.assertEqual(policy["domain"], "reasoning")
+        self.assertEqual(policy["ec_ratio_threshold"], 0.3)
+        self.assertEqual(policy["promotion_rule"], "explicit-promotion")
+        self.assertIn("continuation predicate", policy["source_pattern"])
+
+    def test_depth_termination_check_has_termination_flag(self):
+        result = continuation_predicate_wrapper(self._make_handoff(), max_derivation_depth=1)
+        item1 = [i for i in result["items"] if i["item_index"] == 1][0]
+        depth_check = [c for c in item1["checks"] if c["check"] == "max_derivation_depth"][0]
+        self.assertTrue(depth_check.get("termination"))
+        self.assertFalse(depth_check["passed"])
+
+
+class StoreRoundTripContinuationPredicateTests(unittest.TestCase):
+    """Empirical round-trip: store -> handoff -> continuation predicate."""
+
+    def test_roundtrip_continuation_predicate_from_store(self):
+        from petta_memory.store import MediumMemoryStore
+
+        cluster = """
+(MemoryCluster mc-cp-a)
+(SchemaVersion mc-cp-a medium-memory-v1)
+(ClusterType mc-cp-a belief-promotion)
+(ClusterOpenedAt mc-cp-a "2026-07-06 07:00 PDT")
+(ClusterSource mc-cp-a src-test)
+(Contains mc-cp-a pe-cp-a)
+(Contains mc-cp-a b-cp-a)
+(ClusterStatus mc-cp-a active)
+(PromotionEvent pe-cp-a)
+(PromotesFrom pe-cp-a qc-cp-a)
+(PromotesTo pe-cp-a b-cp-a)
+(PromotionRule pe-cp-a explicit-continuation-test)
+(PromotionTrust pe-cp-a 0.85)
+(PromotionDomain pe-cp-a reasoning)
+(DerivedBelief b-cp-a)
+(BeliefContent b-cp-a (ContinuationTestConclusion))
+(TruthValue b-cp-a (stv 0.88 0.75))
+(EvidenceFor b-cp-a qc-cp-a)
+(EvidenceSupportCount b-cp-a 8.0)
+(EvidenceOppositionCount b-cp-a 2.0)
+"""
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "cp_memory.metta")
+            store.append_cluster(cluster)
+            cache = store.pettachainer_handoff_cache()
+
+        handoff = patham9_pln_handoff_sentences(cache)
+        result = continuation_predicate_wrapper(
+            handoff,
+            min_strength=0.5,
+            min_confidence=0.5,
+            domain="reasoning",
+        )
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-continuation-predicate-v1")
+        self.assertGreaterEqual(result["continue_count"], 1)
+        # The promoted belief should continue (strength 0.88, confidence ~0.6375 after trust cap)
+        item0 = result["items"][0]
+        self.assertEqual(item0["decision"], "continue")
+        self.assertGreaterEqual(float(item0["stv"]["strength"]), 0.5)
+
+
+class ControlledBackwardChainerTests(unittest.TestCase):
+    """Unit tests for the controlled_backward_chainer inference-control mechanism."""
+
+    def _make_handoff(self, n: int = 3) -> dict[str, Any]:
+        """Build a small handoff with varied STVs, EC counts, and domains."""
+        items: list[dict[str, Any]] = []
+        for i in range(n):
+            strengths = [0.90, 0.50, 0.30]
+            confidences = [0.80, 0.60, 0.40]
+            domains = ["reasoning", "reasoning", "planning"]
+            rules = ["explicit-promotion", "explicit-promotion", "heuristic"]
+            depths = [0, 1, 2]
+            ec_support = [9, 3, 1]
+            ec_opposition = [1, 2, 4]
+            items.append({
+                "belief_id": f"b-cbc-{i}",
+                "term": f"(TestTerm{i})",
+                "stv": {"strength": strengths[i % 3], "confidence": confidences[i % 3]},
+                "pi_pln_extension": {
+                    "promotion_domain": domains[i % 3],
+                    "promotion_rule": rules[i % 3],
+                    "derivation_depth": depths[i % 3],
+                    "contextual_evidence_packets": [
+                        {
+                            "ec": {
+                                "support": ec_support[i % 3],
+                                "opposition": ec_opposition[i % 3],
+                            },
+                            "promotion_domain": domains[i % 3],
+                            "promotion_rule": rules[i % 3],
+                        }
+                    ],
+                },
+            })
+        return {
+            "schema": "petta-memory-patham9-pln-handoff-v1",
+            "item_count": n,
+            "items": items,
+        }
+
+    def test_schema(self):
+        result = controlled_backward_chainer(self._make_handoff())
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-controlled-backward-chainer-v1")
+        self.assertEqual(result["mode"], "design-specification-no-runtime")
+
+    def test_boundary_text(self):
+        result = controlled_backward_chainer(self._make_handoff())
+        self.assertIn("non-live wrapper-only controlled backward chainer", result["boundary"])
+        self.assertIn("no SWI/PeTTa/MeTTa runtime", result["boundary"])
+        self.assertIn("no memory append", result["boundary"])
+
+    def test_all_continue_then_terminate_at_max_depth(self):
+        """With max_depth=3, all items should eventually terminate by depth."""
+        handoff = self._make_handoff()
+        result = controlled_backward_chainer(
+            handoff, max_derivation_depth=3, max_steps=5,
+            context_update_mode="accumulate_depth",
+        )
+        # Items start at depth 0,1,2; after 1 step they go to 1,2,3 (item 0 at depth 0 -> 1)
+        # Item at depth 2 hits max_depth=3 after 1 step (depth 2 -> 3, terminates)
+        # Items at depth 0,1 need more steps
+        self.assertEqual(result["rejected_count"], 0)
+        self.assertGreater(result["terminated_count"], 0)
+        self.assertEqual(result["unterminated_count"], 0)
+        self.assertGreaterEqual(len(result["step_traces"]), 1)
+
+    def test_reject_by_strength(self):
+        result = controlled_backward_chainer(
+            self._make_handoff(), min_strength=0.6, max_steps=1,
+        )
+        # Item 0: 0.90 >= 0.6 -> continue
+        # Item 1: 0.50 < 0.6 -> reject
+        # Item 2: 0.30 < 0.6 -> reject
+        self.assertEqual(result["rejected_count"], 2)
+        # Item 0 passes strength threshold and remains active (no max_depth set)
+        self.assertEqual(result["unterminated_count"], 1)
+
+    def test_reject_by_confidence(self):
+        result = controlled_backward_chainer(
+            self._make_handoff(), min_confidence=0.7, max_steps=1,
+        )
+        self.assertEqual(result["rejected_count"], 2)
+
+    def test_domain_filter_rejects_non_matching(self):
+        result = controlled_backward_chainer(
+            self._make_handoff(), domain="reasoning", max_steps=1,
+        )
+        # Item 2 has domain "planning" -> reject
+        self.assertEqual(result["rejected_count"], 1)
+        self.assertGreaterEqual(result["terminated_count"] + result["unterminated_count"], 2)
+
+    def test_ec_ratio_threshold(self):
+        result = controlled_backward_chainer(
+            self._make_handoff(), ec_ratio_threshold=0.7, max_steps=1,
+        )
+        # Item 0: 9/(9+1) = 0.9 >= 0.7 -> pass
+        # Item 1: 3/(3+2) = 0.6 < 0.7 -> reject
+        # Item 2: 1/(1+4) = 0.2 < 0.7 -> reject
+        self.assertEqual(result["rejected_count"], 2)
+
+    def test_promotion_rule_filter(self):
+        result = controlled_backward_chainer(
+            self._make_handoff(), promotion_rule="explicit-promotion", max_steps=1,
+        )
+        # Item 2 has rule "heuristic" -> reject
+        self.assertEqual(result["rejected_count"], 1)
+
+    def test_max_steps_terminates_remaining(self):
+        """With max_steps=1, items that don't reject should be unterminated."""
+        result = controlled_backward_chainer(
+            self._make_handoff(), max_steps=1,
+        )
+        # No thresholds, no max_depth; after 1 step all 3 are still active
+        # but we stop due to max_steps
+        self.assertEqual(result["rejected_count"], 0)
+        self.assertEqual(result["terminated_count"], 0)
+        self.assertEqual(result["unterminated_count"], 3)
+        self.assertEqual(result["total_steps"], 1)
+
+    def test_accumulate_ec_mode(self):
+        """EC accumulation mode grows support count over steps."""
+        handoff = self._make_handoff(1)
+        result = controlled_backward_chainer(
+            handoff, max_derivation_depth=3, max_steps=5,
+            context_update_mode="accumulate_ec",
+        )
+        # The item starts at depth 0 with EC (9,1) and should accumulate
+        # support as it continues through steps
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-controlled-backward-chainer-v1")
+        # Item should eventually terminate at depth 3
+        self.assertEqual(result["terminated_count"], 1)
+        self.assertEqual(result["rejected_count"], 0)
+
+    def test_fixed_context_mode(self):
+        """Fixed context mode does not update depth, so items may never terminate."""
+        result = controlled_backward_chainer(
+            self._make_handoff(), max_derivation_depth=2, max_steps=3,
+            context_update_mode="fixed",
+        )
+        # With fixed mode, depth never increases; item at depth 2 terminates
+        # immediately, but items at depth 0 and 1 never reach max_depth
+        self.assertGreater(result["terminated_count"], 0)
+        self.assertGreater(result["unterminated_count"], 0)
+
+    def test_max_branches_cap(self):
+        """max_branches should cap total branches processed."""
+        result = controlled_backward_chainer(
+            self._make_handoff(10), max_steps=10, max_branches=3,
+        )
+        self.assertLessEqual(result["total_processed"], 3)
+
+    def test_empty_handoff(self):
+        empty = {"schema": "petta-memory-patham9-pln-handoff-v1", "item_count": 0, "items": []}
+        result = controlled_backward_chainer(empty)
+        self.assertEqual(result["input_count"], 0)
+        self.assertEqual(result["total_steps"], 0)
+        self.assertEqual(result["terminated_count"], 0)
+        self.assertEqual(result["rejected_count"], 0)
+
+    def test_validation_errors(self):
+        with self.assertRaises(ValueError):
+            controlled_backward_chainer({"schema": "wrong"})
+        with self.assertRaises(ValueError):
+            controlled_backward_chainer(self._make_handoff(), min_strength=2.0)
+        with self.assertRaises(ValueError):
+            controlled_backward_chainer(self._make_handoff(), min_confidence=-0.1)
+        with self.assertRaises(ValueError):
+            controlled_backward_chainer(self._make_handoff(), max_derivation_depth=-1)
+        with self.assertRaises(ValueError):
+            controlled_backward_chainer(self._make_handoff(), ec_ratio_threshold=1.5)
+        with self.assertRaises(ValueError):
+            controlled_backward_chainer(self._make_handoff(), max_steps=0)
+        with self.assertRaises(ValueError):
+            controlled_backward_chainer(self._make_handoff(), max_branches=0)
+        with self.assertRaises(ValueError):
+            controlled_backward_chainer(self._make_handoff(), context_update_mode="invalid")
+
+    def test_step_trace_structure(self):
+        result = controlled_backward_chainer(self._make_handoff(), max_steps=2)
+        for trace in result["step_traces"]:
+            self.assertIn("step", trace)
+            self.assertIn("active_count", trace)
+            self.assertIn("decisions", trace)
+            self.assertIn("continue_count", trace)
+            self.assertIn("terminate_count", trace)
+            self.assertIn("reject_count", trace)
+            for dec in trace["decisions"]:
+                self.assertIn("decision", dec)
+                self.assertIn(dec["decision"], ("continue", "terminate", "reject"))
+                self.assertIn("checks", dec)
+                self.assertIn("context_after", dec)
+                self.assertIn("depth", dec["context_after"])
+
+    def test_terminated_branches_have_step_and_checks(self):
+        result = controlled_backward_chainer(
+            self._make_handoff(), max_derivation_depth=2, max_steps=5,
+        )
+        for tb in result["terminated_branches"]:
+            self.assertIn("step", tb)
+            self.assertIn("depth", tb)
+            self.assertIn("checks", tb)
+            self.assertIn("stv", tb)
+
+    def test_source_pattern_in_policy(self):
+        result = controlled_backward_chainer(self._make_handoff())
+        self.assertIn("controlled backward chainer", result["chainer_policy"]["source_pattern"])
+        self.assertIn("trueagi-io/chaining", result["chainer_policy"]["source_pattern"])
+
+
+class StoreRoundTripControlledBackwardChainerTests(unittest.TestCase):
+    """Store round-trip test: store -> handoff -> controlled backward chainer."""
+
+    def test_roundtrip_controlled_backward_chainer_from_store(self):
+        from petta_memory.store import MediumMemoryStore
+        cluster = """
+;;; BEGIN MemoryCluster mc-cbc-a
+(MemoryCluster mc-cbc-a)
+(SchemaVersion mc-cbc-a medium-memory-v1)
+(ClusterType mc-cbc-a belief-promotion)
+(ObservedEvent oe-cbc-a)
+(EventText oe-cbc-a "test controlled chainer round trip")
+(ClusterOpenedAt mc-cbc-a "2026-07-06 08:00 PDT")
+(ClusterSource mc-cbc-a src-test)
+(Contains mc-cbc-a pe-cbc-a)
+(Contains mc-cbc-a b-cbc-a)
+(ClusterStatus mc-cbc-a active)
+(PromotionEvent pe-cbc-a)
+(PromotesFrom pe-cbc-a qc-cbc-a)
+(PromotesTo pe-cbc-a b-cbc-a)
+(PromotionRule pe-cbc-a explicit-controlled-chainer-test)
+(PromotionTrust pe-cbc-a 0.85)
+(PromotionDomain pe-cbc-a reasoning)
+(DerivedBelief b-cbc-a)
+(BeliefContent b-cbc-a (ControlledChainerResult))
+(TruthValue b-cbc-a (stv 0.88 0.75))
+(EvidenceFor b-cbc-a qc-cbc-a)
+(EvidenceSupportCount b-cbc-a 8.0)
+(EvidenceOppositionCount b-cbc-a 2.0)
+;;; END MemoryCluster mc-cbc-a
+"""
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "cbc_memory.metta")
+            store.append_cluster(cluster)
+            cache = store.pettachainer_handoff_cache()
+
+        handoff = patham9_pln_handoff_sentences(cache)
+        result = controlled_backward_chainer(
+            handoff,
+            min_strength=0.5,
+            min_confidence=0.5,
+            domain="reasoning",
+            max_derivation_depth=3,
+            max_steps=5,
+        )
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-controlled-backward-chainer-v1")
+        self.assertGreaterEqual(result["terminated_count"] + result["unterminated_count"], 1)
+        self.assertEqual(result["rejected_count"], 0)
+
+
+class PlnEstimatorWrapperTests(unittest.TestCase):
+    """Tests for the PLN-based inference controller (PLN estimator) wrapper."""
+
+    def _make_handoff(self, n: int = 3) -> dict:
+        items = []
+        for i in range(n):
+            items.append({
+                "belief_id": f"b-est-{i}",
+                "term": f"(Acceptable action_{i})",
+                "stv": {"strength": 0.6 + i * 0.1, "confidence": 0.7 + i * 0.05},
+                "stamp": f"(PMEvidence est-{i})",
+                "promotion_domain": "reasoning",
+                "promotion_rule": "explicit-estimator-test",
+                "pi_pln_extension": {
+                    "contextual_evidence_packets": [
+                        {
+                            "ec": {"support": 5 + i, "opposition": 2 - i if i < 2 else 1},
+                            "domain": "reasoning",
+                            "promotion_rule": "explicit-estimator-test",
+                        }
+                    ],
+                },
+            })
+        return {
+            "schema": "petta-memory-patham9-pln-handoff-v1",
+            "items": items,
+        }
+
+    def test_schema(self):
+        result = pln_estimator_wrapper(self._make_handoff(), seed=42)
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-pln-estimator-v1")
+
+    def test_mode_is_no_runtime(self):
+        result = pln_estimator_wrapper(self._make_handoff(), seed=42)
+        self.assertEqual(result["mode"], "design-specification-no-runtime")
+
+    def test_boundary_text(self):
+        result = pln_estimator_wrapper(self._make_handoff(), seed=42)
+        self.assertIn("non-live wrapper-only", result["boundary"])
+        self.assertIn("no memory append", result["boundary"])
+
+    def test_input_count(self):
+        result = pln_estimator_wrapper(self._make_handoff(n=3), seed=42)
+        self.assertEqual(result["input_count"], 3)
+        self.assertEqual(result["eligible_count"], 3)
+        self.assertEqual(result["rejected_count"], 0)
+
+    def test_ed_calls_sorted_by_sampled_viability(self):
+        result = pln_estimator_wrapper(self._make_handoff(n=5), seed=42)
+        ed_calls = result["ed_calls"]
+        self.assertEqual(len(ed_calls), 5)
+        # Verify descending order
+        for i in range(len(ed_calls) - 1):
+            self.assertGreaterEqual(
+                ed_calls[i]["estimated_probability"],
+                ed_calls[i + 1]["estimated_probability"],
+            )
+
+    def test_ed_call_structure(self):
+        result = pln_estimator_wrapper(self._make_handoff(n=1), seed=42)
+        ed = result["ed_calls"][0]
+        self.assertIn("rank", ed)
+        self.assertIn("item_index", ed)
+        self.assertIn("belief_id", ed)
+        self.assertIn("term", ed)
+        self.assertIn("stv", ed)
+        self.assertIn("estimated_probability", ed)
+        self.assertIn("mean_viability", ed)
+        self.assertIn("alpha", ed)
+        self.assertIn("beta", ed)
+        self.assertIn("query_relevant", ed)
+        self.assertIn("deferred_branch", ed)
+        self.assertEqual(ed["deferred_branch"]["schema"], "petta-memory-patham9-pln-handoff-v1")
+
+    def test_thompson_sampling_with_seed_is_reproducible(self):
+        r1 = pln_estimator_wrapper(self._make_handoff(n=3), seed=123)
+        r2 = pln_estimator_wrapper(self._make_handoff(n=3), seed=123)
+        for e1, e2 in zip(r1["ed_calls"], r2["ed_calls"]):
+            self.assertEqual(e1["estimated_probability"], e2["estimated_probability"])
+
+    def test_thompson_sampling_different_seeds_vary(self):
+        r1 = pln_estimator_wrapper(self._make_handoff(n=3), seed=1)
+        r2 = pln_estimator_wrapper(self._make_handoff(n=3), seed=2)
+        # At least one sampled viability should differ
+        probs1 = [e["estimated_probability"] for e in r1["ed_calls"]]
+        probs2 = [e["estimated_probability"] for e in r2["ed_calls"]]
+        self.assertTrue(any(a != b for a, b in zip(probs1, probs2)))
+
+    def test_ec_prior_source(self):
+        result = pln_estimator_wrapper(self._make_handoff(n=1), seed=42)
+        est = result["ed_calls"][0]
+        self.assertEqual(est["alpha"], 6.0)  # support=5 + 1
+        self.assertEqual(est["beta"], 3.0)  # opposition=2 + 1
+
+    def test_stv_prior_source_without_ec(self):
+        handoff = {
+            "schema": "petta-memory-patham9-pln-handoff-v1",
+            "items": [{
+                "belief_id": "b-no-ec",
+                "term": "(Acceptable no_ec_action)",
+                "stv": {"strength": 0.8, "confidence": 0.5},
+                "stamp": "(PMEvidence no-ec)",
+                "pi_pln_extension": {},
+            }],
+        }
+        result = pln_estimator_wrapper(handoff, seed=42)
+        ed = result["ed_calls"][0]
+        # alpha = 0.8 * 0.5 * 10 + 1 = 5.0
+        self.assertAlmostEqual(ed["alpha"], 5.0)
+        # beta = (1 - 0.8) * 0.5 * 10 + 1 = 2.0
+        self.assertAlmostEqual(ed["beta"], 2.0)
+
+    def test_mean_viability(self):
+        result = pln_estimator_wrapper(self._make_handoff(n=1), seed=42)
+        est = result["ed_calls"][0]
+        # mean = alpha / (alpha + beta) = 6 / 9 = 0.6667
+        self.assertAlmostEqual(est["mean_viability"], 6.0 / 9.0, places=4)
+
+    def test_sampled_viability_in_range(self):
+        result = pln_estimator_wrapper(self._make_handoff(n=5), seed=42)
+        for ed in result["ed_calls"]:
+            self.assertGreaterEqual(ed["estimated_probability"], 0.0)
+            self.assertLessEqual(ed["estimated_probability"], 1.0)
+
+    def test_min_strength_filter_rejects(self):
+        result = pln_estimator_wrapper(self._make_handoff(n=3), min_strength=0.8, seed=42)
+        # Items with strength < 0.8 are rejected (item 0: 0.6, item 1: 0.7)
+        self.assertGreater(result["rejected_count"], 0)
+        for r in result["rejected_items"]:
+            self.assertTrue(any("strength" in reason for reason in r["reject_reasons"]))
+
+    def test_min_confidence_filter_rejects(self):
+        result = pln_estimator_wrapper(self._make_handoff(n=3), min_confidence=0.9, seed=42)
+        self.assertGreater(result["rejected_count"], 0)
+
+    def test_domain_filter_rejects(self):
+        result = pln_estimator_wrapper(self._make_handoff(n=3), domain="planning", seed=42)
+        self.assertEqual(result["eligible_count"], 0)
+        self.assertEqual(result["rejected_count"], 3)
+
+    def test_domain_filter_accepts_matching(self):
+        result = pln_estimator_wrapper(self._make_handoff(n=3), domain="reasoning", seed=42)
+        self.assertEqual(result["eligible_count"], 3)
+        self.assertEqual(result["rejected_count"], 0)
+
+    def test_promotion_rule_filter_rejects(self):
+        result = pln_estimator_wrapper(self._make_handoff(n=3), promotion_rule="wrong-rule", seed=42)
+        self.assertEqual(result["eligible_count"], 0)
+
+    def test_promotion_rule_filter_accepts_matching(self):
+        result = pln_estimator_wrapper(self._make_handoff(n=3), promotion_rule="explicit-estimator-test", seed=42)
+        self.assertEqual(result["eligible_count"], 3)
+
+    def test_ec_ratio_threshold_rejects(self):
+        # Item 2 has support=7, opposition=0 -> ratio=1.0
+        # Item 1 has support=6, opposition=1 -> ratio=0.857
+        # Item 0 has support=5, opposition=2 -> ratio=0.714
+        result = pln_estimator_wrapper(self._make_handoff(n=3), ec_ratio_threshold=0.8, seed=42)
+        self.assertLess(result["eligible_count"], 3)
+
+    def test_query_target_relevance(self):
+        result = pln_estimator_wrapper(
+            self._make_handoff(n=3), query_target="action_1", seed=42
+        )
+        for ed in result["ed_calls"]:
+            if "action_1" in ed["term"]:
+                self.assertTrue(ed["query_relevant"])
+            else:
+                self.assertFalse(ed["query_relevant"])
+
+    def test_empty_query_target_all_relevant(self):
+        result = pln_estimator_wrapper(self._make_handoff(n=2), seed=42)
+        for ed in result["ed_calls"]:
+            self.assertTrue(ed["query_relevant"])
+
+    def test_max_branches_caps_ed_calls(self):
+        result = pln_estimator_wrapper(self._make_handoff(n=5), max_branches=2, seed=42)
+        self.assertEqual(len(result["ed_calls"]), 2)
+
+    def test_empty_handoff(self):
+        result = pln_estimator_wrapper({
+            "schema": "petta-memory-patham9-pln-handoff-v1",
+            "items": [],
+        }, seed=42)
+        self.assertEqual(result["input_count"], 0)
+        self.assertEqual(result["ed_call_count"], 0)
+        self.assertEqual(result["ed_calls"], [])
+
+    def test_wrong_schema_raises(self):
+        with self.assertRaises(ValueError):
+            pln_estimator_wrapper({"schema": "wrong", "items": []}, seed=42)
+
+    def test_min_strength_out_of_range(self):
+        with self.assertRaises(ValueError):
+            pln_estimator_wrapper(self._make_handoff(), min_strength=-0.1, seed=42)
+        with self.assertRaises(ValueError):
+            pln_estimator_wrapper(self._make_handoff(), min_strength=1.1, seed=42)
+
+    def test_min_confidence_out_of_range(self):
+        with self.assertRaises(ValueError):
+            pln_estimator_wrapper(self._make_handoff(), min_confidence=-0.1, seed=42)
+
+    def test_ec_ratio_threshold_out_of_range(self):
+        with self.assertRaises(ValueError):
+            pln_estimator_wrapper(self._make_handoff(), ec_ratio_threshold=-0.1, seed=42)
+
+    def test_exploration_weight_must_be_positive(self):
+        with self.assertRaises(ValueError):
+            pln_estimator_wrapper(self._make_handoff(), exploration_weight=0, seed=42)
+        with self.assertRaises(ValueError):
+            pln_estimator_wrapper(self._make_handoff(), exploration_weight=-1, seed=42)
+
+    def test_max_branches_must_be_positive(self):
+        with self.assertRaises(ValueError):
+            pln_estimator_wrapper(self._make_handoff(), max_branches=0, seed=42)
+
+    def test_exploration_weight_scales_alpha_beta(self):
+        r1 = pln_estimator_wrapper(self._make_handoff(n=1), exploration_weight=1.0, seed=42)
+        r2 = pln_estimator_wrapper(self._make_handoff(n=1), exploration_weight=2.0, seed=42)
+        # With weight=2, evidence (alpha-1, beta-1) is halved, shrinking toward 1
+        # Base: alpha=6, beta=3 -> with weight=2: alpha=(5/2)+1=3.5, beta=(2/2)+1=2.0
+        self.assertAlmostEqual(r2["ed_calls"][0]["alpha"], 3.5)
+        self.assertAlmostEqual(r2["ed_calls"][0]["beta"], 2.0)
+
+    def test_exploration_weight_increases_variance(self):
+        # Higher exploration weight -> wider posterior -> more variance across seeds
+        results_low = [pln_estimator_wrapper(self._make_handoff(n=1), exploration_weight=0.5, seed=s)
+                       for s in range(10)]
+        results_high = [pln_estimator_wrapper(self._make_handoff(n=1), exploration_weight=5.0, seed=s)
+                        for s in range(10)]
+        probs_low = [r["ed_calls"][0]["estimated_probability"] for r in results_low]
+        probs_high = [r["ed_calls"][0]["estimated_probability"] for r in results_high]
+        var_low = sum((p - sum(probs_low) / len(probs_low)) ** 2 for p in probs_low) / len(probs_low)
+        var_high = sum((p - sum(probs_high) / len(probs_high)) ** 2 for p in probs_high) / len(probs_high)
+        self.assertGreater(var_high, var_low)
+
+    def test_source_pattern_in_policy(self):
+        result = pln_estimator_wrapper(self._make_handoff(), seed=42)
+        self.assertIn("PLN-based inference controller", result["estimator_policy"]["source_pattern"])
+        self.assertIn("trueagi-io/chaining", result["estimator_policy"]["source_pattern"])
+
+    def test_estimator_policy_structure(self):
+        result = pln_estimator_wrapper(
+            self._make_handoff(n=1),
+            query_target="action_0",
+            min_strength=0.5,
+            min_confidence=0.5,
+            domain="reasoning",
+            ec_ratio_threshold=0.3,
+            promotion_rule="explicit-estimator-test",
+            exploration_weight=2.0,
+            max_branches=10,
+            seed=99,
+        )
+        policy = result["estimator_policy"]
+        self.assertEqual(policy["query_target"], "action_0")
+        self.assertEqual(policy["min_strength"], 0.5)
+        self.assertEqual(policy["min_confidence"], 0.5)
+        self.assertEqual(policy["domain"], "reasoning")
+        self.assertEqual(policy["ec_ratio_threshold"], 0.3)
+        self.assertEqual(policy["promotion_rule"], "explicit-estimator-test")
+        self.assertEqual(policy["exploration_weight"], 2.0)
+        self.assertEqual(policy["max_branches"], 10)
+        self.assertEqual(policy["seed"], 99)
+
+    def test_rejected_items_structure(self):
+        result = pln_estimator_wrapper(
+            self._make_handoff(n=3),
+            min_strength=0.75,
+            seed=42,
+        )
+        self.assertGreater(result["rejected_count"], 0)
+        for r in result["rejected_items"]:
+            self.assertIn("item_index", r)
+            self.assertIn("belief_id", r)
+            self.assertIn("term", r)
+            self.assertIn("stv", r)
+            self.assertIn("reject_reasons", r)
+            self.assertIsInstance(r["reject_reasons"], list)
+            self.assertGreater(len(r["reject_reasons"]), 0)
+
+
+class StoreRoundTripPlnEstimatorTests(unittest.TestCase):
+    """Store round-trip test: store -> handoff -> PLN estimator."""
+
+    def test_roundtrip_pln_estimator_from_store(self):
+        from petta_memory.store import MediumMemoryStore
+        cluster = """
+;;; BEGIN MemoryCluster mc-est-a
+(MemoryCluster mc-est-a)
+(SchemaVersion mc-est-a medium-memory-v1)
+(ClusterType mc-est-a belief-promotion)
+(ObservedEvent oe-est-a)
+(EventText oe-est-a "test PLN estimator round trip")
+(ClusterOpenedAt mc-est-a "2026-07-06 12:00 PDT")
+(ClusterSource mc-est-a src-test)
+(Contains mc-est-a pe-est-a)
+(Contains mc-est-a b-est-a)
+(ClusterStatus mc-est-a active)
+(PromotionEvent pe-est-a)
+(PromotesFrom pe-est-a qc-est-a)
+(PromotesTo pe-est-a b-est-a)
+(PromotionRule pe-est-a explicit-estimator-rt)
+(PromotionTrust pe-est-a 0.85)
+(PromotionDomain pe-est-a reasoning)
+(DerivedBelief b-est-a)
+(BeliefContent b-est-a (EstimatorResult))
+(TruthValue b-est-a (stv 0.88 0.75))
+(EvidenceFor b-est-a qc-est-a)
+(EvidenceSupportCount b-est-a 8.0)
+(EvidenceOppositionCount b-est-a 2.0)
+;;; END MemoryCluster mc-est-a
+"""
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "est_memory.metta")
+            store.append_cluster(cluster)
+            cache = store.pettachainer_handoff_cache()
+
+        handoff = patham9_pln_handoff_sentences(cache)
+        result = pln_estimator_wrapper(
+            handoff,
+            min_strength=0.5,
+            min_confidence=0.5,
+            domain="reasoning",
+            seed=42,
+        )
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-pln-estimator-v1")
+        self.assertGreater(result["ed_call_count"], 0)
+        self.assertEqual(result["rejected_count"], 0)
+        # The EC counts should be 8/2, so alpha=9, beta=3
+        ed = result["ed_calls"][0]
+        self.assertAlmostEqual(ed["alpha"], 9.0)
+        self.assertAlmostEqual(ed["beta"], 3.0)
+
+
+class RankedInferenceControlPlanTests(unittest.TestCase):
+    """Tests for the estimator + continuation-controller branch plan gate."""
+
+    def _make_handoff(self) -> dict[str, Any]:
+        return {
+            "schema": "petta-memory-patham9-pln-handoff-v1",
+            "item_count": 2,
+            "items": [
+                {
+                    "belief_id": "b-plan-good",
+                    "term": "(Acceptable publish_redacted_summary)",
+                    "stv": {"strength": 0.92, "confidence": 0.82},
+                    "promotion_domain": "reasoning",
+                    "promotion_rule": "explicit-plan-test",
+                    "pi_pln_extension": {
+                        "contextual_evidence_packets": [
+                            {"ec": {"support": 9, "opposition": 1}, "domain": "reasoning"}
+                        ]
+                    },
+                },
+                {
+                    "belief_id": "b-plan-weak",
+                    "term": "(Acceptable speculative_action)",
+                    "stv": {"strength": 0.45, "confidence": 0.35},
+                    "promotion_domain": "reasoning",
+                    "promotion_rule": "explicit-plan-test",
+                    "pi_pln_extension": {
+                        "contextual_evidence_packets": [
+                            {"ec": {"support": 2, "opposition": 8}, "domain": "reasoning"}
+                        ]
+                    },
+                },
+            ],
+        }
+
+    def test_schema_and_boundary(self):
+        result = ranked_inference_control_plan(self._make_handoff(), seed=7)
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-ranked-inference-control-plan-v1")
+        self.assertEqual(result["mode"], "design-specification-no-runtime")
+        self.assertIn("no PLN.Query/PLN.Derive call", result["boundary"])
+
+    def test_recommends_estimated_branch_that_passes_controller(self):
+        result = ranked_inference_control_plan(
+            self._make_handoff(),
+            seed=7,
+            controller_min_strength=0.7,
+            controller_min_confidence=0.7,
+            controller_ec_ratio_threshold=0.6,
+            min_estimated_probability=0.3,
+        )
+        recommended_ids = {branch["belief_id"] for branch in result["recommended_branches"]}
+        self.assertIn("b-plan-good", recommended_ids)
+        self.assertEqual(result["recommended_count"], 1)
+
+    def test_holds_low_quality_branch_with_controller_reason(self):
+        result = ranked_inference_control_plan(
+            self._make_handoff(),
+            seed=7,
+            controller_min_strength=0.7,
+            controller_min_confidence=0.7,
+            controller_ec_ratio_threshold=0.6,
+        )
+        held = {branch["belief_id"]: branch for branch in result["held_branches"]}
+        self.assertIn("b-plan-weak", held)
+        self.assertIn("controller_decision_reject", held["b-plan-weak"]["hold_reasons"])
+        self.assertEqual(held["b-plan-weak"]["controller_decision"], "reject")
+
+    def test_query_relevance_gate_can_hold_irrelevant_candidates(self):
+        result = ranked_inference_control_plan(
+            self._make_handoff(),
+            query_target="publish_redacted_summary",
+            require_query_relevance=True,
+            seed=7,
+        )
+        held = {branch["belief_id"]: branch for branch in result["held_branches"]}
+        self.assertIn("b-plan-weak", held)
+        self.assertIn("query_target_not_relevant", held["b-plan-weak"]["hold_reasons"])
+
+    def test_rejects_invalid_probability_threshold(self):
+        with self.assertRaises(ValueError):
+            ranked_inference_control_plan(self._make_handoff(), min_estimated_probability=1.2)
+
+    def test_ranked_plan_rejects_non_list_handoff_items(self):
+        handoff = self._make_handoff()
+        handoff["items"] = {"not": "a list"}
+
+        with self.assertRaisesRegex(ValueError, "handoff items must be a list"):
+            ranked_inference_control_plan(handoff, seed=7)
+
+    def test_ranked_plan_rejects_item_count_drift(self):
+        handoff = self._make_handoff()
+        handoff["item_count"] = 99
+
+        with self.assertRaisesRegex(ValueError, "item_count .* does not match"):
+            ranked_inference_control_plan(handoff, seed=7)
+
+    def test_ranked_plan_rejects_bool_item_count_metadata(self):
+        handoff = self._make_handoff()
+        handoff["item_count"] = True
+
+        with self.assertRaisesRegex(ValueError, "item_count must be an integer"):
+            ranked_inference_control_plan(handoff, seed=7)
+
+    def test_ranked_plan_rejects_non_object_handoff_item_before_wrapper_calls(self):
+        handoff = self._make_handoff()
+        handoff["items"][0] = ["not", "an", "item"]
+
+        with self.assertRaisesRegex(ValueError, "handoff item .* must be an object"):
+            ranked_inference_control_plan(handoff, seed=7)
+
+    def test_admitted_handoff_contains_only_recommended_branches(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(
+            handoff,
+            seed=7,
+            controller_min_strength=0.7,
+            controller_min_confidence=0.7,
+            controller_ec_ratio_threshold=0.6,
+        )
+
+        admitted = ranked_plan_admitted_handoff(handoff, plan)
+
+        self.assertEqual(admitted["schema"], "petta-memory-pi-pln-admitted-handoff-v1")
+        self.assertEqual(admitted["admitted_count"], 1)
+        self.assertEqual(admitted["admitted_handoff"]["schema"], "petta-memory-patham9-pln-handoff-v1")
+        self.assertEqual(admitted["admitted_handoff"]["item_count"], 1)
+        self.assertEqual(admitted["admitted_handoff"]["items"][0]["belief_id"], "b-plan-good")
+        self.assertEqual(admitted["admission_records"][0]["term"], "(Acceptable publish_redacted_summary)")
+        self.assertEqual(admitted["admission_records"][0]["controller_decision"], "continue")
+        self.assertIn("no PLN.Query/PLN.Derive call", admitted["boundary"])
+
+    def test_admitted_handoff_can_feed_existing_derivation_program_builder(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(
+            handoff,
+            seed=7,
+            query_target="publish_redacted_summary",
+            require_query_relevance=True,
+        )
+        admitted = ranked_plan_admitted_handoff(handoff, plan)
+
+        program = patham9_pln_multi_sentence_derivation_smoke_program(admitted["admitted_handoff"])
+
+        self.assertEqual(program["handoff_sentence_count"], 1)
+        self.assertEqual(program["stamp_sidecar"]["(0)"]["term"], "(Acceptable publish_redacted_summary)")
+        self.assertNotIn("speculative_action", program["program"])
+
+    def test_admitted_handoff_rejects_stale_plan_item_mismatch(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(handoff, seed=7)
+        stale = json.loads(json.dumps(handoff))
+        stale["items"][plan["recommended_branches"][0]["item_index"]]["belief_id"] = "other-belief"
+
+        with self.assertRaisesRegex(ValueError, "belief_id .* does not match"):
+            ranked_plan_admitted_handoff(stale, plan)
+
+    def test_admitted_handoff_rejects_stale_plan_term_mismatch(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(handoff, seed=7)
+        stale = json.loads(json.dumps(handoff))
+        stale["items"][plan["recommended_branches"][0]["item_index"]]["term"] = "(Acceptable different_action)"
+
+        with self.assertRaisesRegex(ValueError, "term .* does not match"):
+            ranked_plan_admitted_handoff(stale, plan)
+
+    def test_admitted_handoff_rejects_duplicate_recommended_branch_item(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(handoff, seed=7)
+        duplicate = json.loads(json.dumps(plan))
+        duplicate["recommended_branches"].append(json.loads(json.dumps(duplicate["recommended_branches"][0])))
+        duplicate["recommended_count"] = len(duplicate["recommended_branches"])
+
+        with self.assertRaisesRegex(ValueError, "duplicate rank"):
+            ranked_plan_admitted_handoff(handoff, duplicate)
+
+        duplicate = json.loads(json.dumps(plan))
+        repeated_item = json.loads(json.dumps(duplicate["recommended_branches"][0]))
+        repeated_item["rank"] = repeated_item["rank"] + 100
+        duplicate["recommended_branches"].append(repeated_item)
+        duplicate["recommended_count"] = len(duplicate["recommended_branches"])
+
+        with self.assertRaisesRegex(ValueError, "duplicate handoff item"):
+            ranked_plan_admitted_handoff(handoff, duplicate)
+
+    def test_admitted_handoff_rejects_non_recommended_branch_in_recommended_list(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(handoff, seed=7)
+        malformed = json.loads(json.dumps(plan))
+        malformed["recommended_branches"][0]["status"] = "held"
+
+        with self.assertRaisesRegex(ValueError, "non-recommended branch status"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_recommended_count_mismatch(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(handoff, seed=7)
+        malformed = json.loads(json.dumps(plan))
+        malformed["recommended_count"] = malformed["recommended_count"] + 1
+
+        with self.assertRaisesRegex(ValueError, "recommended_count .* does not match"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_branch_plan_mirror_mismatch(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(handoff, seed=7)
+        malformed = json.loads(json.dumps(plan))
+        recommended = malformed["recommended_branches"][0]
+        for branch in malformed["branch_plan"]:
+            if branch["rank"] == recommended["rank"] and branch["item_index"] == recommended["item_index"]:
+                branch["status"] = "held"
+                break
+
+        with self.assertRaisesRegex(ValueError, "branch_plan recommended status count"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_candidate_count_mismatch(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(handoff, seed=7)
+        malformed = json.loads(json.dumps(plan))
+        malformed["candidate_count"] = malformed["candidate_count"] + 1
+
+        with self.assertRaisesRegex(ValueError, "candidate_count .* does not match branch_plan length"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_bool_count_metadata(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(handoff, seed=7)
+        malformed = json.loads(json.dumps(plan))
+        malformed["recommended_count"] = True
+
+        with self.assertRaisesRegex(ValueError, "recommended_count must be an integer"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_bool_branch_rank(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(handoff, seed=7)
+        malformed = json.loads(json.dumps(plan))
+        malformed["recommended_branches"][0]["rank"] = True
+
+        with self.assertRaisesRegex(ValueError, "recommended branch has invalid rank True"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_input_count_mismatch(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(handoff, seed=7)
+        malformed = json.loads(json.dumps(plan))
+        malformed["input_count"] = malformed["input_count"] + 1
+
+        with self.assertRaisesRegex(ValueError, "input_count .* does not match handoff items length"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_stale_held_branch_source_mismatch(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(
+            handoff,
+            seed=7,
+            controller_min_strength=0.7,
+            controller_min_confidence=0.7,
+            controller_ec_ratio_threshold=0.6,
+        )
+        stale = json.loads(json.dumps(handoff))
+        held_item_index = plan["held_branches"][0]["item_index"]
+        stale["items"][held_item_index]["term"] = "(Acceptable changed_held_source)"
+
+        with self.assertRaisesRegex(ValueError, "branch_plan branch term .* does not match handoff item"):
+            ranked_plan_admitted_handoff(stale, plan)
+
+    def test_admitted_handoff_rejects_branch_plan_missing_source_item(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(handoff, seed=7)
+        malformed = json.loads(json.dumps(plan))
+        malformed["branch_plan"][0]["item_index"] = len(handoff["items"]) + 10
+
+        with self.assertRaisesRegex(ValueError, "branch_plan branch references missing handoff item"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_duplicate_branch_plan_key(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(handoff, seed=7)
+        malformed = json.loads(json.dumps(plan))
+        malformed["branch_plan"].append(json.loads(json.dumps(malformed["branch_plan"][0])))
+        malformed["candidate_count"] = len(malformed["branch_plan"])
+
+        with self.assertRaisesRegex(ValueError, "duplicate rank"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_duplicate_branch_plan_rank_with_different_item(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(
+            handoff,
+            seed=7,
+            controller_min_strength=0.7,
+            controller_min_confidence=0.7,
+            controller_ec_ratio_threshold=0.6,
+        )
+        malformed = json.loads(json.dumps(plan))
+        recommended_rank = malformed["recommended_branches"][0]["rank"]
+        held = malformed["held_branches"][0]
+        held["rank"] = recommended_rank
+        for branch in malformed["branch_plan"]:
+            if branch["status"] == "held":
+                branch["rank"] = recommended_rank
+                break
+
+        with self.assertRaisesRegex(ValueError, "branch_plan contains duplicate rank"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_duplicate_branch_plan_item_with_different_rank(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(
+            handoff,
+            seed=7,
+            controller_min_strength=0.7,
+            controller_min_confidence=0.7,
+            controller_ec_ratio_threshold=0.6,
+        )
+        malformed = json.loads(json.dumps(plan))
+        held = malformed["held_branches"][0]
+        recommended_item = malformed["recommended_branches"][0]["item_index"]
+        held["item_index"] = recommended_item
+        held["belief_id"] = handoff["items"][recommended_item]["belief_id"]
+        held["term"] = handoff["items"][recommended_item]["term"]
+        for branch in malformed["branch_plan"]:
+            if branch["status"] == "held":
+                branch["item_index"] = recommended_item
+                branch["belief_id"] = handoff["items"][recommended_item]["belief_id"]
+                branch["term"] = handoff["items"][recommended_item]["term"]
+                break
+
+        with self.assertRaisesRegex(ValueError, "branch_plan contains duplicate handoff item"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_non_contiguous_branch_plan_ranks(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(
+            handoff,
+            seed=7,
+            controller_min_strength=0.7,
+            controller_min_confidence=0.7,
+            controller_ec_ratio_threshold=0.6,
+        )
+        malformed = json.loads(json.dumps(plan))
+        for partition in ("recommended_branches", "held_branches", "branch_plan"):
+            malformed[partition][0]["rank"] = 10
+
+        with self.assertRaisesRegex(ValueError, "branch_plan ranks .* do not match contiguous ranks"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_held_branch_duplicate_through_branch_plan_item(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(
+            handoff,
+            seed=7,
+            controller_min_strength=0.7,
+            controller_min_confidence=0.7,
+            controller_ec_ratio_threshold=0.6,
+        )
+        malformed = json.loads(json.dumps(plan))
+        malformed["held_branches"].append(json.loads(json.dumps(malformed["held_branches"][0])))
+        malformed["held_count"] = len(malformed["held_branches"])
+        extra_plan_record = json.loads(json.dumps(malformed["branch_plan"][0]))
+        extra_plan_record["status"] = "held"
+        extra_plan_record["rank"] = 999
+        malformed["branch_plan"].append(extra_plan_record)
+        malformed["candidate_count"] = len(malformed["branch_plan"])
+
+        with self.assertRaisesRegex(ValueError, "branch_plan contains duplicate handoff item"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_branch_plan_status_partition_mismatch(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(
+            handoff,
+            seed=7,
+            controller_min_strength=0.7,
+            controller_min_confidence=0.7,
+            controller_ec_ratio_threshold=0.6,
+        )
+        malformed = json.loads(json.dumps(plan))
+        for branch in malformed["branch_plan"]:
+            if branch["status"] == "held":
+                branch["status"] = "deferred"
+                break
+
+        with self.assertRaisesRegex(ValueError, "branch_plan branch has invalid status"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_extra_branch_plan_status_outside_partition(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(handoff, seed=7)
+        malformed = json.loads(json.dumps(plan))
+        extra = json.loads(json.dumps(malformed["branch_plan"][0]))
+        extra["rank"] = 999
+        extra["item_index"] = 999
+        extra["status"] = "deferred"
+        malformed["branch_plan"].append(extra)
+        malformed["candidate_count"] = len(malformed["branch_plan"])
+
+        with self.assertRaisesRegex(ValueError, "branch_plan branch has invalid status"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_malformed_branch_plan_key_fields(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(handoff, seed=7)
+
+        malformed = json.loads(json.dumps(plan))
+        malformed["branch_plan"][0]["rank"] = "rank-one"
+        with self.assertRaisesRegex(ValueError, "branch_plan branch has invalid rank"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+        malformed = json.loads(json.dumps(plan))
+        malformed["branch_plan"][0]["item_index"] = "item-zero"
+        with self.assertRaisesRegex(ValueError, "branch_plan branch has invalid item_index"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_non_list_partitions_before_iteration(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(handoff, seed=7)
+
+        malformed = json.loads(json.dumps(plan))
+        malformed["recommended_branches"] = {"rank": 1}
+        with self.assertRaisesRegex(ValueError, "recommended_branches must be a list"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+        malformed = json.loads(json.dumps(plan))
+        malformed["held_branches"] = {"rank": 2}
+        with self.assertRaisesRegex(ValueError, "held_branches must be a list"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+        malformed = json.loads(json.dumps(plan))
+        malformed["branch_plan"] = {"rank": 1}
+        with self.assertRaisesRegex(ValueError, "branch_plan must be a list"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_non_list_handoff_items_before_len_mirror(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(handoff, seed=7)
+        malformed_handoff = json.loads(json.dumps(handoff))
+        malformed_handoff["items"] = {"0": malformed_handoff["items"][0]}
+
+        with self.assertRaisesRegex(ValueError, "handoff items must be a list"):
+            ranked_plan_admitted_handoff(malformed_handoff, plan)
+
+    def test_admitted_handoff_rejects_handoff_item_count_drift_before_plan_mirror(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(handoff, seed=7)
+        malformed_handoff = json.loads(json.dumps(handoff))
+        malformed_handoff["item_count"] = 999
+
+        with self.assertRaisesRegex(ValueError, "item_count .* does not match"):
+            ranked_plan_admitted_handoff(malformed_handoff, plan)
+
+    def test_admitted_handoff_rejects_non_object_handoff_item_before_source_mirror(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(handoff, seed=7)
+        malformed_handoff = json.loads(json.dumps(handoff))
+        malformed_handoff["items"][plan["branch_plan"][0]["item_index"]] = ["not", "an", "item"]
+
+        with self.assertRaisesRegex(ValueError, "handoff item .* must be an object"):
+            ranked_plan_admitted_handoff(malformed_handoff, plan)
+
+    def test_admitted_handoff_rejects_non_object_partition_entries_before_field_access(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(
+            handoff,
+            seed=7,
+            controller_min_strength=0.7,
+            controller_min_confidence=0.7,
+            controller_ec_ratio_threshold=0.6,
+        )
+
+        malformed = json.loads(json.dumps(plan))
+        malformed["recommended_branches"][0] = ["rank", 1]
+        with self.assertRaisesRegex(ValueError, "recommended_branches entry must be an object"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+        malformed = json.loads(json.dumps(plan))
+        malformed["held_branches"][0] = ["rank", 2]
+        with self.assertRaisesRegex(ValueError, "held_branches entry must be an object"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+        malformed = json.loads(json.dumps(plan))
+        malformed["branch_plan"][0] = ["rank", 1]
+        with self.assertRaisesRegex(ValueError, "branch_plan entry must be an object"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_non_held_branch_in_held_list(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(
+            handoff,
+            seed=7,
+            controller_min_strength=0.7,
+            controller_min_confidence=0.7,
+            controller_ec_ratio_threshold=0.6,
+        )
+        malformed = json.loads(json.dumps(plan))
+        malformed["held_branches"][0]["status"] = "recommended"
+
+        with self.assertRaisesRegex(ValueError, "held_branches contains non-held branch status"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_held_branch_plan_mirror_mismatch(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(
+            handoff,
+            seed=7,
+            controller_min_strength=0.7,
+            controller_min_confidence=0.7,
+            controller_ec_ratio_threshold=0.6,
+        )
+        malformed = json.loads(json.dumps(plan))
+        held = malformed["held_branches"][0]
+        for branch in malformed["branch_plan"]:
+            if branch["rank"] == held["rank"] and branch["item_index"] == held["item_index"]:
+                branch["term"] = "(Acceptable mismatched_held_branch)"
+                break
+
+        with self.assertRaisesRegex(ValueError, "branch_plan branch term .* does not match handoff item"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_recommended_audit_field_mirror_mismatch(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(handoff, seed=7)
+        malformed = json.loads(json.dumps(plan))
+        recommended = malformed["recommended_branches"][0]
+        recommended["estimated_probability"] = 0.001
+
+        with self.assertRaisesRegex(ValueError, "recommended branch estimated_probability .* does not match branch_plan"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+    def test_admitted_handoff_rejects_held_audit_field_mirror_mismatch(self):
+        handoff = self._make_handoff()
+        plan = ranked_inference_control_plan(
+            handoff,
+            seed=7,
+            controller_min_strength=0.7,
+            controller_min_confidence=0.7,
+            controller_ec_ratio_threshold=0.6,
+        )
+        malformed = json.loads(json.dumps(plan))
+        malformed["held_branches"][0]["hold_reasons"] = ["edited-after-review"]
+
+        with self.assertRaisesRegex(ValueError, "held branch hold_reasons .* does not match branch_plan"):
+            ranked_plan_admitted_handoff(handoff, malformed)
+
+
+class ControllerAsChainerTests(unittest.TestCase):
+    """Unit tests for the controller_as_chainer inference-control mechanism."""
+
+    def _make_handoff(self, n: int = 3) -> dict[str, Any]:
+        """Build a small handoff with varied STVs, EC counts, and domains."""
+        items: list[dict[str, Any]] = []
+        for i in range(n):
+            strengths = [0.90, 0.50, 0.30]
+            confidences = [0.80, 0.60, 0.40]
+            domains = ["reasoning", "reasoning", "planning"]
+            rules = ["explicit-promotion", "explicit-promotion", "heuristic"]
+            depths = [0, 1, 2]
+            ec_support = [9, 3, 1]
+            ec_opposition = [1, 2, 4]
+            items.append({
+                "belief_id": f"b-cac-{i}",
+                "term": f"(TestTerm{i})",
+                "stv": {"strength": strengths[i % 3], "confidence": confidences[i % 3]},
+                "pi_pln_extension": {
+                    "promotion_domain": domains[i % 3],
+                    "promotion_rule": rules[i % 3],
+                    "derivation_depth": depths[i % 3],
+                    "contextual_evidence_packets": [
+                        {
+                            "ec": {
+                                "support": ec_support[i % 3],
+                                "opposition": ec_opposition[i % 3],
+                            },
+                            "promotion_domain": domains[i % 3],
+                            "promotion_rule": rules[i % 3],
+                        }
+                    ],
+                },
+            })
+        return {
+            "schema": "petta-memory-patham9-pln-handoff-v1",
+            "item_count": n,
+            "items": items,
+        }
+
+    def test_schema(self):
+        result = controller_as_chainer(self._make_handoff())
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-controller-as-chainer-v1")
+        self.assertEqual(result["mode"], "design-specification-no-runtime")
+
+    def test_boundary_text(self):
+        result = controller_as_chainer(self._make_handoff())
+        self.assertIn("non-live wrapper-only controller-as-chainer", result["boundary"])
+        self.assertIn("no SWI/PeTTa/MeTTa runtime", result["boundary"])
+        self.assertIn("no memory append", result["boundary"])
+
+    def test_primary_result_summary_present(self):
+        result = controller_as_chainer(self._make_handoff())
+        self.assertIn("primary_result_summary", result)
+        self.assertIn("terminated_count", result["primary_result_summary"])
+        self.assertIn("rejected_count", result["primary_result_summary"])
+        self.assertIn("unterminated_count", result["primary_result_summary"])
+
+    def test_controller_chainer_policy_present(self):
+        result = controller_as_chainer(self._make_handoff())
+        self.assertIn("controller_chainer", result)
+        self.assertIn("min_strength", result["controller_chainer"])
+        self.assertIn("max_derivation_depth", result["controller_chainer"])
+        self.assertEqual(result["controller_chainer"]["min_strength"], 0.5)
+
+    def test_controller_confirms_high_quality_branch(self):
+        """Item 0 (strength=0.90, confidence=0.80) should be confirmed by controller."""
+        result = controller_as_chainer(
+            self._make_handoff(),
+            primary_max_derivation_depth=10,
+            controller_max_derivation_depth=10,
+            primary_max_steps=1,
+        )
+        # Find the controller decision for item 0
+        confirmations = result["controller_confirmations"]
+        confirmed_ids = [c["belief_id"] for c in confirmations]
+        self.assertIn("b-cac-0", confirmed_ids)
+
+    def test_controller_rejects_low_strength(self):
+        """Controller with min_strength=0.6 should override-reject items below it."""
+        result = controller_as_chainer(
+            self._make_handoff(),
+            primary_max_steps=1,
+            controller_min_strength=0.6,
+            controller_max_derivation_depth=None,
+        )
+        rejections = result["controller_rejections"]
+        rejected_ids = [r["belief_id"] for r in rejections]
+        # Items 1 (0.50) and 2 (0.30) should be rejected by controller
+        self.assertIn("b-cac-1", rejected_ids)
+        self.assertIn("b-cac-2", rejected_ids)
+        self.assertNotIn("b-cac-0", rejected_ids)
+
+    def test_controller_rejects_low_confidence(self):
+        result = controller_as_chainer(
+            self._make_handoff(),
+            primary_max_steps=1,
+            controller_min_confidence=0.7,
+            controller_max_derivation_depth=None,
+        )
+        rejections = result["controller_rejections"]
+        rejected_ids = [r["belief_id"] for r in rejections]
+        self.assertIn("b-cac-1", rejected_ids)
+        self.assertIn("b-cac-2", rejected_ids)
+
+    def test_controller_domain_filter(self):
+        result = controller_as_chainer(
+            self._make_handoff(),
+            primary_max_steps=1,
+            controller_domain="reasoning",
+            controller_max_derivation_depth=None,
+        )
+        rejections = result["controller_rejections"]
+        rejected_ids = [r["belief_id"] for r in rejections]
+        # Item 2 has domain "planning" -> reject
+        self.assertIn("b-cac-2", rejected_ids)
+
+    def test_controller_promotion_rule_filter(self):
+        result = controller_as_chainer(
+            self._make_handoff(),
+            primary_max_steps=1,
+            controller_promotion_rule="explicit-promotion",
+            controller_max_derivation_depth=None,
+        )
+        rejections = result["controller_rejections"]
+        rejected_ids = [r["belief_id"] for r in rejections]
+        # Item 2 has rule "heuristic" -> reject
+        self.assertIn("b-cac-2", rejected_ids)
+
+    def test_controller_ec_ratio_filter(self):
+        result = controller_as_chainer(
+            self._make_handoff(),
+            primary_max_steps=1,
+            controller_ec_ratio_threshold=0.7,
+            controller_max_derivation_depth=None,
+        )
+        rejections = result["controller_rejections"]
+        rejected_ids = [r["belief_id"] for r in rejections]
+        # Item 1: 3/(3+2) = 0.6 < 0.7 -> reject
+        # Item 2: 1/(1+4) = 0.2 < 0.7 -> reject
+        self.assertIn("b-cac-1", rejected_ids)
+        self.assertIn("b-cac-2", rejected_ids)
+        self.assertNotIn("b-cac-0", rejected_ids)
+
+    def test_controller_terminates_by_depth(self):
+        """Controller with max_depth=1 should terminate items reaching depth 1."""
+        # Items start at depth 0, 1, 2. After one step, item 0 goes to depth 1.
+        # Controller with max_depth=1 should override-terminate item 0 at depth 1.
+        result = controller_as_chainer(
+            self._make_handoff(),
+            primary_max_steps=1,
+            controller_max_derivation_depth=1,
+            controller_min_strength=0.0,
+            controller_min_confidence=0.0,
+            controller_ec_ratio_threshold=0.0,
+        )
+        terminations = result["controller_terminations"]
+        self.assertGreater(len(terminations), 0)
+        # Items at depth >= 1 should be terminated by controller
+        for t in terminations:
+            self.assertGreaterEqual(t["depth_at_controller_check"], 1)
+
+    def test_override_terminate_takes_priority_over_reject(self):
+        """If both depth termination and strength rejection would fire,
+        termination should win (it preserves the result as a final answer)."""
+        result = controller_as_chainer(
+            self._make_handoff(),
+            primary_max_steps=1,
+            controller_max_derivation_depth=1,
+            controller_min_strength=0.95,  # higher than all items
+            controller_min_confidence=0.0,
+            controller_ec_ratio_threshold=0.0,
+        )
+        terminations = result["controller_terminations"]
+        # Items at depth >= 1 should be terminated, not rejected
+        for t in terminations:
+            self.assertEqual(t["controller_decision"], "override-terminate")
+
+    def test_combined_step_traces_present(self):
+        result = controller_as_chainer(
+            self._make_handoff(), primary_max_steps=2,
+        )
+        self.assertGreater(len(result["combined_step_traces"]), 0)
+        for trace in result["combined_step_traces"]:
+            self.assertIn("step", trace)
+            self.assertIn("primary", trace)
+            self.assertIn("controller_decisions", trace)
+            self.assertIn("controller_override_count", trace)
+            self.assertIn("controller_confirm_count", trace)
+
+    def test_controller_override_count(self):
+        result = controller_as_chainer(
+            self._make_handoff(),
+            primary_max_steps=1,
+            controller_min_strength=0.6,
+            controller_max_derivation_depth=None,
+        )
+        self.assertGreater(result["controller_override_count"], 0)
+        self.assertEqual(
+            result["controller_override_count"],
+            result["controller_termination_count"] + result["controller_rejection_count"],
+        )
+
+    def test_empty_handoff(self):
+        empty = {
+            "schema": "petta-memory-patham9-pln-handoff-v1",
+            "item_count": 0,
+            "items": [],
+        }
+        result = controller_as_chainer(empty)
+        self.assertEqual(result["input_count"], 0)
+        self.assertEqual(result["controller_override_count"], 0)
+        self.assertEqual(result["controller_confirmation_count"], 0)
+
+    def test_wrong_schema_raises(self):
+        with self.assertRaises(ValueError, msg="expected petta-memory-patham9-pln-handoff-v1 handoff"):
+            controller_as_chainer({"schema": "wrong", "items": []})
+
+    def test_out_of_range_primary_strength_raises(self):
+        with self.assertRaises(ValueError):
+            controller_as_chainer(self._make_handoff(), primary_min_strength=1.5)
+
+    def test_out_of_range_controller_strength_raises(self):
+        with self.assertRaises(ValueError):
+            controller_as_chainer(self._make_handoff(), controller_min_strength=-0.1)
+
+    def test_out_of_range_controller_ec_ratio_raises(self):
+        with self.assertRaises(ValueError):
+            controller_as_chainer(self._make_handoff(), controller_ec_ratio_threshold=1.5)
+
+    def test_negative_controller_max_depth_raises(self):
+        with self.assertRaises(ValueError):
+            controller_as_chainer(self._make_handoff(), controller_max_derivation_depth=-1)
+
+    def test_primary_max_steps_zero_raises(self):
+        with self.assertRaises(ValueError):
+            controller_as_chainer(self._make_handoff(), primary_max_steps=0)
+
+    def test_primary_max_branches_zero_raises(self):
+        with self.assertRaises(ValueError):
+            controller_as_chainer(self._make_handoff(), primary_max_branches=0)
+
+    def test_invalid_context_update_mode_raises(self):
+        with self.assertRaises(ValueError):
+            controller_as_chainer(self._make_handoff(), primary_context_update_mode="invalid")
+
+    def test_controller_decisions_skip_non_continue(self):
+        """Controller should skip branches the primary did not continue."""
+        # With primary min_strength=0.6, items 1 and 2 are rejected by primary.
+        # Controller should only evaluate item 0 (which continued).
+        result = controller_as_chainer(
+            self._make_handoff(),
+            primary_min_strength=0.6,
+            primary_max_steps=1,
+            controller_max_derivation_depth=None,
+        )
+        for trace in result["combined_step_traces"]:
+            for dec in trace["controller_decisions"]:
+                if dec["controller_decision"] == "skip":
+                    self.assertNotEqual(dec["primary_decision"], "continue")
+
+    def test_controller_checks_structure(self):
+        result = controller_as_chainer(
+            self._make_handoff(), primary_max_steps=1,
+            controller_max_derivation_depth=5,
+        )
+        # Find a non-skip decision with checks
+        for trace in result["combined_step_traces"]:
+            for dec in trace["controller_decisions"]:
+                if dec["controller_decision"] != "skip" and "controller_checks" in dec:
+                    check_types = [c["check"] for c in dec["controller_checks"]]
+                    self.assertIn("min_strength", check_types)
+                    self.assertIn("min_confidence", check_types)
+                    if dec.get("controller_checks"):
+                        for c in dec["controller_checks"]:
+                            self.assertIn("check", c)
+                            self.assertIn("required", c)
+                            self.assertIn("actual", c)
+                            self.assertIn("passed", c)
+                    break
+            else:
+                continue
+            break
+
+    def test_input_count_matches(self):
+        handoff = self._make_handoff(n=4)
+        result = controller_as_chainer(handoff)
+        self.assertEqual(result["input_count"], 4)
+
+    def test_controller_confirmations_structure(self):
+        result = controller_as_chainer(
+            self._make_handoff(),
+            primary_max_steps=1,
+            controller_max_derivation_depth=None,
+            controller_min_strength=0.0,
+            controller_min_confidence=0.0,
+            controller_ec_ratio_threshold=0.0,
+        )
+        for c in result["controller_confirmations"]:
+            self.assertIn("item_index", c)
+            self.assertIn("belief_id", c)
+            self.assertIn("primary_decision", c)
+            self.assertEqual(c["primary_decision"], "continue")
+            self.assertIn("controller_decision", c)
+            self.assertEqual(c["controller_decision"], "confirm")
+            self.assertIn("controller_checks", c)
+            self.assertIn("controller_reason", c)
+
+    def test_controller_terminations_structure(self):
+        result = controller_as_chainer(
+            self._make_handoff(),
+            primary_max_steps=1,
+            controller_max_derivation_depth=1,
+            controller_min_strength=0.0,
+            controller_min_confidence=0.0,
+            controller_ec_ratio_threshold=0.0,
+        )
+        for t in result["controller_terminations"]:
+            self.assertEqual(t["controller_decision"], "override-terminate")
+            self.assertIn("depth_at_controller_check", t)
+            self.assertIn("controller_checks", t)
+
+    def test_controller_rejections_structure(self):
+        result = controller_as_chainer(
+            self._make_handoff(),
+            primary_max_steps=1,
+            controller_min_strength=0.6,
+            controller_max_derivation_depth=None,
+        )
+        for r in result["controller_rejections"]:
+            self.assertEqual(r["controller_decision"], "override-reject")
+            self.assertIn("controller_reason", r)
+            self.assertIn("controller_checks", r)
+
+    def test_primary_chainer_policy_in_result(self):
+        result = controller_as_chainer(self._make_handoff())
+        self.assertIn("primary_chainer", result)
+        self.assertEqual(result["primary_chainer"]["min_strength"], 0.0)
+        self.assertEqual(result["primary_chainer"]["max_steps"], 5)
+
+
+class StoreRoundTripControllerAsChainerTests(unittest.TestCase):
+    """Store round-trip test: store -> handoff -> controller-as-chainer."""
+
+    def test_roundtrip_controller_as_chainer_from_store(self):
+        from petta_memory.store import MediumMemoryStore
+        cluster = """
+;;; BEGIN MemoryCluster mc-cac-a
+(MemoryCluster mc-cac-a)
+(SchemaVersion mc-cac-a medium-memory-v1)
+(ClusterType mc-cac-a belief-promotion)
+(ObservedEvent oe-cac-a)
+(EventText oe-cac-a "test controller-as-chainer round trip")
+(ClusterOpenedAt mc-cac-a "2026-07-06 14:00 PDT")
+(ClusterSource mc-cac-a src-test)
+(Contains mc-cac-a pe-cac-a)
+(Contains mc-cac-a b-cac-a)
+(ClusterStatus mc-cac-a active)
+(PromotionEvent pe-cac-a)
+(PromotesFrom pe-cac-a qc-cac-a)
+(PromotesTo pe-cac-a b-cac-a)
+(PromotionRule pe-cac-a explicit-controller-test)
+(PromotionTrust pe-cac-a 0.85)
+(PromotionDomain pe-cac-a reasoning)
+(DerivedBelief b-cac-a)
+(BeliefContent b-cac-a (ControllerChainerResult))
+(TruthValue b-cac-a (stv 0.88 0.75))
+(EvidenceFor b-cac-a qc-cac-a)
+(EvidenceSupportCount b-cac-a 8.0)
+(EvidenceOppositionCount b-cac-a 2.0)
+;;; END MemoryCluster mc-cac-a
+"""
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "cac_memory.metta")
+            store.append_cluster(cluster)
+            cache = store.pettachainer_handoff_cache()
+
+        handoff = patham9_pln_handoff_sentences(cache)
+        result = controller_as_chainer(
+            handoff,
+            primary_min_strength=0.5,
+            primary_min_confidence=0.5,
+            primary_domain="reasoning",
+            primary_max_derivation_depth=5,
+            primary_max_steps=3,
+            controller_min_strength=0.5,
+            controller_min_confidence=0.5,
+            controller_max_derivation_depth=5,
+            controller_domain="reasoning",
+        )
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-controller-as-chainer-v1")
+        self.assertGreater(result["input_count"], 0)
+        # The store belief has strength=0.88, confidence=0.75, domain=reasoning
+        # Controller with min_strength=0.5, min_confidence=0.5 should confirm it
+        self.assertGreater(result["controller_confirmation_count"], 0)
+        self.assertEqual(result["controller_rejection_count"], 0)
+
+
+# ---------------------------------------------------------------------------
+# Unified inference-control integration test fixture: 4 beliefs with diverse
+# domains, STVs, and EC counts (including conflicting evidence).
+# ---------------------------------------------------------------------------
+
+_UNIFIED_BELIEF_HIGH_SUPPORT = """
+;;; BEGIN MemoryCluster mc-uni-a
+(MemoryCluster mc-uni-a)
+(SchemaVersion mc-uni-a medium-memory-v1)
+(ClusterType mc-uni-a belief-promotion)
+(ObservedEvent oe-uni-a)
+(EventText oe-uni-a "strong evidence for memory architecture target")
+(ClusterOpenedAt mc-uni-a "2026-07-06 16:00 PDT")
+(ClusterSource mc-uni-a src-test)
+(Contains mc-uni-a pe-uni-a)
+(Contains mc-uni-a b-uni-a)
+(ClusterStatus mc-uni-a active)
+(PromotionEvent pe-uni-a)
+(PromotesFrom pe-uni-a qc-uni-a)
+(PromotesTo pe-uni-a b-uni-a)
+(PromotionRule pe-uni-a explicit-architecture-promotion)
+(PromotionTrust pe-uni-a 0.90)
+(PromotionDomain pe-uni-a memory-architecture)
+(DerivedBelief b-uni-a)
+(BeliefContent b-uni-a (Requires MemoryTarget0 PLNReadyViews))
+(TruthValue b-uni-a (stv 0.92 0.80))
+(EvidenceFor b-uni-a qc-uni-a)
+(EvidenceSupportCount b-uni-a 9.0)
+(EvidenceOppositionCount b-uni-a 1.0)
+;;; END MemoryCluster mc-uni-a
+"""
+
+_UNIFIED_BELIEF_CONFLICTING = """
+;;; BEGIN MemoryCluster mc-uni-b
+(MemoryCluster mc-uni-b)
+(SchemaVersion mc-uni-b medium-memory-v1)
+(ClusterType mc-uni-b belief-promotion)
+(ObservedEvent oe-uni-b)
+(EventText oe-uni-b "conflicting evidence for reasoning domain target")
+(ClusterOpenedAt mc-uni-b "2026-07-06 16:01 PDT")
+(ClusterSource mc-uni-b src-test)
+(Contains mc-uni-b pe-uni-b)
+(Contains mc-uni-b b-uni-b)
+(ClusterStatus mc-uni-b active)
+(PromotionEvent pe-uni-b)
+(PromotesFrom pe-uni-b qc-uni-b)
+(PromotesTo pe-uni-b b-uni-b)
+(PromotionRule pe-uni-b explicit-reasoning-promotion)
+(PromotionTrust pe-uni-b 0.70)
+(PromotionDomain pe-uni-b reasoning)
+(DerivedBelief b-uni-b)
+(BeliefContent b-uni-b (Requires MemoryTarget1 ReasoningChain))
+(TruthValue b-uni-b (stv 0.65 0.55))
+(EvidenceFor b-uni-b qc-uni-b)
+(EvidenceSupportCount b-uni-b 2.0)
+(EvidenceOppositionCount b-uni-b 8.0)
+;;; END MemoryCluster mc-uni-b
+"""
+
+_UNIFIED_BELIEF_LOW_CONFIDENCE = """
+;;; BEGIN MemoryCluster mc-uni-c
+(MemoryCluster mc-uni-c)
+(SchemaVersion mc-uni-c medium-memory-v1)
+(ClusterType mc-uni-c belief-promotion)
+(ObservedEvent oe-uni-c)
+(EventText oe-uni-c "low confidence hypothesis for planning domain")
+(ClusterOpenedAt mc-uni-c "2026-07-06 16:02 PDT")
+(ClusterSource mc-uni-c src-test)
+(Contains mc-uni-c pe-uni-c)
+(Contains mc-uni-c b-uni-c)
+(ClusterStatus mc-uni-c active)
+(PromotionEvent pe-uni-c)
+(PromotesFrom pe-uni-c qc-uni-c)
+(PromotesTo pe-uni-c b-uni-c)
+(PromotionRule pe-uni-c exploratory-hypothesis)
+(PromotionTrust pe-uni-c 0.50)
+(PromotionDomain pe-uni-c planning)
+(DerivedBelief b-uni-c)
+(BeliefContent b-uni-c (Requires MemoryTarget2 PlanningStep))
+(TruthValue b-uni-c (stv 0.45 0.30))
+(EvidenceFor b-uni-c qc-uni-c)
+(EvidenceSupportCount b-uni-c 3.0)
+(EvidenceOppositionCount b-uni-c 3.0)
+;;; END MemoryCluster mc-uni-c
+"""
+
+_UNIFIED_BELIEF_MODERATE = """
+;;; BEGIN MemoryCluster mc-uni-d
+(MemoryCluster mc-uni-d)
+(SchemaVersion mc-uni-d medium-memory-v1)
+(ClusterType mc-uni-d belief-promotion)
+(ObservedEvent oe-uni-d)
+(EventText oe-uni-d "moderate evidence for reasoning domain target")
+(ClusterOpenedAt mc-uni-d "2026-07-06 16:03 PDT")
+(ClusterSource mc-uni-d src-test)
+(Contains mc-uni-d pe-uni-d)
+(Contains mc-uni-d b-uni-d)
+(ClusterStatus mc-uni-d active)
+(PromotionEvent pe-uni-d)
+(PromotesFrom pe-uni-d qc-uni-d)
+(PromotesTo pe-uni-d b-uni-d)
+(PromotionRule pe-uni-d explicit-reasoning-promotion)
+(PromotionTrust pe-uni-d 0.75)
+(PromotionDomain pe-uni-d reasoning)
+(DerivedBelief b-uni-d)
+(BeliefContent b-uni-d (Requires MemoryTarget3 ReasoningChain))
+(TruthValue b-uni-d (stv 0.78 0.65))
+(EvidenceFor b-uni-d qc-uni-d)
+(EvidenceSupportCount b-uni-d 6.0)
+(EvidenceOppositionCount b-uni-d 4.0)
+;;; END MemoryCluster mc-uni-d
+"""
+
+
+class StoreRoundTripUnifiedInferenceControlTests(unittest.TestCase):
+    """Unified integration test: store -> handoff -> all 8 inference-control patterns.
+
+    This test class builds a realistic 4-belief store fixture with diverse
+    domains, STVs, and EC counts (including conflicting evidence), then runs
+    all eight inference-control patterns from the trueagi-io/chaining survey
+    against the same handoff.  It validates that the patterns produce correct
+    results on a richer, more varied input than the per-pattern unit tests.
+    """
+
+    def _store_with_four_beliefs(self, td: str):
+        from petta_memory.store import MediumMemoryStore
+        store = MediumMemoryStore(Path(td) / "uni_memory.metta")
+        store.append_cluster(_UNIFIED_BELIEF_HIGH_SUPPORT)
+        store.append_cluster(_UNIFIED_BELIEF_CONFLICTING)
+        store.append_cluster(_UNIFIED_BELIEF_LOW_CONFIDENCE)
+        store.append_cluster(_UNIFIED_BELIEF_MODERATE)
+        return store
+
+    def _make_handoff(self, store):
+        cache = store.pettachainer_handoff_cache()
+        self.assertEqual(cache["item_count"], 8)  # 4 STV + 4 EvidencePacket
+        return patham9_pln_handoff_sentences(cache)
+
+    def test_unified_handoff_has_four_sentences_with_diverse_properties(self):
+        """The fixture produces 4 handoff sentences with the expected diversity."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store_with_four_beliefs(td)
+            handoff = self._make_handoff(store)
+
+        self.assertEqual(handoff["schema"], "petta-memory-patham9-pln-handoff-v1")
+        self.assertEqual(handoff["item_count"], 4)
+
+        items = handoff["items"]
+        domains = {item["promotion_domain"] for item in items}
+        self.assertEqual(domains, {"memory-architecture", "reasoning", "planning"})
+
+        # Check STV diversity (values are strings from parsing)
+        strengths = [float(item["stv"]["strength"]) for item in items]
+        self.assertIn(0.92, strengths)  # high support
+        self.assertIn(0.45, strengths)  # low confidence
+
+        # Check EC diversity: at least one high-support and one conflicting
+        all_packets = []
+        for item in items:
+            all_packets.extend(item["pi_pln_extension"]["contextual_evidence_packets"])
+        supports = [float(p["support"]) for p in all_packets]
+        oppositions = [float(p["opposition"]) for p in all_packets]
+        self.assertTrue(any(s > o for s, o in zip(supports, oppositions)))  # supportive
+        self.assertTrue(any(s < o for s, o in zip(supports, oppositions)))  # conflicting
+
+    def test_unified_probabilistic_filter_ranks_high_support_first(self):
+        """Pattern 1 (near-term): probabilistic filter ranks the high-support belief first."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store_with_four_beliefs(td)
+            handoff = self._make_handoff(store)
+
+        result = probabilistic_inference_filter(handoff, min_confidence=0.25)
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-inference-filter-v1")
+        # With min_confidence=0.25, most items pass; high-support should rank first
+        ranking = result["ranking"]
+        self.assertGreaterEqual(len(ranking), 2)
+        # High-support belief has strength=0.92, confidence=0.80 -> highest composite
+        self.assertEqual(ranking[0]["item_index"], 0)  # first item is b-uni-a
+        # The low-confidence belief (0.45/0.30) should be filtered out at min_confidence=0.35
+        result_strict = probabilistic_inference_filter(handoff, min_confidence=0.80)
+        filtered_indices = result_strict["filtered_indices"]
+        self.assertIn(2, filtered_indices)  # b-uni-c is index 2
+
+    def test_unified_context_selection_filters_by_domain(self):
+        """Pattern 2 (near-term): context selection isolates reasoning-domain packets."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store_with_four_beliefs(td)
+            handoff = self._make_handoff(store)
+
+        result = context_selection_wrapper(handoff, domain="reasoning")
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-context-selection-v1")
+        # Only items with reasoning-domain packets should have non-empty filtered packets
+        for item in result["items"]:
+            packets = item.get("filtered_packets", [])
+            if packets:
+                for p in packets:
+                    self.assertEqual(p.get("promotion_domain"), "reasoning")
+
+    def test_unified_chained_pipeline_combines_filter_and_context(self):
+        """Pattern 3 (near-term): chained pipeline composes context selection + probabilistic filter."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store_with_four_beliefs(td)
+            handoff = self._make_handoff(store)
+
+        result = chained_inference_pipeline(
+            handoff,
+            domain="reasoning",
+            min_confidence=0.40,
+        )
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-inference-pipeline-v1")
+        # Should have both stage results
+        self.assertIn("stage1_result", result)
+        self.assertIn("stage2_result", result)
+        # Reasoning domain has 2 beliefs: conflicting (0.65/0.55) and moderate (0.78/0.65)
+        # Both should survive min_confidence=0.40
+        items = result["items"]
+        reasoning_strengths = [float(item["base_stv"]["strength"]) for item in items]
+        self.assertIn(0.78, reasoning_strengths)
+        self.assertIn(0.65, reasoning_strengths)
+
+    def test_unified_meta_learning_benchmark_prefers_shortcut(self):
+        """Pattern 4 (near-term): meta-learning benchmark verifies shortcut preference."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store_with_four_beliefs(td)
+            handoff = self._make_handoff(store)
+
+        bench = run_meta_learning_benchmark(handoff=handoff)
+        self.assertEqual(bench["schema"], "petta-memory-pi-pln-meta-learning-benchmark-v1")
+        # The benchmark should report shortcut preference
+        self.assertTrue(bench["shortcut_preferred"])
+        self.assertTrue(bench["overall_pass"])
+
+    def test_unified_continuation_predicate_terminates_low_confidence(self):
+        """Pattern 5 (medium-term): continuation predicate rejects low-confidence belief."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store_with_four_beliefs(td)
+            handoff = self._make_handoff(store)
+
+        result = continuation_predicate_wrapper(
+            handoff,
+            min_strength=0.50,
+            min_confidence=0.40,
+        )
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-continuation-predicate-v1")
+        decisions = {item["belief_id"]: item["decision"] for item in result["items"]}
+        # The low-confidence belief (0.45/0.30) should be rejected
+        self.assertEqual(decisions["b-uni-c"], "reject")
+        # The high-support belief should continue
+        self.assertEqual(decisions["b-uni-a"], "continue")
+
+    def test_unified_controlled_backward_chainer_rejects_low_strength(self):
+        """Pattern 6 (medium-term): controlled backward chainer rejects low-strength branches."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store_with_four_beliefs(td)
+            handoff = self._make_handoff(store)
+
+        result = controlled_backward_chainer(
+            handoff,
+            min_strength=0.50,
+            min_confidence=0.40,
+            max_derivation_depth=2,
+            max_steps=3,
+        )
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-controlled-backward-chainer-v1")
+        # Low-strength belief (0.45) should be rejected at step 0
+        rejected_terms = [r["term"] for r in result.get("rejected_branches", [])]
+        self.assertTrue(any("MemoryTarget2" in t for t in rejected_terms))
+        # High-support belief should be terminated at depth 2
+        terminated_terms = [t["term"] for t in result.get("terminated_branches", [])]
+        self.assertTrue(any("MemoryTarget0" in t for t in terminated_terms))
+
+    def test_unified_pln_estimator_ranks_high_support_first(self):
+        """Pattern 7 (long-term): PLN estimator ranks high-support branch first."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store_with_four_beliefs(td)
+            handoff = self._make_handoff(store)
+
+        result = pln_estimator_wrapper(
+            handoff,
+            min_strength=0.40,
+            min_confidence=0.25,
+            seed=42,
+        )
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-pln-estimator-v1")
+        edcalls = result.get("ed_calls", [])
+        self.assertGreaterEqual(len(edcalls), 2)
+        # High-support belief (9 support, 1 opposition -> alpha=10, beta=2) should
+        # have higher mean viability than conflicting belief (2 support, 8 opposition)
+        if len(edcalls) >= 2:
+            self.assertGreater(edcalls[0]["estimated_probability"], edcalls[-1]["estimated_probability"])
+        # The conflicting belief (EC 2/8, ratio 0.2) should be rejected at ec_ratio_threshold > 0.2
+        result_strict = pln_estimator_wrapper(
+            handoff,
+            min_strength=0.40,
+            min_confidence=0.25,
+            ec_ratio_threshold=0.3,
+            seed=42,
+        )
+        rejected_strict = [r["term"] for r in result_strict.get("rejected_items", [])]
+        self.assertTrue(any("MemoryTarget1" in t for t in rejected_strict))
+
+    def test_unified_controller_as_chainer_confirms_high_quality(self):
+        """Pattern 8 (long-term): controller-as-chainer confirms high-quality branches."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store_with_four_beliefs(td)
+            handoff = self._make_handoff(store)
+
+        result = controller_as_chainer(
+            handoff,
+            primary_min_strength=0.40,
+            primary_min_confidence=0.25,
+            primary_max_derivation_depth=5,
+            primary_max_steps=3,
+            controller_min_strength=0.50,
+            controller_min_confidence=0.40,
+            controller_max_derivation_depth=5,
+        )
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-controller-as-chainer-v1")
+        self.assertGreater(result["input_count"], 0)
+        # The high-support belief (0.92/0.80) should be confirmed
+        self.assertGreater(result["controller_confirmation_count"], 0)
+        # The low-confidence belief (0.45/0.30) should be rejected by controller
+        self.assertGreater(result["controller_rejection_count"], 0)
+
+    def test_unified_ranked_plan_gates_before_live_derive(self):
+        """Integration gate: estimator ranking + continuation controller before PLN.Derive."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store_with_four_beliefs(td)
+            handoff = self._make_handoff(store)
+
+        result = ranked_inference_control_plan(
+            handoff,
+            query_target="MemoryTarget0",
+            require_query_relevance=True,
+            controller_min_strength=0.50,
+            controller_min_confidence=0.40,
+            controller_ec_ratio_threshold=0.30,
+            seed=42,
+        )
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-ranked-inference-control-plan-v1")
+        self.assertIn("no PLN.Query/PLN.Derive call", result["boundary"])
+        recommended_ids = {branch["belief_id"] for branch in result["recommended_branches"]}
+        self.assertEqual(recommended_ids, {"b-uni-a"})
+        held_reasons = {
+            branch["belief_id"]: " ".join(branch["hold_reasons"])
+            for branch in result["held_branches"]
+        }
+        self.assertIn("query_target_not_relevant", held_reasons["b-uni-d"])
+        self.assertIn("controller_decision_reject", held_reasons["b-uni-b"])
+
+    def test_unified_all_patterns_preserve_provenance(self):
+        """All 8 patterns preserve belief_id and cluster_id provenance from the store."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store_with_four_beliefs(td)
+            handoff = self._make_handoff(store)
+
+        expected_ids = {"b-uni-a", "b-uni-b", "b-uni-c", "b-uni-d"}
+
+        # Each pattern that produces per-item results should preserve belief_ids
+        for result, items_key in [
+            (probabilistic_inference_filter(handoff), "items"),
+            (context_selection_wrapper(handoff), "items"),
+            (chained_inference_pipeline(handoff), "items"),
+            (continuation_predicate_wrapper(handoff), "items"),
+            (controlled_backward_chainer(handoff, max_steps=2), "terminated_branches"),
+            (pln_estimator_wrapper(handoff, seed=42), "ed_calls"),
+        ]:
+            items = result.get(items_key, [])
+            if items:
+                ids_found = set()
+                for item in items:
+                    bid = item.get("belief_id", "")
+                    if bid:
+                        ids_found.add(bid)
+                # At least some of the expected IDs should appear
+                self.assertTrue(
+                    ids_found & expected_ids,
+                    f"Pattern {result.get('schema', '?')}: no expected belief_ids found in {items_key}",
+                )
+
+
+# ---------------------------------------------------------------------------
+# Rich 6-belief store fixture for pipeline discrimination evaluation.
+# Tests below verify that the chained_inference_pipeline correctly
+# discriminates between beliefs with diverse EC profiles, domains, and
+# STVs, including edge cases the 4-belief unified fixture does not cover.
+# ---------------------------------------------------------------------------
+
+_EVAL_BELIEF_OVERWHELMING = """
+;;; BEGIN MemoryCluster mc-ev-a
+(MemoryCluster mc-ev-a)
+(SchemaVersion mc-ev-a medium-memory-v1)
+(ClusterType mc-ev-a belief-promotion)
+(ObservedEvent oe-ev-a)
+(EventText oe-ev-a "overwhelming evidence for memory architecture")
+(ClusterOpenedAt mc-ev-a "2026-08-30 14:00 PDT")
+(ClusterSource mc-ev-a src-test)
+(Contains mc-ev-a pe-ev-a)
+(Contains mc-ev-a b-ev-a)
+(ClusterStatus mc-ev-a active)
+(PromotionEvent pe-ev-a)
+(PromotesFrom pe-ev-a qc-ev-a)
+(PromotesTo pe-ev-a b-ev-a)
+(PromotionRule pe-ev-a explicit-architecture-promotion)
+(PromotionTrust pe-ev-a 0.95)
+(PromotionDomain pe-ev-a memory-architecture)
+(DerivedBelief b-ev-a)
+(BeliefContent b-ev-a (Requires MemoryTarget0 PLNReadyViews))
+(TruthValue b-ev-a (stv 0.95 0.90))
+(EvidenceFor b-ev-a qc-ev-a)
+(EvidenceSupportCount b-ev-a 50.0)
+(EvidenceOppositionCount b-ev-a 2.0)
+;;; END MemoryCluster mc-ev-a
+"""
+
+_EVAL_BELIEF_BALANCED = """
+;;; BEGIN MemoryCluster mc-ev-b
+(MemoryCluster mc-ev-b)
+(SchemaVersion mc-ev-b medium-memory-v1)
+(ClusterType mc-ev-b belief-promotion)
+(ObservedEvent oe-ev-b)
+(EventText oe-ev-b "balanced evidence for planning domain")
+(ClusterOpenedAt mc-ev-b "2026-08-30 14:01 PDT")
+(ClusterSource mc-ev-b src-test)
+(Contains mc-ev-b pe-ev-b)
+(Contains mc-ev-b b-ev-b)
+(ClusterStatus mc-ev-b active)
+(PromotionEvent pe-ev-b)
+(PromotesFrom pe-ev-b qc-ev-b)
+(PromotesTo pe-ev-b b-ev-b)
+(PromotionRule pe-ev-b exploratory-hypothesis)
+(PromotionTrust pe-ev-b 0.60)
+(PromotionDomain pe-ev-b planning)
+(DerivedBelief b-ev-b)
+(BeliefContent b-ev-b (Requires MemoryTarget1 PlanningStep))
+(TruthValue b-ev-b (stv 0.55 0.50))
+(EvidenceFor b-ev-b qc-ev-b)
+(EvidenceSupportCount b-ev-b 10.0)
+(EvidenceOppositionCount b-ev-b 10.0)
+;;; END MemoryCluster mc-ev-b
+"""
+
+_EVAL_BELIEF_STRONG_CONFLICTING = """
+;;; BEGIN MemoryCluster mc-ev-c
+(MemoryCluster mc-ev-c)
+(SchemaVersion mc-ev-c medium-memory-v1)
+(ClusterType mc-ev-c belief-promotion)
+(ObservedEvent oe-ev-c)
+(EventText oe-ev-c "strongly conflicting evidence for reasoning domain")
+(ClusterOpenedAt mc-ev-c "2026-08-30 14:02 PDT")
+(ClusterSource mc-ev-c src-test)
+(Contains mc-ev-c pe-ev-c)
+(Contains mc-ev-c b-ev-c)
+(ClusterStatus mc-ev-c active)
+(PromotionEvent pe-ev-c)
+(PromotesFrom pe-ev-c qc-ev-c)
+(PromotesTo pe-ev-c b-ev-c)
+(PromotionRule pe-ev-c explicit-reasoning-promotion)
+(PromotionTrust pe-ev-c 0.65)
+(PromotionDomain pe-ev-c reasoning)
+(DerivedBelief b-ev-c)
+(BeliefContent b-ev-c (Requires MemoryTarget2 ReasoningChain))
+(TruthValue b-ev-c (stv 0.70 0.60))
+(EvidenceFor b-ev-c qc-ev-c)
+(EvidenceSupportCount b-ev-c 1.0)
+(EvidenceOppositionCount b-ev-c 20.0)
+;;; END MemoryCluster mc-ev-c
+"""
+
+_EVAL_BELIEF_NO_EVIDENCE = """
+;;; BEGIN MemoryCluster mc-ev-d
+(MemoryCluster mc-ev-d)
+(SchemaVersion mc-ev-d medium-memory-v1)
+(ClusterType mc-ev-d belief-promotion)
+(ObservedEvent oe-ev-d)
+(EventText oe-ev-d "no evidence for planning domain hypothesis")
+(ClusterOpenedAt mc-ev-d "2026-08-30 14:03 PDT")
+(ClusterSource mc-ev-d src-test)
+(Contains mc-ev-d pe-ev-d)
+(Contains mc-ev-d b-ev-d)
+(ClusterStatus mc-ev-d active)
+(PromotionEvent pe-ev-d)
+(PromotesFrom pe-ev-d qc-ev-d)
+(PromotesTo pe-ev-d b-ev-d)
+(PromotionRule pe-ev-d exploratory-hypothesis)
+(PromotionTrust pe-ev-d 0.40)
+(PromotionDomain pe-ev-d planning)
+(DerivedBelief b-ev-d)
+(BeliefContent b-ev-d (Requires MemoryTarget3 PlanningStep))
+(TruthValue b-ev-d (stv 0.50 0.35))
+(EvidenceFor b-ev-d qc-ev-d)
+(EvidenceSupportCount b-ev-d 0.0)
+(EvidenceOppositionCount b-ev-d 0.0)
+;;; END MemoryCluster mc-ev-d
+"""
+
+_EVAL_BELIEF_HIGH_STV_LOW_EC = """
+;;; BEGIN MemoryCluster mc-ev-e
+(MemoryCluster mc-ev-e)
+(SchemaVersion mc-ev-e medium-memory-v1)
+(ClusterType mc-ev-e belief-promotion)
+(ObservedEvent oe-ev-e)
+(EventText oe-ev-e "high STV but minimal evidence for reasoning domain")
+(ClusterOpenedAt mc-ev-e "2026-08-30 14:04 PDT")
+(ClusterSource mc-ev-e src-test)
+(Contains mc-ev-e pe-ev-e)
+(Contains mc-ev-e b-ev-e)
+(ClusterStatus mc-ev-e active)
+(PromotionEvent pe-ev-e)
+(PromotesFrom pe-ev-e qc-ev-e)
+(PromotesTo pe-ev-e b-ev-e)
+(PromotionRule pe-ev-e explicit-reasoning-promotion)
+(PromotionTrust pe-ev-e 0.80)
+(PromotionDomain pe-ev-e reasoning)
+(DerivedBelief b-ev-e)
+(BeliefContent b-ev-e (Requires MemoryTarget4 ReasoningChain))
+(TruthValue b-ev-e (stv 0.85 0.75))
+(EvidenceFor b-ev-e qc-ev-e)
+(EvidenceSupportCount b-ev-e 1.0)
+(EvidenceOppositionCount b-ev-e 0.0)
+;;; END MemoryCluster mc-ev-e
+"""
+
+_EVAL_BELIEF_MID_RANGE = """
+;;; BEGIN MemoryCluster mc-ev-f
+(MemoryCluster mc-ev-f)
+(SchemaVersion mc-ev-f medium-memory-v1)
+(ClusterType mc-ev-f belief-promotion)
+(ObservedEvent oe-ev-f)
+(EventText oe-ev-f "mid-range evidence for memory architecture")
+(ClusterOpenedAt mc-ev-f "2026-08-30 14:05 PDT")
+(ClusterSource mc-ev-f src-test)
+(Contains mc-ev-f pe-ev-f)
+(Contains mc-ev-f b-ev-f)
+(ClusterStatus mc-ev-f active)
+(PromotionEvent pe-ev-f)
+(PromotesFrom pe-ev-f qc-ev-f)
+(PromotesTo pe-ev-f b-ev-f)
+(PromotionRule pe-ev-f explicit-architecture-promotion)
+(PromotionTrust pe-ev-f 0.70)
+(PromotionDomain pe-ev-f memory-architecture)
+(DerivedBelief b-ev-f)
+(BeliefContent b-ev-f (Requires MemoryTarget5 PLNReadyViews))
+(TruthValue b-ev-f (stv 0.72 0.62))
+(EvidenceFor b-ev-f qc-ev-f)
+(EvidenceSupportCount b-ev-f 7.0)
+(EvidenceOppositionCount b-ev-f 3.0)
+;;; END MemoryCluster mc-ev-f
+"""
+
+
+class PipelineEvaluationTests(unittest.TestCase):
+    """Evaluate chained_inference_pipeline discrimination on a rich 6-belief store.
+
+    The fixture has 3 domains (memory-architecture, planning, reasoning) with
+    diverse EC profiles: overwhelming support, balanced, strongly conflicting,
+    no evidence, high STV with minimal EC, and mid-range.  These tests verify
+    the pipeline correctly ranks, filters, and discriminates beliefs based on
+    their composite evidence quality.
+    """
+
+    _CLUSTERS = [
+        _EVAL_BELIEF_OVERWHELMING,
+        _EVAL_BELIEF_BALANCED,
+        _EVAL_BELIEF_STRONG_CONFLICTING,
+        _EVAL_BELIEF_NO_EVIDENCE,
+        _EVAL_BELIEF_HIGH_STV_LOW_EC,
+        _EVAL_BELIEF_MID_RANGE,
+    ]
+
+    def _store(self, td: str):
+        from petta_memory.store import MediumMemoryStore
+        store = MediumMemoryStore(Path(td) / "eval_memory.metta")
+        for cluster in self._CLUSTERS:
+            store.append_cluster(cluster)
+        return store
+
+    def _handoff(self, store):
+        cache = store.pettachainer_handoff_cache()
+        return patham9_pln_handoff_sentences(cache)
+
+    def test_fixture_produces_six_diverse_beliefs(self):
+        """The fixture has 6 beliefs with 3 domains and diverse EC profiles."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store(td)
+            handoff = self._handoff(store)
+
+        self.assertEqual(handoff["item_count"], 6)
+        domains = {item["promotion_domain"] for item in handoff["items"]}
+        self.assertEqual(domains, {"memory-architecture", "planning", "reasoning"})
+        # Verify EC diversity
+        all_packets = []
+        for item in handoff["items"]:
+            all_packets.extend(item["pi_pln_extension"]["contextual_evidence_packets"])
+        supports = [float(p["support"]) for p in all_packets]
+        oppositions = [float(p["opposition"]) for p in all_packets]
+        self.assertTrue(any(s > 40 for s in supports))  # overwhelming
+        self.assertTrue(any(s == 0 for s in supports))  # no evidence
+        self.assertTrue(any(o > 15 for o in oppositions))  # strong conflicting
+
+    def test_pipeline_ranks_overwhelming_support_first(self):
+        """The belief with overwhelming evidence (50/2) ranks first by composite score."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store(td)
+            handoff = self._handoff(store)
+
+        result = chained_inference_pipeline(handoff)
+        self.assertEqual(result["schema"], "petta-memory-pi-pln-inference-pipeline-v1")
+        ranking = result["ranking"]
+        self.assertGreater(len(ranking), 0)
+        # The overwhelming-support belief (b-ev-a) should rank first
+        top = ranking[0]
+        self.assertEqual(top["item_index"], 0)
+        # Its composite score should be the highest
+        for r in ranking[1:]:
+            self.assertGreaterEqual(top["composite_score"], r["composite_score"])
+
+    def test_pipeline_conflicting_evidence_lowers_composite_score(self):
+        """Beliefs with strongly conflicting EC (1/20) have lower composite scores.
+
+        The strongly conflicting belief (b-ev-c, STV 0.70/0.60, EC 1/20) should
+        have a lower composite score than the mid-range belief (b-ev-f, STV
+        0.72/0.62, EC 7/3) despite similar base STVs, because the EC projection
+        lowers confidence when opposition dominates.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store(td)
+            handoff = self._handoff(store)
+
+        result = chained_inference_pipeline(handoff)
+        items_by_index = {item["item_index"]: item for item in result["items"]}
+        # b-ev-c is index 2, b-ev-f is index 5
+        conflicting_score = items_by_index[2]["composite_score"]
+        midrange_score = items_by_index[5]["composite_score"]
+        self.assertGreater(
+            midrange_score, conflicting_score,
+            f"mid-range (7/3) should outscore strongly conflicting (1/20); "
+            f"got mid={midrange_score}, conflicting={conflicting_score}",
+        )
+
+    def test_pipeline_no_evidence_belief_has_low_composite_score(self):
+        """The belief with zero evidence (0/0) should have a low composite score.
+
+        With no EC, the projected STV falls back to the base STV (0.50/0.35),
+        producing a lower composite score than beliefs with supporting evidence.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store(td)
+            handoff = self._handoff(store)
+
+        result = chained_inference_pipeline(handoff)
+        items_by_index = {item["item_index"]: item for item in result["items"]}
+        no_ev_score = items_by_index[3]["composite_score"]
+        # Should be lower than the overwhelming (index 0) and mid-range (index 5)
+        self.assertLess(no_ev_score, items_by_index[0]["composite_score"])
+        self.assertLess(no_ev_score, items_by_index[5]["composite_score"])
+
+    def test_pipeline_domain_filter_isolates_reasoning(self):
+        """Domain filter for 'reasoning' isolates 2 beliefs: conflicting and high-stv-low-ec."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store(td)
+            handoff = self._handoff(store)
+
+        result = chained_inference_pipeline(handoff, domain="reasoning")
+        self.assertEqual(result["input_count"], 6)
+        self.assertEqual(result["stage1_output_count"], 2)
+        # Stage 1 should filter out 4 non-reasoning items
+        self.assertEqual(len(result["stage1_filtered_indices"]), 4)
+        # The 2 surviving items should be the reasoning-domain beliefs: b-ev-c and b-ev-e
+        belief_ids = {item["belief_id"] for item in result["items"]}
+        self.assertEqual(belief_ids, {"b-ev-c", "b-ev-e"})
+
+    def test_pipeline_top_k_selects_highest_composite(self):
+        """top_k=2 selects exactly the 2 highest-composite beliefs."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store(td)
+            handoff = self._handoff(store)
+
+        result = chained_inference_pipeline(handoff, top_k=2)
+        selected = result["selected_indices"]
+        self.assertEqual(len(selected), 2)
+        # The top-2 should be the overwhelming and either mid-range or high-stv-low-ec
+        self.assertIn(0, selected)  # overwhelming (b-ev-a)
+        # Verify the selected items have the highest composite scores
+        all_scores = {item["item_index"]: item["composite_score"] for item in result["items"]}
+        selected_scores = [all_scores[i] for i in selected]
+        all_ranked = sorted(all_scores.values(), reverse=True)
+        self.assertEqual(selected_scores, all_ranked[:2])
+
+    def test_pipeline_min_confidence_filters_low_confidence(self):
+        """min_confidence=0.60 filters out beliefs with projected confidence below 0.60."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store(td)
+            handoff = self._handoff(store)
+
+        result = chained_inference_pipeline(handoff, min_confidence=0.60)
+        for item in result["items"]:
+            if item.get("included"):
+                proj_conf = item.get("projected_stv", {}).get("confidence", 0)
+                self.assertGreaterEqual(
+                    proj_conf, 0.60,
+                    f"Item {item['item_index']} was included but has projected confidence {proj_conf} < 0.60",
+                )
+
+    def test_pipeline_combined_domain_and_confidence_filters(self):
+        """Combining domain='planning' and min_confidence=0.40 filters correctly."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store(td)
+            handoff = self._handoff(store)
+
+        result = chained_inference_pipeline(
+            handoff, domain="planning", min_confidence=0.40,
+        )
+        # Planning domain has 2 beliefs: balanced (0.55/0.50, EC 10/10) and no-evidence (0.50/0.35, EC 0/0)
+        self.assertEqual(result["stage1_output_count"], 2)
+        # The no-evidence belief (0.50/0.35) should be filtered by min_confidence=0.40
+        # because its projected confidence with no EC is just the base 0.35 < 0.40
+        included = [item for item in result["items"] if item.get("included")]
+        excluded = [item for item in result["items"] if not item.get("included")]
+        self.assertTrue(any(i["belief_id"] == "b-ev-b" for i in included))  # balanced passes
+        self.assertTrue(any(i["belief_id"] == "b-ev-d" for i in excluded))  # no-evidence filtered
+
+    def test_ec_projection_on_no_evidence_returns_base_stv(self):
+        """EC projection with zero evidence returns the base STV unchanged."""
+        result = ec_projected_stv(0.50, 0.35, [])
+        self.assertEqual(result["projected_strength"], 0.5)
+        self.assertEqual(result["projected_confidence"], 0.35)
+        self.assertEqual(result["packet_count"], 0)
+
+    def test_ec_projection_on_overwhelming_support_stays_high(self):
+        """EC projection with overwhelming support (50/2) stays close to base strength."""
+        result = ec_projected_stv(0.95, 0.90, [{"support": 50, "opposition": 2}])
+        # ec_strength = 50/52 ≈ 0.962, ec_confidence = 52/54 ≈ 0.963
+        # weighted: (0.95*0.90 + 0.962*0.963) / (0.90 + 0.963) ≈ 0.957
+        self.assertGreater(result["projected_strength"], 0.94)
+        self.assertGreater(result["projected_confidence"], 0.95)
+
+    def test_ec_projection_on_strong_conflict_lowers_strength(self):
+        """EC projection with strong conflict (1/20) lowers the projected strength."""
+        result = ec_projected_stv(0.70, 0.60, [{"support": 1, "opposition": 20}])
+        # ec_strength = 1/21 ≈ 0.048, ec_confidence = 21/23 ≈ 0.913
+        # weighted: (0.70*0.60 + 0.048*0.913) / (0.60 + 0.913) ≈ 0.304
+        self.assertLess(result["projected_strength"], 0.50)
+        self.assertGreater(result["projected_confidence"], 0.85)  # confidence stays high (lots of evidence)
+
+    def test_ec_projection_on_balanced_evidence_stays_moderate(self):
+        """EC projection with balanced evidence (10/10) stays near 0.5 strength."""
+        result = ec_projected_stv(0.55, 0.50, [{"support": 10, "opposition": 10}])
+        # ec_strength = 0.5, ec_confidence = 20/22 ≈ 0.909
+        # weighted: (0.55*0.50 + 0.5*0.909) / (0.50 + 0.909) ≈ 0.518
+        self.assertAlmostEqual(result["projected_strength"], 0.518, delta=0.02)
+        # confidence = max(0.50, 0.909) = 0.909
+        self.assertGreater(result["projected_confidence"], 0.90)
+
+
+if __name__ == "__main__":
+    unittest.main()

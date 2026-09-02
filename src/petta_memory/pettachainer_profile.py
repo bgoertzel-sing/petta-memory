@@ -1,0 +1,4637 @@
+from __future__ import annotations
+
+import argparse
+import ast
+import hashlib
+import json
+import math
+import multiprocessing as mp
+import os
+import queue
+import re
+import sys
+import tempfile
+import time
+from pathlib import Path
+from typing import Callable, Iterable
+
+from .pipln_models import (
+    PeTTaChainerDerivedResultCapture,
+    PeTTaChainerEpisodeContract,
+    PeTTaChainerInputStatement,
+    build_pettachainer_derived_result_capture,
+    build_pettachainer_stage_capture,
+)
+from .sexpr import parse_one_list, symbol_text, to_source
+from .store import MediumMemoryStore
+
+
+def build_promoted_cluster(index: int, *, support: float = 3.0, opposition: float = 1.0) -> str:
+    """Return one promoted-belief cluster shaped for PeTTaChainer profiling.
+
+    The generated workload is intentionally narrow and OmegaClaw-like: each
+    cluster promotes one memory-readiness belief with explicit STV plus EC counts,
+    so the same journal can exercise proof-statement export and EvidencePacket
+    export without inventing evidence counts from truth values.
+    """
+    suffix = f"profile-{index:03d}"
+    strength = min(0.99, 0.70 + (index % 10) / 100)
+    confidence = min(0.95, 0.60 + (index % 7) / 100)
+    trust = min(0.90, 0.55 + (index % 5) / 100)
+    return f"""
+(MemoryCluster mc-{suffix})
+(SchemaVersion mc-{suffix} medium-memory-v1)
+(ClusterType mc-{suffix} belief-promotion)
+(ClusterOpenedAt mc-{suffix} "2026-07-02 profile fixture")
+(ClusterSource mc-{suffix} local-profile-generator)
+(Contains mc-{suffix} pe-{suffix})
+(Contains mc-{suffix} b-{suffix})
+(ClusterStatus mc-{suffix} active)
+(PromotionEvent pe-{suffix})
+(PromotesFrom pe-{suffix} qc-{suffix})
+(PromotesTo pe-{suffix} b-{suffix})
+(PromotionRule pe-{suffix} explicit-profile-workload)
+(PromotionTrust pe-{suffix} {trust:.2f})
+(PromotionDomain pe-{suffix} omegaclaw-memory)
+(DerivedBelief b-{suffix})
+(BeliefContent b-{suffix} (Requires MemoryTarget{index} PLNReadyViews))
+(TruthValue b-{suffix} (stv {strength:.2f} {confidence:.2f}))
+(EvidenceFor b-{suffix} qc-{suffix})
+(EvidenceSupportCount b-{suffix} {support + index:.1f})
+(EvidenceOppositionCount b-{suffix} {opposition + (index % 3):.1f})
+"""
+
+
+def build_profile_store(path: str | Path, count: int) -> MediumMemoryStore:
+    if count < 0:
+        raise ValueError("count must be non-negative")
+    store = MediumMemoryStore(path)
+    for index in range(count):
+        store.append_cluster(build_promoted_cluster(index))
+    return store
+
+
+def _time_call(label: str, fn: Callable[[], object]) -> dict[str, object]:
+    started = time.perf_counter()
+    result = fn()
+    return {"label": label, "seconds": round(time.perf_counter() - started, 6), "status": "ok", "result": result}
+
+
+def _run_isolated_stage(
+    label: str,
+    target: Callable[..., dict[str, object]],
+    args: tuple[object, ...],
+    *,
+    stage_timeout_sec: float,
+) -> dict[str, object]:
+    """Run one noisy/slow PeTTaChainer stage in a subprocess.
+
+    The PeTTaChainer runtime can emit large compile traces or spend a long time
+    compiling rules. Profiling should record that as a bounded result instead of
+    letting a cron worker hang, so each optional runtime stage gets a hard wall
+    clock timeout and captured stdout/stderr.
+    """
+    if stage_timeout_sec <= 0:
+        raise ValueError("stage_timeout_sec must be positive")
+    started = time.perf_counter()
+    result_queue: mp.Queue[dict[str, object]] = mp.Queue(maxsize=1)
+    process = mp.Process(target=_isolated_stage_worker, args=(target, args, result_queue))
+    process.start()
+    process.join(stage_timeout_sec)
+    elapsed = round(time.perf_counter() - started, 6)
+    if process.is_alive():
+        process.terminate()
+        process.join(1.0)
+        if process.is_alive():
+            process.kill()
+            process.join()
+        return {"label": label, "seconds": elapsed, "status": "timeout", "timeout_sec": stage_timeout_sec}
+    try:
+        payload = result_queue.get_nowait()
+    except queue.Empty:
+        payload = {"status": "error", "error": f"child exited with code {process.exitcode} without a result"}
+    payload.setdefault("status", "ok" if process.exitcode == 0 else "error")
+    payload.update({"label": label, "seconds": elapsed})
+    return payload
+
+
+def _captured_stream_provenance_complete(payload: dict[str, object]) -> bool:
+    """Return whether an isolated-stage result closes both stream identities."""
+    for stream in ("stdout", "stderr"):
+        byte_count = payload.get(f"{stream}_bytes")
+        digest = payload.get(f"{stream}_sha256")
+        if (
+            not isinstance(byte_count, int)
+            or isinstance(byte_count, bool)
+            or byte_count < 0
+            or not isinstance(digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+        ):
+            return False
+    return True
+
+
+def _isolated_stage_worker(
+    target: Callable[..., dict[str, object]],
+    args: tuple[object, ...],
+    result_queue: "mp.Queue[dict[str, object]]",
+) -> None:
+    # PeTTaChainer/SWI-Prolog writes below Python's sys.stdout layer, so capture
+    # OS file descriptors rather than only using contextlib.redirect_stdout.
+    # Under pytest or other capturing frameworks, sys.stdout may not point to
+    # fd 1, so we must also replace the Python-level objects.
+    stdout_original = os.dup(1)
+    stderr_original = os.dup(2)
+    saved_stdout = sys.stdout
+    saved_stderr = sys.stderr
+    with tempfile.TemporaryFile(mode="w+b") as stdout_file, tempfile.TemporaryFile(mode="w+b") as stderr_file:
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os.dup2(stdout_file.fileno(), 1)
+            os.dup2(stderr_file.fileno(), 2)
+            # Replace Python-level sys.stdout/sys.stderr so that print() writes
+            # through the redirected fd, not to the pytest capture buffer.
+            # closefd=False preserves fd 1/2 for the dup2 restoration below.
+            sys.stdout = open(1, "w", buffering=1, closefd=False)
+            sys.stderr = open(2, "w", buffering=1, closefd=False)
+            try:
+                payload = target(*args)
+                payload.setdefault("status", "ok")
+            except BaseException as exc:  # pragma: no cover - exercised through parent status in tests.
+                payload = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+            finally:
+                sys.stdout.flush()
+                sys.stderr.flush()
+                sys.stdout.close()
+                sys.stderr.close()
+                sys.stdout = saved_stdout
+                sys.stderr = saved_stderr
+                os.dup2(stdout_original, 1)
+                os.dup2(stderr_original, 2)
+        finally:
+            os.close(stdout_original)
+            os.close(stderr_original)
+        for stream, capture_file in (("stdout", stdout_file), ("stderr", stderr_file)):
+            capture_file.seek(0)
+            digest = hashlib.sha256()
+            byte_count = 0
+            while chunk := capture_file.read(64 * 1024):
+                digest.update(chunk)
+                byte_count += len(chunk)
+            payload[f"{stream}_bytes"] = byte_count
+            payload[f"{stream}_sha256"] = digest.hexdigest()
+            # Retain the original field for artifact compatibility. The capture
+            # is binary, so this historical name has always counted bytes.
+            payload[f"{stream}_chars"] = byte_count
+    result_queue.put(payload)
+
+
+def _check_statements_stage(statements: list[str]) -> dict[str, object]:
+    from pettachainer import check_stmt
+
+    return {"result": [check_stmt(stmt) for stmt in statements]}
+
+
+def _pettachainer_init_stage() -> dict[str, object]:
+    from pettachainer import PeTTaChainer
+
+    init_event = _time_call("construct_pettachainer", lambda: PeTTaChainer())
+    init_event["result"] = "initialized"
+    return {"result": "initialized", "stages": [init_event]}
+
+
+def _proof_add_stage(statements: list[str]) -> dict[str, object]:
+    from pettachainer import PeTTaChainer
+
+    handler = PeTTaChainer()
+    return {"stages": [_time_call("add_proof_statements_no_check", lambda: handler.add_atoms_no_check(statements))]}
+
+
+def _compileadd_probe_expressions(statement: str, kb: str) -> dict[str, str]:
+    stmt1 = f"(materialize-stmt-lambdas {statement})"
+    atoms = f"(collapse (mm2compile {kb} {stmt1}))"
+    iatoms = f"(list_to_set (map-flat internalize-proof-structure {atoms}))"
+    return {
+        "materialize_stmt_lambdas": stmt1,
+        "mm2compile_collapse": atoms,
+        "internalize_proof_structure": iatoms,
+        "externalize_proof_structure": f"(map-flat externalize-proof-structure {iatoms})",
+        "index_source_implication": f"(index-source-implication {kb} {stmt1})",
+        "add_internalized_atoms": f"(collapse (foreach-flat add-to-kb {iatoms}))",
+        "maybe_process_on_add": f"(maybe-process-on-add {kb} {stmt1})",
+    }
+
+
+def _compileadd_probe_call_text(statement: str, kb: str, probe: str, invocation: str) -> str:
+    """Return the exact MeTTa call used for an internal ``compileadd`` probe.
+
+    ``compileadd`` itself invokes its subforms directly inside a ``let*``. The
+    first probe version wrapped each subform in ``eval``, which may evaluate the
+    materialized statement rather than just timing the subform. Keeping both call
+    modes available lets profile artifacts distinguish genuine subform cost from
+    an eval/probe artifact.
+    """
+    expressions = _compileadd_probe_expressions(statement, kb)
+    if probe not in expressions:
+        raise ValueError(f"unknown compileadd probe: {probe}")
+    if invocation == "direct":
+        return f"!{expressions[probe]}"
+    if invocation == "eval":
+        return f"!(eval {expressions[probe]})"
+    raise ValueError(f"unknown compileadd probe invocation: {invocation}")
+
+
+def _compileadd_probe_stage(statement: str, probe: str, invocation: str = "direct") -> dict[str, object]:
+    """Time one internal expression from PeTTaChainer's ``compileadd`` path.
+
+    Each probe is intentionally isolated in its own subprocess by the caller. If
+    one internal form hangs, the surrounding profile still records which substep
+    hit the hard timeout instead of collapsing the whole add path into a single
+    opaque ``compileadd`` timeout.
+    """
+    from pettachainer import PeTTaChainer
+
+    handler = PeTTaChainer()
+    call_text = _compileadd_probe_call_text(statement, handler.kb, probe, invocation)
+    return {
+        "probe": probe,
+        "invocation": invocation,
+        "stages": [_time_call(f"{probe}_{invocation}", lambda: handler.handler.process_metta_string(call_text))],
+    }
+
+
+def _sexpr_equal_allow_numeric_rendering(left: object, right: object) -> bool:
+    if isinstance(left, tuple) and isinstance(right, tuple):
+        return len(left) == len(right) and all(
+            _sexpr_equal_allow_numeric_rendering(left_item, right_item)
+            for left_item, right_item in zip(left, right)
+        )
+    if isinstance(left, tuple) or isinstance(right, tuple):
+        return False
+    if left == right:
+        return True
+    try:
+        return float(str(left)) == float(str(right))
+    except ValueError:
+        return False
+
+
+def _materialize_identity_matches(statement: str, outputs: object) -> bool:
+    output_items = outputs if isinstance(outputs, list) else [outputs]
+    output_text = "\n".join(str(item) for item in output_items)
+    if statement in output_text:
+        return True
+    expected = parse_one_list(statement)
+    for item in output_items:
+        try:
+            if _sexpr_equal_allow_numeric_rendering(expected, parse_one_list(str(item))):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _all_materialize_identity_matches(statement: str, outputs: object) -> bool:
+    """Require a non-empty result set containing only structural matches."""
+    output_items = outputs if isinstance(outputs, list) else [outputs]
+    return bool(output_items) and all(
+        _materialize_identity_matches(statement, [item]) for item in output_items
+    )
+
+
+def _summarize_materialize_outputs(
+    statement: str,
+    outputs: object,
+    *,
+    max_output_items: int = 16,
+) -> dict[str, object]:
+    """Bound a noisy materializer result while retaining fan-out evidence."""
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    output_items = outputs if isinstance(outputs, list) else [outputs]
+    rendered = [str(item) for item in output_items]
+    unique_rendered = list(dict.fromkeys(rendered))
+    return {
+        "identity_output_present": _materialize_identity_matches(statement, rendered),
+        "output_count": len(rendered),
+        "unique_output_count": len(unique_rendered),
+        "output_items": rendered[:max_output_items],
+        "output_truncated": len(rendered) > max_output_items,
+    }
+
+
+def _materialize_identity_stage(statement: str) -> dict[str, object]:
+    """Run only ``materialize-stmt-lambdas`` and compare output structurally.
+
+    This is narrower than the generic compileadd probe: it is meant for a
+    lambda-free statement whose source inspection predicts identity
+    materialization, so the stage records whether the runtime output matches the
+    original statement.  Numeric formatting differences such as ``0.70`` versus
+    ``0.7`` are treated as identity-preserving because PeTTa's renderer may
+    normalize floats.  The caller still runs the stage in a bounded subprocess.
+    """
+    from pettachainer import PeTTaChainer
+
+    handler = PeTTaChainer()
+    call_text = f"!(materialize-stmt-lambdas {statement})"
+
+    def run() -> list[str]:
+        result = handler.handler.process_metta_string(call_text)
+        if isinstance(result, list):
+            return [str(item) for item in result]
+        return [str(result)]
+
+    event = _time_call("materialize_stmt_lambdas_identity", run)
+    summary = _summarize_materialize_outputs(statement, event.get("result", []))
+    event["result"] = summary["output_items"]
+    event["result_count"] = summary["output_count"]
+    event["result_truncated"] = summary["output_truncated"]
+    return {
+        "call_text": call_text,
+        "expected_statement": statement,
+        **summary,
+        "stages": [event],
+    }
+
+
+def _compileadd_probe_specs(statements: list[str]) -> list[tuple[str, str, str]]:
+    if not statements:
+        return []
+    # Direct probes mirror PeTTaChainer's compileadd let* path. The two legacy
+    # eval probes are retained narrowly as controls for the previous timeout
+    # artifact hypothesis, without doubling every expensive subform.
+    return [
+        ("compileadd_probe_materialize_direct", "materialize_stmt_lambdas", "direct"),
+        ("compileadd_probe_materialize_eval_control", "materialize_stmt_lambdas", "eval"),
+        ("compileadd_probe_mm2compile_direct", "mm2compile_collapse", "direct"),
+        ("compileadd_probe_mm2compile_eval_control", "mm2compile_collapse", "eval"),
+        ("compileadd_probe_internalize_direct", "internalize_proof_structure", "direct"),
+        ("compileadd_probe_externalize_direct", "externalize_proof_structure", "direct"),
+        ("compileadd_probe_index_source_direct", "index_source_implication", "direct"),
+        ("compileadd_probe_add_internalized_direct", "add_internalized_atoms", "direct"),
+        ("compileadd_probe_maybe_process_on_add_direct", "maybe_process_on_add", "direct"),
+    ]
+
+
+def _proof_runtime_stage(statements: list[str], steps: int, timeout_sec: float) -> dict[str, object]:
+    from pettachainer import PeTTaChainer
+
+    handler = PeTTaChainer()
+    stages: list[dict[str, object]] = []
+    stages.append(_time_call("add_proof_statements_no_check", lambda: handler.add_atoms_no_check(statements)))
+    query = "(: $proof (Requires MemoryTarget0 PLNReadyViews) $tv)"
+    stages.append(_time_call("query_first_target", lambda: handler.query(query, steps=steps, timeout_sec=timeout_sec)))
+    return {"stages": stages}
+
+
+def _check_episode_contract_stage(statements: list[str], query: str) -> dict[str, object]:
+    """Validate exact episode-contract atoms without adding them to a KB."""
+    from pettachainer import check_query, check_stmt
+
+    return {
+        "statement_results": [check_stmt(statement) for statement in statements],
+        "query_result": check_query(query),
+    }
+
+
+def _episode_contract_runtime_stage(
+    statements: list[str], query: str, steps: int, timeout_sec: float,
+) -> dict[str, object]:
+    """Add and query one checked contract inside a single isolated runtime."""
+    from pettachainer import PeTTaChainer
+
+    handler = PeTTaChainer()
+    stages = [_time_call("compileadd_checked_statements", lambda: handler.add_atoms_no_check(statements))]
+    stages.append(
+        _time_call(
+            "query_checked_contract",
+            lambda: handler.query(query, steps=steps, timeout_sec=timeout_sec),
+        )
+    )
+    return {"stages": stages}
+
+
+def probe_pettachainer_episode_contract(
+    contract: PeTTaChainerEpisodeContract,
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 30.0,
+    steps: int = 5,
+    query_timeout_sec: float = 5.0,
+) -> dict[str, object]:
+    """Run a bounded, fail-closed validation/add/query probe for one contract.
+
+    Runtime add/query is attempted only after PeTTaChainer's public statement and
+    query validators return the exact numeric admission value ``1.0``.  A timeout
+    or error is retained as evidence and confers no result, promotion, write, or
+    live-integration authority.
+    """
+    if not isinstance(contract, PeTTaChainerEpisodeContract):
+        raise ValueError("contract must be an immutable PeTTaChainer episode contract")
+    if steps <= 0:
+        raise ValueError("steps must be positive")
+    if query_timeout_sec <= 0:
+        raise ValueError("query_timeout_sec must be positive")
+    _configure_local_runtime(project_root)
+    statements = [statement.atom for statement in contract.statements]
+    validation = _run_isolated_stage(
+        "validate_episode_contract",
+        _check_episode_contract_stage,
+        (statements, contract.query_atom),
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    statement_results = validation.get("statement_results")
+    query_result = validation.get("query_result")
+    validators_admitted = (
+        validation.get("status") == "ok"
+        and isinstance(statement_results, list)
+        and len(statement_results) == len(statements)
+        and all(not isinstance(value, bool) and value == 1.0 for value in statement_results)
+        and not isinstance(query_result, bool)
+        and query_result == 1.0
+    )
+    events = [validation]
+    if validators_admitted:
+        events.append(_run_isolated_stage(
+            "compileadd_and_query_episode_contract",
+            _episode_contract_runtime_stage,
+            (statements, contract.query_atom, steps, query_timeout_sec),
+            stage_timeout_sec=stage_timeout_sec,
+        ))
+    runtime_stages = events[1].get("stages") if len(events) == 2 else None
+    query_answers = (
+        runtime_stages[1].get("result")
+        if isinstance(runtime_stages, list) and len(runtime_stages) == 2
+        and isinstance(runtime_stages[1], dict)
+        else None
+    )
+    runtime_admitted = (
+        len(events) == 2
+        and events[1].get("status") == "ok"
+        and isinstance(runtime_stages, list)
+        and len(runtime_stages) == 2
+        and all(isinstance(stage, dict) and stage.get("status") == "ok" for stage in runtime_stages)
+        and isinstance(query_answers, list)
+        and bool(query_answers)
+    )
+    return {
+        "schema": "petta-memory-pettachainer-contract-runtime-probe-v1",
+        "episode_id": contract.episode_id,
+        "chart_fingerprint": contract.chart_fingerprint,
+        "statement_count": len(statements),
+        "query_atom": contract.query_atom,
+        "validators_admitted": validators_admitted,
+        "runtime_admitted": runtime_admitted,
+        "events": events,
+        "boundaries": {
+            "no_result_claim_unless_runtime_admitted": True,
+            "no_inferred_belief_promotion": True,
+            "no_memory_write": True,
+            "no_live_integration": True,
+        },
+    }
+
+
+def _contextual_add_stage(packets: list[str]) -> dict[str, object]:
+    from pettachainer import PeTTaChainer
+
+    handler = PeTTaChainer()
+    return {"stages": [_time_call("add_evidence_packets_no_check", lambda: handler.add_atoms_no_check(packets))]}
+
+
+def _contextual_runtime_stage(packets: list[str], steps: int, timeout_sec: float) -> dict[str, object]:
+    from pettachainer import PeTTaChainer
+
+    handler = PeTTaChainer()
+    stages: list[dict[str, object]] = []
+    stages.append(_time_call("add_evidence_packets_no_check", lambda: handler.add_atoms_no_check(packets)))
+    query = "(: $proof (Requires MemoryTarget0 PLNReadyViews) $tv)"
+    stages.append(
+        _time_call(
+            "contextual_query_first_target",
+            lambda: handler.contextual_query(query, steps=steps, timeout_sec=timeout_sec).answers,
+        )
+    )
+    return {"stages": stages}
+
+
+def _configure_local_runtime(project_root: Path) -> None:
+    pettachainer = project_root / "repos" / "PeTTaChainer"
+    petta = project_root / "repos" / "PeTTa"
+    workspace = project_root.parents[1]
+    swi_prefix = workspace / "projects" / "omegaclaw" / "local" / "swipl-9.3.36"
+    venvs = sorted((pettachainer / ".venv" / "lib").glob("python*/site-packages"))
+    missing = [
+        str(path)
+        for path in (pettachainer / "pettachainer", petta / "python", swi_prefix)
+        if not path.exists()
+    ]
+    if not venvs:
+        missing.append(str(pettachainer / ".venv" / "lib" / "python*/site-packages"))
+    if missing:
+        raise RuntimeError("local PeTTaChainer/SWI runtime is unavailable: " + ", ".join(missing))
+    os.environ.setdefault("SWIPL_HOME", str(swi_prefix))
+    os.environ.setdefault("SWI_HOME_DIR", str(swi_prefix / "lib" / "swipl"))
+    os.environ["PATH"] = f"{swi_prefix / 'bin'}:{os.environ.get('PATH', '')}"
+    os.environ["LD_LIBRARY_PATH"] = (
+        f"{swi_prefix / 'lib' / 'swipl' / 'lib' / 'x86_64-linux'}:{os.environ.get('LD_LIBRARY_PATH', '')}"
+    )
+    for path in [str(venvs[-1]), str(pettachainer), str(petta / "python")]:
+        if path not in sys.path:
+            sys.path.insert(0, path)
+
+
+def profile_sizes(
+    sizes: Iterable[int],
+    *,
+    steps: int,
+    timeout_sec: float,
+    project_root: Path,
+    stage_timeout_sec: float = 30.0,
+    include_runtime_add: bool = False,
+    include_contextual: bool = False,
+) -> dict[str, object]:
+    _configure_local_runtime(project_root)
+
+    results: list[dict[str, object]] = []
+    for count in sizes:
+        with tempfile.TemporaryDirectory() as td:
+            store_path = Path(td) / "medium_memory.metta"
+            row: dict[str, object] = {
+                "clusters": count,
+                "steps": steps,
+                "timeout_sec": timeout_sec,
+                "stage_timeout_sec": stage_timeout_sec,
+            }
+            events: list[dict[str, object]] = []
+            build_event = _time_call("build_store_and_exports", lambda: _build_export_payload(store_path, count))
+            payload = build_event.pop("result")
+            events.append(build_event)
+            statements = payload["statements"]
+            packets = payload["packets"]
+            row.update({"statement_count": len(statements), "packet_count": len(packets)})
+            events.append(
+                _run_isolated_stage(
+                    "check_stmt_all",
+                    _check_statements_stage,
+                    (statements,),
+                    stage_timeout_sec=stage_timeout_sec,
+                )
+            )
+            if include_runtime_add:
+                events.append(
+                    _run_isolated_stage(
+                        "pettachainer_init_only",
+                        _pettachainer_init_stage,
+                        (),
+                        stage_timeout_sec=stage_timeout_sec,
+                    )
+                )
+                for label, probe, invocation in _compileadd_probe_specs(statements):
+                    events.append(
+                        _run_isolated_stage(
+                            label,
+                            _compileadd_probe_stage,
+                            (statements[0], probe, invocation),
+                            stage_timeout_sec=stage_timeout_sec,
+                        )
+                    )
+                events.append(
+                    _run_isolated_stage(
+                        "proof_runtime_add_only",
+                        _proof_add_stage,
+                        (statements,),
+                        stage_timeout_sec=stage_timeout_sec,
+                    )
+                )
+                events.append(
+                    _run_isolated_stage(
+                        "proof_runtime_add_and_query",
+                        _proof_runtime_stage,
+                        (statements, steps, timeout_sec),
+                        stage_timeout_sec=stage_timeout_sec,
+                    )
+                )
+                if include_contextual:
+                    events.append(
+                        _run_isolated_stage(
+                            "contextual_packet_add_only",
+                            _contextual_add_stage,
+                            (packets,),
+                            stage_timeout_sec=stage_timeout_sec,
+                        )
+                    )
+                    events.append(
+                        _run_isolated_stage(
+                            "contextual_runtime_add_and_query",
+                            _contextual_runtime_stage,
+                            (packets, steps, timeout_sec),
+                            stage_timeout_sec=stage_timeout_sec,
+                        )
+                    )
+            row["events"] = events
+            results.append(row)
+    return {"workload": "petta-memory promoted-belief proof/packet profile", "results": results}
+
+
+def _build_export_payload(store_path: Path, count: int) -> dict[str, list[str]]:
+    store = build_profile_store(store_path, count)
+    return {
+        "statements": [line for line in store.pettachainer_evidence_view().splitlines() if line],
+        "packets": [line for line in store.pettachainer_evidence_packet_view().splitlines() if line],
+    }
+
+
+def inspect_pettachainer_add_api(repo_path: str | Path) -> dict[str, object]:
+    """Inspect a PeTTaChainer checkout for add-path API options.
+
+    This is a source-level, no-runtime probe.  It records whether the checked-out
+    PeTTaChainer exposes a public precompiled-add/cache API or only routes public
+    add calls through ``compileadd``/``compileadd-mine``.  Keeping this as a pure
+    filesystem inspection lets project records justify the current non-live
+    precompiled handoff gate without rerunning the noisy SWI/MeTTa runtime.
+    """
+    repo = Path(repo_path)
+    py_path = repo / "pettachainer" / "pettachainer.py"
+    metta_path = repo / "pettachainer" / "metta" / "petta_chainer.metta"
+    missing = [str(path) for path in (py_path, metta_path) if not path.exists()]
+    if missing:
+        raise FileNotFoundError("missing PeTTaChainer source files: " + ", ".join(missing))
+
+    py_source = py_path.read_text(encoding="utf-8")
+    metta_source = metta_path.read_text(encoding="utf-8")
+    tree = ast.parse(py_source)
+    class_node = next(
+        (
+            node
+            for node in tree.body
+            if isinstance(node, ast.ClassDef) and node.name == "PeTTaChainer"
+        ),
+        None,
+    )
+    if class_node is None:
+        raise ValueError("PeTTaChainer class not found")
+    public_methods = [
+        node.name
+        for node in class_node.body
+        if isinstance(node, ast.FunctionDef) and not node.name.startswith("_")
+    ]
+    add_methods = [name for name in public_methods if "add" in name.lower()]
+    add_method_sources = {
+        node.name: ast.get_source_segment(py_source, node) or ""
+        for node in class_node.body
+        if isinstance(node, ast.FunctionDef) and node.name in add_methods
+    }
+    add_method_compile_calls = {
+        name: sorted(set(re.findall(r"compileadd(?:-mine)?", source)))
+        for name, source in add_method_sources.items()
+    }
+    precompiled_terms = sorted(
+        set(re.findall(r"\b[\w-]*(?:precompile|precompiled|cache|handoff)[\w-]*\b", py_source + "\n" + metta_source, re.IGNORECASE))
+    )
+    compileadd_defs = sorted(set(re.findall(r"\(= \((compileadd(?:-mine)?)\b", metta_source)))
+    compileadd_subforms = re.findall(r"\$[\w-]+ \(([^\s()]+)", metta_source)
+    selected_subforms = [
+        name
+        for name in compileadd_subforms
+        if name
+        in {
+            "materialize-stmt-lambdas",
+            "collapse",
+            "list_to_set",
+            "map-flat",
+            "index-source-implication",
+            "maybe-process-on-add",
+            "process-on-add-items",
+        }
+    ]
+    exposes_precompiled_add_api = any(
+        token.lower() in {"precompile", "precompiled", "precompiled-add", "precompiled-cache", "handoff"}
+        for token in precompiled_terms
+    )
+    return {
+        "source": "pettachainer source inspection",
+        "repo_path": str(repo),
+        "public_add_methods": add_methods,
+        "add_method_compile_calls": add_method_compile_calls,
+        "compileadd_definitions": compileadd_defs,
+        "compileadd_subforms_seen": selected_subforms,
+        "precompiled_add_terms_seen": precompiled_terms,
+        "exposes_precompiled_add_api": exposes_precompiled_add_api,
+        "recommended_boundary": (
+            "no public precompiled-add API found; keep petta-memory's handoff cache non-live and continue "
+            "upstream materialize-stmt-lambdas/mm2compile instrumentation"
+            if not exposes_precompiled_add_api
+            else "review discovered precompiled/cache terms manually before adopting any API"
+        ),
+        "gates": [
+            "Source inspection only; does not invoke PeTTaChainer compileadd/query.",
+            "Do not infer beliefs or enable OmegaClaw writes from this inspection.",
+            "Adopt an upstream API only after a separate non-live gate verifies semantics and provenance.",
+        ],
+    }
+
+
+def _extract_metta_definition(source: str, symbol: str) -> dict[str, object] | None:
+    """Return a bounded source excerpt for a top-level MeTTa definition.
+
+    This is intentionally a source inspector, not a MeTTa evaluator.  It is used
+    to keep the current PeTTaChainer bottleneck work grounded in checked-out
+    upstream text while avoiding another noisy ``compileadd`` runtime call.
+    """
+    lines = source.splitlines()
+    pattern = re.compile(rf"^\(= \({re.escape(symbol)}(?:\s|\))")
+    start_index = next((index for index, line in enumerate(lines) if pattern.search(line)), None)
+    if start_index is None:
+        return None
+    depth = 0
+    end_index = start_index
+    for index in range(start_index, len(lines)):
+        line = lines[index]
+        depth += line.count("(") - line.count(")")
+        end_index = index
+        if index > start_index and depth <= 0:
+            break
+    snippet = "\n".join(lines[start_index : end_index + 1])
+    return {
+        "symbol": symbol,
+        "line_start": start_index + 1,
+        "line_end": end_index + 1,
+        "line_count": end_index - start_index + 1,
+        "calls": sorted(set(re.findall(r"\(([A-Za-z0-9_+*/<>=?!|.-]+)(?:\s|\))", snippet))),
+        "recursive": bool(re.search(rf"\({re.escape(symbol)}(?:\s|\))", snippet.split("\n", 1)[-1] if "\n" in snippet else "")),
+        "snippet": snippet,
+    }
+
+
+def _sexpr_walk(value: object) -> Iterable[object]:
+    yield value
+    if isinstance(value, tuple):
+        for item in value:
+            yield from _sexpr_walk(item)
+
+
+def inspect_materialize_stmt_lambdas_for_statement(repo_path: str | Path, statement: str) -> dict[str, object]:
+    """Source-level analysis of ``materialize-stmt-lambdas`` for one statement.
+
+    Runtime probes show the first ``compileadd`` binding can time out even for
+    the tiny petta-memory promoted-belief statement.  This helper keeps the next
+    probe bounded and non-live: it reads the checked-out source definition and
+    statically checks whether the statement contains any ``|->`` lambda forms
+    that would trigger the definition's only ``eval`` branch.  For lambda-free
+    statements, the source definition should act as a structural identity walk,
+    so a runtime timeout points at evaluator/recursive traversal overhead rather
+    than user lambda execution.
+    """
+    repo = Path(repo_path)
+    root_metta_path = repo / "pettachainer" / "metta" / "petta_chainer.metta"
+    if not root_metta_path.exists():
+        raise FileNotFoundError(f"missing PeTTaChainer source file: {root_metta_path}")
+
+    form = parse_one_list(statement)
+    walked = list(_sexpr_walk(form))
+    expr_count = sum(1 for item in walked if isinstance(item, tuple))
+    atom_count = len(walked) - expr_count
+    lambda_forms = [to_source(item) for item in walked if isinstance(item, tuple) and item and symbol_text(item[0]) == "|->"]
+    source = root_metta_path.read_text(encoding="utf-8")
+    definition = _extract_metta_definition(source, "materialize-stmt-lambdas")
+    if definition is not None:
+        definition["file"] = "pettachainer/metta/petta_chainer.metta"
+    return {
+        "source": "pettachainer materialize-stmt-lambdas source statement inspection",
+        "repo_path": str(repo),
+        "statement": statement,
+        "statement_stats": {
+            "expression_nodes": expr_count,
+            "atom_nodes": atom_count,
+            "total_nodes": len(walked),
+            "lambda_form_count": len(lambda_forms),
+            "lambda_forms": lambda_forms,
+        },
+        "materialize_expected_identity": not lambda_forms,
+        "expected_materialized_statement": statement if not lambda_forms else None,
+        "definition": definition,
+        "interpretation": (
+            "No |-> lambda forms occur in this statement, so source-level materialization should only walk and rebuild the same tree; "
+            "the observed timeout is therefore more likely in the PeTTa/MeTTa evaluator recursion/materialization machinery than in user lambda execution."
+            if not lambda_forms
+            else "Statement contains |-> lambda forms, so materialize-stmt-lambdas may invoke eval and must be runtime-gated separately."
+        ),
+        "next_probe": {
+            "kind": "non-live materialize identity runtime gate",
+            "preconditions": [
+                "Use an isolated subprocess and short stage timeout.",
+                "Compare materialized output to the original statement for lambda-free promoted beliefs.",
+                "Do not proceed to mm2compile/compileadd unless this identity gate completes cleanly.",
+            ],
+        },
+        "gates": [
+            "Source inspection only; no PeTTaChainer runtime, compileadd, query, GoalChainer, or OmegaClaw path is invoked.",
+            "Do not treat the identity expectation as an inferred belief or runtime success.",
+            "Keep live writes and full add/query behind separate non-live gates.",
+        ],
+    }
+
+
+def run_materialize_identity_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 10.0,
+) -> dict[str, object]:
+    """Run a bounded non-live identity gate for ``materialize-stmt-lambdas``.
+
+    Source inspection first verifies that the statement is lambda-free.  Only
+    then does this function configure the local PeTTaChainer runtime and run the
+    single materialization form in an isolated subprocess.  It does not call
+    ``mm2compile``, ``compileadd``, query, GoalChainer, or OmegaClaw paths.
+    """
+    repo = project_root / "repos" / "PeTTaChainer"
+    inspection = inspect_materialize_stmt_lambdas_for_statement(repo, statement)
+    if not inspection["materialize_expected_identity"]:
+        return {
+            "source": "non-live materialize-stmt-lambdas identity gate",
+            "status": "skipped",
+            "reason": "statement contains |-> lambda forms; identity materialization is not expected",
+            "inspection": inspection,
+            "gates": [
+                "No runtime execution attempted because source inspection did not predict identity materialization.",
+                "Do not proceed to mm2compile/compileadd/query from a skipped identity gate.",
+            ],
+        }
+
+    _configure_local_runtime(project_root)
+    event = _run_materialize_identity_event(statement, stage_timeout_sec=stage_timeout_sec)
+    status = "passed" if event.get("status") == "ok" and event.get("identity_output_present") else "blocked"
+    return {
+        "source": "non-live materialize-stmt-lambdas identity gate",
+        "status": status,
+        "inspection": inspection,
+        "runtime_event": event,
+        "interpretation": (
+            "Runtime materialization returned the original lambda-free statement; mm2compile can be gated separately."
+            if status == "passed"
+            else "Identity materialization did not complete with matching output under the bound; keep mm2compile/compileadd/query gated."
+        ),
+        "gates": [
+            "Single materialize-stmt-lambdas call only; no mm2compile, compileadd, query, GoalChainer, or OmegaClaw path is invoked.",
+            "Temporary/non-live probe only; no petta-memory journal writes and no inferred-belief claims.",
+            "Proceed to mm2compile instrumentation only after this identity gate passes with matching output.",
+        ],
+    }
+
+
+def _run_materialize_identity_event(statement: str, *, stage_timeout_sec: float) -> dict[str, object]:
+    return _run_isolated_stage(
+        "materialize_stmt_lambdas_identity",
+        _materialize_identity_stage,
+        (statement,),
+        stage_timeout_sec=stage_timeout_sec,
+    )
+
+
+def materialize_identity_proof_shape_rungs(statement: str) -> list[str]:
+    """Return bounded materialization rungs for one ``(: proof type tv)`` atom.
+
+    The generic ladder accepts caller-selected forms.  This helper gives the
+    blocked PeTTaChainer proof shape a reproducible progression: materialize the
+    independent type and truth-value subforms first, then synthetic top-level
+    proof prefixes, sentinel full-arity proof atoms, then the exact full proof atom.
+    ``materialize-stmt-lambdas`` should be purely structural for lambda-free
+    expressions, so prefix and sentinel rungs help distinguish a subform problem
+    from a top-level list-shape/evaluator problem without invoking ``mm2compile``
+    or ``compileadd``.
+    """
+    form = parse_one_list(statement)
+    if len(form) != 4 or symbol_text(form[0]) != ":":
+        raise ValueError("statement must be a PeTTaChainer proof atom: (: proof type tv)")
+    proof_id = to_source(form[1])
+    statement_type = to_source(form[2])
+    truth_value = to_source(form[3])
+    sentinel_type = "ProofShapeSentinel"
+    sentinel_truth_value = "(STV 1.0 1.0)"
+    return [
+        statement_type,
+        truth_value,
+        f"(: {proof_id})",
+        f"(: {proof_id} {statement_type})",
+        f"(: {proof_id} {sentinel_type} {sentinel_truth_value})",
+        f"(: {proof_id} {statement_type} {sentinel_truth_value})",
+        f"(: {proof_id} {sentinel_type} {truth_value})",
+        statement,
+    ]
+
+
+def materialize_nested_type_proof_rungs(statement: str) -> list[str]:
+    """Return proof materialization rungs that decompose the nested Type field.
+
+    The proof-shape ladder narrowed the current timeout to a full ``(: proof
+    type tv)`` atom whose ``type`` field is itself a nested statement such as
+    ``(Requires MemoryTarget0 PLNReadyViews)``.  This ladder keeps the top-level
+    proof shape and sentinel STV fixed while gradually rebuilding the nested type
+    expression with sentinel arguments.  It helps distinguish a generic nested
+    expression/arity problem from a specific predicate or argument token problem,
+    without invoking ``mm2compile`` or ``compileadd``.
+    """
+    form = parse_one_list(statement)
+    if len(form) != 4 or symbol_text(form[0]) != ":":
+        raise ValueError("statement must be a PeTTaChainer proof atom: (: proof type tv)")
+    statement_type = form[2]
+    if not isinstance(statement_type, tuple) or len(statement_type) < 2:
+        raise ValueError("proof Type must be a nested expression with at least one argument")
+    proof_id = to_source(form[1])
+    type_head = to_source(statement_type[0])
+    args = [to_source(part) for part in statement_type[1:]]
+    sentinel_truth_value = "(STV 1.0 1.0)"
+    sentinel_args = [f"TypeArgSentinel{index}" for index in range(len(args))]
+
+    rungs = [
+        f"(: {proof_id} {type_head} {sentinel_truth_value})",
+        f"(: {proof_id} ({type_head}) {sentinel_truth_value})",
+    ]
+    for width in range(1, len(args) + 1):
+        partial_args = args[:width]
+        rungs.append(f"(: {proof_id} ({' '.join([type_head, *partial_args])}) {sentinel_truth_value})")
+    if args != sentinel_args:
+        rungs.append(f"(: {proof_id} ({' '.join([type_head, *sentinel_args])}) {sentinel_truth_value})")
+        for index in range(len(args)):
+            mixed_args = list(sentinel_args)
+            mixed_args[index] = args[index]
+            rung = f"(: {proof_id} ({' '.join([type_head, *mixed_args])}) {sentinel_truth_value})"
+            if rung not in rungs:
+                rungs.append(rung)
+    return rungs
+
+
+def materialize_nested_type_arity_matrix_rungs(statement: str) -> list[str]:
+    """Return nested-Type materialization rungs ordered to test arity first.
+
+    The first nested-Type ladder stopped at the original two-argument Type before
+    reaching the all-sentinel and mixed-argument controls.  This matrix keeps the
+    same full proof shape and sentinel STV, but schedules all-sentinel arity
+    rungs before any original argument tokens.  If ``(Requires S0 S1)`` blocks,
+    the materializer problem is likely generic to two-argument nested Type
+    expressions inside proof atoms; if it passes, the mixed/original rows localize
+    the issue to a specific argument token or token combination.
+    """
+    form = parse_one_list(statement)
+    if len(form) != 4 or symbol_text(form[0]) != ":":
+        raise ValueError("statement must be a PeTTaChainer proof atom: (: proof type tv)")
+    statement_type = form[2]
+    if not isinstance(statement_type, tuple) or len(statement_type) < 2:
+        raise ValueError("proof Type must be a nested expression with at least one argument")
+
+    proof_id = to_source(form[1])
+    type_head = to_source(statement_type[0])
+    args = [to_source(part) for part in statement_type[1:]]
+    sentinel_truth_value = "(STV 1.0 1.0)"
+    sentinel_args = [f"TypeArgSentinel{index}" for index in range(len(args))]
+
+    rungs = [
+        f"(: {proof_id} ({type_head}) {sentinel_truth_value})",
+    ]
+    for width in range(1, len(args) + 1):
+        rungs.append(f"(: {proof_id} ({' '.join([type_head, *sentinel_args[:width]])}) {sentinel_truth_value})")
+    for index in range(len(args)):
+        mixed_args = list(sentinel_args)
+        mixed_args[index] = args[index]
+        rung = f"(: {proof_id} ({' '.join([type_head, *mixed_args])}) {sentinel_truth_value})"
+        if rung not in rungs:
+            rungs.append(rung)
+    original_rung = f"(: {proof_id} ({' '.join([type_head, *args])}) {sentinel_truth_value})"
+    if original_rung not in rungs:
+        rungs.append(original_rung)
+    return rungs
+
+
+def materialize_nested_type_context_matrix_rungs(statement: str) -> list[str]:
+    """Return rungs that test the blocked nested Type in nearby contexts.
+
+    The arity matrix showed that a full proof atom blocks as soon as its Type
+    field is a two-argument nested expression, even with synthetic sentinel
+    tokens.  This context matrix keeps that all-sentinel nested expression fixed
+    and moves it through minimal surrounding list shapes before returning to the
+    exact PeTTaChainer ``(: proof type tv)`` context.  The ordering distinguishes
+    a generic nested-expression-in-four-field-list problem from something more
+    specific to the PeTTaChainer ``:`` proof atom shape.
+    """
+    form = parse_one_list(statement)
+    if len(form) != 4 or symbol_text(form[0]) != ":":
+        raise ValueError("statement must be a PeTTaChainer proof atom: (: proof type tv)")
+    statement_type = form[2]
+    if not isinstance(statement_type, tuple) or len(statement_type) < 3:
+        raise ValueError("proof Type must be a nested expression with at least two arguments")
+
+    proof_id = to_source(form[1])
+    type_head = to_source(statement_type[0])
+    sentinel_args = [f"TypeArgSentinel{index}" for index in range(len(statement_type) - 1)]
+    nested_type = f"({' '.join([type_head, *sentinel_args])})"
+    sentinel_truth_value = "(STV 1.0 1.0)"
+    return [
+        nested_type,
+        f"(: {proof_id} {nested_type})",
+        f"(ProofEnvelope {proof_id} {nested_type})",
+        f"(ProofEnvelope {proof_id} {nested_type} {sentinel_truth_value})",
+        f"(: {proof_id} {nested_type} {sentinel_truth_value})",
+    ]
+
+
+def materialize_generic_four_field_context_arity_rungs(statement: str) -> list[str]:
+    """Return generic four-field wrapper rungs ordered by nested Type arity.
+
+    The context matrix showed that a two-argument nested Type is cheap alone and
+    in two/three-field contexts but blocks inside a generic four-field wrapper.
+    This helper keeps the wrapper head independent of PeTTaChainer's ``:`` proof
+    syntax and schedules empty, one-argument, then two-argument nested Type rows
+    before token-mixed/original controls.  That isolates whether the four-field
+    list context itself becomes problematic exactly at nested Type arity two, or
+    only for particular argument tokens.
+    """
+    form = parse_one_list(statement)
+    if len(form) != 4 or symbol_text(form[0]) != ":":
+        raise ValueError("statement must be a PeTTaChainer proof atom: (: proof type tv)")
+    statement_type = form[2]
+    if not isinstance(statement_type, tuple) or len(statement_type) < 3:
+        raise ValueError("proof Type must be a nested expression with at least two arguments")
+
+    proof_id = to_source(form[1])
+    type_head = to_source(statement_type[0])
+    args = [to_source(part) for part in statement_type[1:]]
+    sentinel_args = [f"TypeArgSentinel{index}" for index in range(len(args))]
+    sentinel_truth_value = "(STV 1.0 1.0)"
+
+    rungs = [
+        f"(ProofEnvelope {proof_id} ({type_head}) {sentinel_truth_value})",
+    ]
+    for width in range(1, len(args) + 1):
+        nested_type = f"({' '.join([type_head, *sentinel_args[:width]])})"
+        rungs.append(f"(ProofEnvelope {proof_id} {nested_type} {sentinel_truth_value})")
+    for index in range(len(args)):
+        mixed_args = list(sentinel_args)
+        mixed_args[index] = args[index]
+        nested_type = f"({' '.join([type_head, *mixed_args])})"
+        rung = f"(ProofEnvelope {proof_id} {nested_type} {sentinel_truth_value})"
+        if rung not in rungs:
+            rungs.append(rung)
+    original_nested_type = f"({' '.join([type_head, *args])})"
+    original_rung = f"(ProofEnvelope {proof_id} {original_nested_type} {sentinel_truth_value})"
+    if original_rung not in rungs:
+        rungs.append(original_rung)
+    return rungs
+
+
+def materialize_four_field_nested_position_rungs(statement: str) -> list[str]:
+    """Return four-field rungs that move the same nested Type by position.
+
+    The generic arity gate showed a two-argument nested Type blocks inside a
+    four-field ``ProofEnvelope``.  This follow-up keeps the nested expression
+    fully synthetic and moves it through each argument position of a four-field
+    wrapper before returning to the proof-like slot layout.  If the first row
+    blocks, the issue is likely any nested two-argument subexpression in a
+    four-field list; if only a later row blocks, position or neighboring payload
+    shape is implicated.  The rungs remain materializer-only diagnostics, not PLN
+    premises.
+    """
+    form = parse_one_list(statement)
+    if len(form) != 4 or symbol_text(form[0]) != ":":
+        raise ValueError("statement must be a PeTTaChainer proof atom: (: proof type tv)")
+    statement_type = form[2]
+    if not isinstance(statement_type, tuple) or len(statement_type) < 3:
+        raise ValueError("proof Type must be a nested expression with at least two arguments")
+
+    proof_id = to_source(form[1])
+    type_head = to_source(statement_type[0])
+    sentinel_args = [f"TypeArgSentinel{index}" for index in range(len(statement_type) - 1)]
+    nested_type = f"({' '.join([type_head, *sentinel_args])})"
+    sentinel_truth_value = "(STV 1.0 1.0)"
+    return [
+        f"(ProofEnvelope {nested_type} PayloadA PayloadB)",
+        f"(ProofEnvelope PayloadA {nested_type} PayloadB)",
+        f"(ProofEnvelope PayloadA PayloadB {nested_type})",
+        f"(ProofEnvelope {proof_id} {nested_type} {sentinel_truth_value})",
+    ]
+
+
+def materialize_four_field_neighbor_shape_rungs(statement: str) -> list[str]:
+    """Return rungs that isolate proof-like neighbors around a nested Type.
+
+    The nested-position gate showed that a two-argument nested Type can sit in
+    each generic four-field argument slot when its siblings are simple Payload
+    atoms, but the proof-like ``proof-id / nested-Type / STV`` neighbor shape
+    still blocks.  This matrix keeps the nested Type fixed in the second payload
+    slot and introduces the left proof id, right STV-like expression, and STV
+    head stepwise.  The goal is to distinguish whether the blocker is caused by
+    the left proof-id neighbor, any right nested truth-value payload, or the
+    specific ``(STV strength confidence)`` payload shape.
+    """
+    form = parse_one_list(statement)
+    if len(form) != 4 or symbol_text(form[0]) != ":":
+        raise ValueError("statement must be a PeTTaChainer proof atom: (: proof type tv)")
+    statement_type = form[2]
+    if not isinstance(statement_type, tuple) or len(statement_type) < 3:
+        raise ValueError("proof Type must be a nested expression with at least two arguments")
+
+    proof_id = to_source(form[1])
+    type_head = to_source(statement_type[0])
+    sentinel_args = [f"TypeArgSentinel{index}" for index in range(len(statement_type) - 1)]
+    nested_type = f"({' '.join([type_head, *sentinel_args])})"
+    return [
+        f"(ProofEnvelope PayloadA {nested_type} PayloadB)",
+        f"(ProofEnvelope {proof_id} {nested_type} PayloadB)",
+        f"(ProofEnvelope PayloadA {nested_type} (STV 1.0 1.0))",
+        f"(ProofEnvelope {proof_id} {nested_type} (TruthValuePayload 1.0 1.0))",
+        f"(ProofEnvelope {proof_id} {nested_type} (STV 1.0 1.0))",
+    ]
+
+
+def materialize_four_field_right_payload_arity_rungs(statement: str) -> list[str]:
+    """Return rungs that vary the right payload beside a nested Type.
+
+    The neighbor-shape gate showed that the left sibling can remain generic
+    while ``PayloadA / nested-Type / (STV 1.0 1.0)`` blocks.  This follow-up
+    keeps the two-argument nested Type in the second slot with a generic left
+    payload, then grows the right sibling by arity under a non-STV head before
+    repeating the same arities under ``STV``.  This distinguishes a general
+    right-nested-payload arity problem from something specific to the STV head.
+    """
+    form = parse_one_list(statement)
+    if len(form) != 4 or symbol_text(form[0]) != ":":
+        raise ValueError("statement must be a PeTTaChainer proof atom: (: proof type tv)")
+    statement_type = form[2]
+    if not isinstance(statement_type, tuple) or len(statement_type) < 3:
+        raise ValueError("proof Type must be a nested expression with at least two arguments")
+
+    type_head = to_source(statement_type[0])
+    sentinel_args = [f"TypeArgSentinel{index}" for index in range(len(statement_type) - 1)]
+    nested_type = f"({' '.join([type_head, *sentinel_args])})"
+    return [
+        f"(ProofEnvelope PayloadA {nested_type} PayloadB)",
+        f"(ProofEnvelope PayloadA {nested_type} (RightPayload))",
+        f"(ProofEnvelope PayloadA {nested_type} (RightPayload 1.0))",
+        f"(ProofEnvelope PayloadA {nested_type} (RightPayload 1.0 1.0))",
+        f"(ProofEnvelope PayloadA {nested_type} (STV))",
+        f"(ProofEnvelope PayloadA {nested_type} (STV 1.0))",
+        f"(ProofEnvelope PayloadA {nested_type} (STV 1.0 1.0))",
+    ]
+
+
+def materialize_four_field_adjacent_nested_arity_rungs(statement: str) -> list[str]:
+    """Return rungs that vary adjacent nested sibling arities together.
+
+    The right-payload arity gate showed that a two-argument nested Type beside a
+    two-argument right payload blocks even when the right payload has a generic
+    ``RightPayload`` head.  This follow-up keeps the same synthetic four-field
+    wrapper, fixes the right sibling at that generic two-argument shape, and
+    grows the left nested Type from empty to one-argument to two-argument before
+    repeating the same pattern with ``STV``.  If the one-argument Type passes but
+    the two-argument Type blocks, the issue is specifically adjacent nested
+    siblings whose arities are both two rather than a generic right-payload
+    arity-two expression in a four-field wrapper.
+    """
+    form = parse_one_list(statement)
+    if len(form) != 4 or symbol_text(form[0]) != ":":
+        raise ValueError("statement must be a PeTTaChainer proof atom: (: proof type tv)")
+    statement_type = form[2]
+    if not isinstance(statement_type, tuple) or len(statement_type) < 3:
+        raise ValueError("proof Type must be a nested expression with at least two arguments")
+
+    type_head = to_source(statement_type[0])
+    sentinel_args = [f"TypeArgSentinel{index}" for index in range(len(statement_type) - 1)]
+
+    rungs: list[str] = []
+    for right_payload in ["(RightPayload 1.0 1.0)", "(STV 1.0 1.0)"]:
+        rungs.append(f"(ProofEnvelope PayloadA ({type_head}) {right_payload})")
+        for width in range(1, len(sentinel_args) + 1):
+            nested_type = f"({' '.join([type_head, *sentinel_args[:width]])})"
+            rungs.append(f"(ProofEnvelope PayloadA {nested_type} {right_payload})")
+    return rungs
+
+
+def run_materialize_four_field_adjacent_nested_arity_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 10.0,
+) -> dict[str, object]:
+    """Run a four-field adjacent-nested arity gate without add/query."""
+    rungs = materialize_four_field_adjacent_nested_arity_rungs(statement)
+    result = run_materialize_identity_ladder_gate(
+        rungs,
+        project_root=project_root,
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    result.update(
+        {
+            "source": "non-live materialize-stmt-lambdas four-field adjacent-nested arity gate",
+            "proof_statement": statement,
+            "four_field_adjacent_nested_arity_rungs": rungs,
+            "interpretation": (
+                "All adjacent nested sibling arity rungs materialized as identity; return to proof/STV proof-shape gating."
+                if result.get("status") == "passed"
+                else "An adjacent nested sibling arity rung failed or timed out; keep mm2compile/compileadd/query gated and use the first blocked rung to distinguish one-sided right-payload arity from dual nested arity-two sibling cost."
+            ),
+        }
+    )
+    result["gates"] = [
+        "Four-field adjacent nested-sibling arity matrix only; each rung invokes materialize-stmt-lambdas in an isolated subprocess.",
+        "No mm2compile, compileadd, query, GoalChainer, OmegaClaw path, journal write, or inferred-belief claim is invoked.",
+        "Synthetic ProofEnvelope/Payload/RightPayload/STV rungs are diagnostics for the materializer/evaluator and are not PLN premises.",
+    ]
+    return result
+
+
+def run_materialize_four_field_right_payload_arity_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 10.0,
+) -> dict[str, object]:
+    """Run a four-field right-payload arity/head gate without add/query."""
+    rungs = materialize_four_field_right_payload_arity_rungs(statement)
+    result = run_materialize_identity_ladder_gate(
+        rungs,
+        project_root=project_root,
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    result.update(
+        {
+            "source": "non-live materialize-stmt-lambdas four-field right-payload arity gate",
+            "proof_statement": statement,
+            "four_field_right_payload_arity_rungs": rungs,
+            "interpretation": (
+                "All four-field right-payload arity rungs materialized as identity; return to proof-id/STV proof-shape gating."
+                if result.get("status") == "passed"
+                else "A four-field right-payload arity rung failed or timed out; keep mm2compile/compileadd/query gated and use the first blocked rung to distinguish generic right-payload arity from STV-head-specific cost."
+            ),
+        }
+    )
+    result["gates"] = [
+        "Four-field right-payload arity/head matrix only; each rung invokes materialize-stmt-lambdas in an isolated subprocess.",
+        "No mm2compile, compileadd, query, GoalChainer, OmegaClaw path, journal write, or inferred-belief claim is invoked.",
+        "Synthetic ProofEnvelope/Payload/RightPayload/STV rungs are diagnostics for the materializer/evaluator and are not PLN premises.",
+    ]
+    return result
+
+
+def run_materialize_generic_four_field_context_arity_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 10.0,
+) -> dict[str, object]:
+    """Run a generic four-field nested-Type arity gate without add/query."""
+    rungs = materialize_generic_four_field_context_arity_rungs(statement)
+    result = run_materialize_identity_ladder_gate(
+        rungs,
+        project_root=project_root,
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    result.update(
+        {
+            "source": "non-live materialize-stmt-lambdas generic four-field context arity gate",
+            "proof_statement": statement,
+            "generic_four_field_context_arity_rungs": rungs,
+            "interpretation": (
+                "All generic four-field context arity rungs materialized as identity; return to PeTTaChainer ':' proof-shape gating."
+                if result.get("status") == "passed"
+                else "A generic four-field context arity rung failed or timed out; keep mm2compile/compileadd/query gated and use the first blocked rung to distinguish wrapper-arity cost from ':' proof-shape-specific cost."
+            ),
+        }
+    )
+    result["gates"] = [
+        "Generic four-field context arity matrix only; each rung invokes materialize-stmt-lambdas in an isolated subprocess.",
+        "No mm2compile, compileadd, query, GoalChainer, OmegaClaw path, journal write, or inferred-belief claim is invoked.",
+        "Synthetic ProofEnvelope/context rungs are diagnostics for the materializer/evaluator and are not PLN premises.",
+    ]
+    return result
+
+
+def run_materialize_four_field_nested_position_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 10.0,
+) -> dict[str, object]:
+    """Run a four-field nested-expression position gate without add/query."""
+    rungs = materialize_four_field_nested_position_rungs(statement)
+    result = run_materialize_identity_ladder_gate(
+        rungs,
+        project_root=project_root,
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    result.update(
+        {
+            "source": "non-live materialize-stmt-lambdas four-field nested-position gate",
+            "proof_statement": statement,
+            "four_field_nested_position_rungs": rungs,
+            "interpretation": (
+                "All four-field nested-position rungs materialized as identity; return to PeTTaChainer ':' proof-shape gating."
+                if result.get("status") == "passed"
+                else "A four-field nested-position rung failed or timed out; keep mm2compile/compileadd/query gated and use the first blocked rung to distinguish any-position four-field nesting cost from proof-slot-specific cost."
+            ),
+        }
+    )
+    result["gates"] = [
+        "Four-field nested-position matrix only; each rung invokes materialize-stmt-lambdas in an isolated subprocess.",
+        "No mm2compile, compileadd, query, GoalChainer, OmegaClaw path, journal write, or inferred-belief claim is invoked.",
+        "Synthetic ProofEnvelope/Payload rungs are diagnostics for the materializer/evaluator and are not PLN premises.",
+    ]
+    return result
+
+
+def run_materialize_four_field_neighbor_shape_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 10.0,
+) -> dict[str, object]:
+    """Run a four-field neighbor-shape gate without add/query."""
+    rungs = materialize_four_field_neighbor_shape_rungs(statement)
+    result = run_materialize_identity_ladder_gate(
+        rungs,
+        project_root=project_root,
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    result.update(
+        {
+            "source": "non-live materialize-stmt-lambdas four-field neighbor-shape gate",
+            "proof_statement": statement,
+            "four_field_neighbor_shape_rungs": rungs,
+            "interpretation": (
+                "All four-field neighbor-shape rungs materialized as identity; return to PeTTaChainer ':' proof-shape gating."
+                if result.get("status") == "passed"
+                else "A four-field neighbor-shape rung failed or timed out; keep mm2compile/compileadd/query gated and use the first blocked rung to distinguish proof-id neighbor cost, right truth-value payload cost, and STV-head-specific cost."
+            ),
+        }
+    )
+    result["gates"] = [
+        "Four-field neighbor-shape matrix only; each rung invokes materialize-stmt-lambdas in an isolated subprocess.",
+        "No mm2compile, compileadd, query, GoalChainer, OmegaClaw path, journal write, or inferred-belief claim is invoked.",
+        "Synthetic ProofEnvelope/Payload/TruthValuePayload rungs are diagnostics for the materializer/evaluator and are not PLN premises.",
+    ]
+    return result
+
+
+def run_materialize_nested_type_arity_matrix_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 10.0,
+) -> dict[str, object]:
+    """Run the nested-Type materialization matrix without mm2compile/add/query."""
+    rungs = materialize_nested_type_arity_matrix_rungs(statement)
+    result = run_materialize_identity_ladder_gate(
+        rungs,
+        project_root=project_root,
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    result.update(
+        {
+            "source": "non-live materialize-stmt-lambdas nested-type arity matrix gate",
+            "proof_statement": statement,
+            "nested_type_arity_matrix_rungs": rungs,
+            "interpretation": (
+                "All sentinel/mixed/original nested-Type matrix rungs materialized as identity; mm2compile can be gated separately."
+                if result.get("status") == "passed"
+                else "A nested-Type arity/token matrix rung failed or timed out; keep mm2compile/compileadd/query gated and use the first blocked rung to distinguish generic arity from token-specific cost."
+            ),
+        }
+    )
+    result["gates"] = [
+        "Nested-Type arity/token matrix only; each rung invokes materialize-stmt-lambdas in an isolated subprocess.",
+        "No mm2compile, compileadd, query, GoalChainer, OmegaClaw path, journal write, or inferred-belief claim is invoked.",
+        "Synthetic sentinel/mixed rungs are diagnostics for the materializer/evaluator and are not PLN premises.",
+    ]
+    return result
+
+
+def run_materialize_nested_type_context_matrix_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 10.0,
+) -> dict[str, object]:
+    """Run the nested-Type context matrix without mm2compile/add/query."""
+    rungs = materialize_nested_type_context_matrix_rungs(statement)
+    result = run_materialize_identity_ladder_gate(
+        rungs,
+        project_root=project_root,
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    result.update(
+        {
+            "source": "non-live materialize-stmt-lambdas nested-type context matrix gate",
+            "proof_statement": statement,
+            "nested_type_context_matrix_rungs": rungs,
+            "interpretation": (
+                "All context-matrix rungs materialized as identity; return to mm2compile gating."
+                if result.get("status") == "passed"
+                else "A context-matrix rung failed or timed out; keep mm2compile/compileadd/query gated and use the first blocked context to distinguish generic full-list nesting from ':' proof-shape-specific cost."
+            ),
+        }
+    )
+    result["gates"] = [
+        "Nested-Type context matrix only; each rung invokes materialize-stmt-lambdas in an isolated subprocess.",
+        "No mm2compile, compileadd, query, GoalChainer, OmegaClaw path, journal write, or inferred-belief claim is invoked.",
+        "Synthetic ProofEnvelope/context rungs are diagnostics for the materializer/evaluator and are not PLN premises.",
+    ]
+    return result
+
+
+def run_materialize_nested_type_ladder_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 10.0,
+) -> dict[str, object]:
+    """Run a non-live materialization ladder over the nested proof Type field."""
+    rungs = materialize_nested_type_proof_rungs(statement)
+    result = run_materialize_identity_ladder_gate(
+        rungs,
+        project_root=project_root,
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    result.update(
+        {
+            "source": "non-live materialize-stmt-lambdas nested-type proof ladder gate",
+            "proof_statement": statement,
+            "nested_type_rungs": rungs,
+            "interpretation": (
+                "Nested Type materialization completed for all sentinel/partial proof rungs; return to mm2compile gating."
+                if result.get("status") == "passed"
+                else "A nested Type proof rung failed or timed out; keep mm2compile/compileadd/query gated and instrument this shape next."
+            ),
+        }
+    )
+    result["gates"] = [
+        "Nested-Type ladder only; each rung invokes materialize-stmt-lambdas in an isolated subprocess.",
+        "No mm2compile, compileadd, query, GoalChainer, OmegaClaw path, journal write, or inferred-belief claim is invoked.",
+        "Synthetic sentinel rungs are diagnostics for the materializer/evaluator and are not PLN premises.",
+    ]
+    return result
+
+
+def run_materialize_proof_shape_ladder_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 10.0,
+) -> dict[str, object]:
+    """Run the materialization ladder specialized for a proof atom shape.
+
+    This is a non-live instrumentation gate for the current PeTTaChainer
+    bottleneck.  It delegates every runtime call to
+    ``run_materialize_identity_ladder_gate`` and adds only the deterministic rung
+    construction/provenance around the result.
+    """
+    rungs = materialize_identity_proof_shape_rungs(statement)
+    result = run_materialize_identity_ladder_gate(
+        rungs,
+        project_root=project_root,
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    result.update(
+        {
+            "source": "non-live materialize-stmt-lambdas proof-shape ladder gate",
+            "proof_statement": statement,
+            "proof_shape_rungs": rungs,
+            "interpretation": (
+                "Proof-shape materialization completed for subforms, prefixes, and the full statement; mm2compile can be gated separately."
+                if result.get("status") == "passed"
+                else "A proof-shape materialization rung failed or timed out; keep mm2compile/compileadd/query gated and instrument the first blocked shape."
+            ),
+        }
+    )
+    result["gates"] = [
+        "Proof-shape ladder only; each rung invokes materialize-stmt-lambdas in an isolated subprocess.",
+        "No mm2compile, compileadd, query, GoalChainer, OmegaClaw path, journal write, or inferred-belief claim is invoked.",
+        "Synthetic prefix rungs are diagnostics for the materializer/evaluator and are not PLN premises.",
+    ]
+    return result
+
+
+def run_materialize_identity_ladder_gate(
+    statements: Iterable[str],
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 10.0,
+) -> dict[str, object]:
+    """Run materialization identity probes from small forms up to a full proof.
+
+    The previous single-statement gate showed that the tiny promoted-belief proof
+    can time out before ``mm2compile``.  This ladder keeps the same non-live
+    boundary but makes the bottleneck sharper by testing caller-supplied
+    lambda-free subforms independently before the full proof statement.  Each
+    rung is source-checked and then run as one isolated ``materialize-stmt-lambdas``
+    call; no compiled add/query or integration path is invoked.
+    """
+    items = list(statements)
+    if not items:
+        raise ValueError("materialize ladder requires at least one statement")
+    repo = project_root / "repos" / "PeTTaChainer"
+    inspections = [inspect_materialize_stmt_lambdas_for_statement(repo, item) for item in items]
+    skipped = [item for item, inspection in zip(items, inspections) if not inspection["materialize_expected_identity"]]
+    if skipped:
+        return {
+            "source": "non-live materialize-stmt-lambdas identity ladder gate",
+            "status": "skipped",
+            "reason": "one or more statements contain |-> lambda forms; identity materialization is not expected",
+            "skipped_statements": skipped,
+            "inspections": inspections,
+            "gates": [
+                "No runtime execution attempted because source inspection did not predict identity materialization for every rung.",
+                "Do not proceed to mm2compile/compileadd/query from a skipped ladder gate.",
+            ],
+        }
+
+    _configure_local_runtime(project_root)
+    events: list[dict[str, object]] = []
+    for index, item in enumerate(items):
+        event = _run_materialize_identity_event(item, stage_timeout_sec=stage_timeout_sec)
+        event["rung_index"] = index
+        event["rung_statement"] = item
+        events.append(event)
+        if event.get("status") != "ok" or not event.get("identity_output_present"):
+            break
+    all_passed = len(events) == len(items) and all(
+        event.get("status") == "ok" and event.get("identity_output_present") for event in events
+    )
+    return {
+        "source": "non-live materialize-stmt-lambdas identity ladder gate",
+        "status": "passed" if all_passed else "blocked",
+        "rung_count_requested": len(items),
+        "rung_count_executed": len(events),
+        "inspections": inspections,
+        "runtime_events": events,
+        "first_blocked_rung": None if all_passed else events[-1].get("rung_index") if events else None,
+        "interpretation": (
+            "All lambda-free materialization rungs returned identity output; mm2compile can be gated separately."
+            if all_passed
+            else "A lambda-free materialization rung failed or timed out; keep mm2compile/compileadd/query gated and instrument this rung next."
+        ),
+        "gates": [
+            "Each rung invokes only materialize-stmt-lambdas in an isolated subprocess; no mm2compile, compileadd, query, GoalChainer, or OmegaClaw path is invoked.",
+            "Temporary/non-live probe only; no petta-memory journal writes and no inferred-belief claims.",
+            "Stop at the first blocked rung to bound noisy PeTTaChainer runtime work.",
+        ],
+    }
+
+
+def inspect_compileadd_bottleneck_sources(repo_path: str | Path) -> dict[str, object]:
+    """Inspect source definitions on the current ``compileadd`` bottleneck path.
+
+    Runtime probes already show that ``materialize-stmt-lambdas`` and
+    ``mm2compile`` time out for the tiny promoted-belief workload while later
+    index/process hooks can complete.  This helper records the exact upstream
+    definitions and import/file locations that should be instrumented next,
+    without invoking SWI, PeTTaChainer, ``compileadd``, or query.
+    """
+    repo = Path(repo_path)
+    root_metta_path = repo / "pettachainer" / "metta" / "petta_chainer.metta"
+    compile_path = repo / "pettachainer" / "metta" / "chainer" / "compile.metta"
+    mining_path = repo / "pettachainer" / "metta" / "chainer" / "mining.metta"
+    missing = [str(path) for path in (root_metta_path, compile_path, mining_path) if not path.exists()]
+    if missing:
+        raise FileNotFoundError("missing PeTTaChainer MeTTa source files: " + ", ".join(missing))
+
+    sources = {
+        "pettachainer/metta/petta_chainer.metta": root_metta_path.read_text(encoding="utf-8"),
+        "pettachainer/metta/chainer/compile.metta": compile_path.read_text(encoding="utf-8"),
+        "pettachainer/metta/chainer/mining.metta": mining_path.read_text(encoding="utf-8"),
+    }
+    symbol_files = {
+        "compileadd": "pettachainer/metta/petta_chainer.metta",
+        "compileadd-mine": "pettachainer/metta/petta_chainer.metta",
+        "materialize-stmt-lambdas": "pettachainer/metta/petta_chainer.metta",
+        "mm2compile": "pettachainer/metta/chainer/compile.metta",
+        "compile": "pettachainer/metta/chainer/compile.metta",
+        "compile_": "pettachainer/metta/chainer/compile.metta",
+        "index-source-implication": "pettachainer/metta/chainer/compile.metta",
+        "maybe-process-on-add": "pettachainer/metta/chainer/mining.metta",
+    }
+    definitions: dict[str, object] = {}
+    for symbol, file_name in symbol_files.items():
+        definition = _extract_metta_definition(sources[file_name], symbol)
+        if definition is not None:
+            definition["file"] = file_name
+            definitions[symbol] = definition
+    root_imports = re.findall(r"!\(import! &self ([^)]+)\)", sources["pettachainer/metta/petta_chainer.metta"])
+    return {
+        "source": "pettachainer compileadd bottleneck source inspection",
+        "repo_path": str(repo),
+        "root_imports": root_imports,
+        "definitions": definitions,
+        "runtime_provenance": (
+            "Use with prior profile artifacts showing materialize-stmt-lambdas/mm2compile timeouts; "
+            "this helper does not rerun PeTTaChainer."
+        ),
+        "next_instrumentation_targets": [
+            {
+                "symbol": "materialize-stmt-lambdas",
+                "reason": "First compileadd binding; recursively traverses every term and evals |-> lambda forms before mm2compile.",
+            },
+            {
+                "symbol": "mm2compile",
+                "reason": "Second compileadd binding; clears ctx, invokes the broad compile dispatcher, then reads generated ctx atoms.",
+            },
+            {
+                "symbol": "compile_",
+                "reason": "Large upstream dispatcher beneath mm2compile; source-level line span provides the next finer instrumentation boundary.",
+            },
+        ],
+        "gates": [
+            "Source inspection only; no compileadd/query/runtime execution.",
+            "Do not adopt or modify upstream PeTTaChainer semantics from this artifact alone.",
+            "Keep petta-memory handoff cache non-live until a separate runtime gate passes.",
+        ],
+    }
+
+
+def inspect_compile_dispatch_for_statement(repo_path: str | Path, statement: str) -> dict[str, object]:
+    """Map one exported PeTTaChainer statement to a source-level ``compile_`` branch.
+
+    This is deliberately not a runtime probe.  It answers a narrower question
+    after the ``compileadd`` bottleneck source map: for the tiny promoted-belief
+    STV statement that petta-memory exports, which branch of PeTTaChainer's
+    ``compile_`` dispatcher should be reached *after* materialization and
+    ``mm2compile``?  The result keeps follow-up instrumentation focused without
+    invoking SWI, ``compileadd``, query, or GoalChainer.
+    """
+    repo = Path(repo_path)
+    compile_path = repo / "pettachainer" / "metta" / "chainer" / "compile.metta"
+    logic_config_path = repo / "pettachainer" / "metta" / "chainer" / "logic_config.metta"
+    missing = [str(path) for path in (compile_path, logic_config_path) if not path.exists()]
+    if missing:
+        raise FileNotFoundError("missing PeTTaChainer source files: " + ", ".join(missing))
+
+    form = parse_one_list(statement)
+    if len(form) != 4 or symbol_text(form[0]) != ":":
+        raise ValueError("statement must be a PeTTaChainer proof atom: (: proof type tv)")
+    proof_id = to_source(form[1])
+    statement_type = form[2]
+    truth_value = to_source(form[3])
+    type_head = symbol_text(statement_type[0]) if isinstance(statement_type, tuple) and statement_type else symbol_text(statement_type)
+    is_variable_type = bool(type_head and type_head.startswith("$"))
+
+    logic_source = logic_config_path.read_text(encoding="utf-8")
+    bidirectional_heads = sorted(
+        token
+        for token in set(re.findall(r"!\(set-bidirectional-implication-form\s+([^)\s]+)\)", logic_source))
+        if not token.startswith("$")
+    )
+    if is_variable_type:
+        selected_branch = "variable-type-empty"
+        reason = "compile_ first rejects variable Type values by returning empty."
+    elif type_head == "Implication":
+        selected_branch = "implication-rule"
+        reason = "Type head is Implication, so compile_ enters build-implication-plan and rule compilation."
+    elif type_head in bidirectional_heads:
+        selected_branch = "bidirectional-implication-rule"
+        reason = "Type head is configured as bidirectional and compile_ expands it into forward/backward implications."
+    else:
+        selected_branch = "fact-assertion"
+        reason = "Type is a concrete non-Implication expression, so compile_ should use compile-fact-kb plus compile-outputs."
+
+    compile_source = compile_path.read_text(encoding="utf-8")
+    compile_definition = _extract_metta_definition(compile_source, "compile_")
+    if compile_definition is not None:
+        compile_definition["file"] = "pettachainer/metta/chainer/compile.metta"
+    return {
+        "source": "pettachainer compile_ dispatch source inspection",
+        "repo_path": str(repo),
+        "statement": statement,
+        "parsed_statement": {
+            "proof_id": proof_id,
+            "type": to_source(statement_type),
+            "type_head": type_head,
+            "truth_value": truth_value,
+        },
+        "configured_bidirectional_heads": bidirectional_heads,
+        "selected_compile_branch": selected_branch,
+        "reason": reason,
+        "compile_definition": compile_definition,
+        "next_instrumentation_targets": [
+            {
+                "symbol": "materialize-stmt-lambdas",
+                "reason": "Still the first timed-out compileadd binding before any compile_ branch can be reached.",
+            },
+            {
+                "symbol": "mm2compile",
+                "reason": "Owns context clearing, broad compile dispatch, and generated ctx atom collection.",
+            },
+            {
+                "symbol": "compile_ fact-assertion branch",
+                "reason": "The petta-memory promoted-belief STV shape should avoid implication/rule branches; future probes can instrument this fact path specifically.",
+            },
+        ],
+        "gates": [
+            "Source inspection only; no PeTTaChainer runtime, compileadd, query, GoalChainer, or OmegaClaw path is invoked.",
+            "Do not treat branch mapping as inferred belief evidence; it only narrows instrumentation targets.",
+            "Keep handoff caches non-live until a separate add/query runtime gate passes.",
+        ],
+    }
+
+
+def _compile_dispatch_stage(statement: str, max_output_items: int = 16) -> dict[str, object]:
+    """Run only PeTTaChainer's ``compile`` dispatcher for one statement.
+
+    This deliberately stops before ``mm2compile`` converts compiled clauses and
+    collects the temporary ``ctx`` space.  Keeping the returned samples bounded
+    lets the diagnostic distinguish dispatcher fan-out from later collapse/context
+    work without moving any compiled atoms into the live knowledge base.
+    """
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    from pettachainer import PeTTaChainer
+
+    handler = PeTTaChainer()
+    call_text = f"!(compile {handler.kb} {statement})"
+
+    def run() -> dict[str, object]:
+        result = handler.handler.process_metta_string(call_text)
+        items = result if isinstance(result, list) else [result]
+        rendered = [str(item) for item in items]
+        unique = list(dict.fromkeys(rendered))
+        return {
+            "output_count": len(rendered),
+            "unique_output_count": len(unique),
+            "output_items": rendered[:max_output_items],
+            "output_truncated": len(rendered) > max_output_items,
+        }
+
+    event = _time_call("compile_dispatch", run)
+    summary = event.pop("result")
+    event.update({key: value for key, value in summary.items() if key != "output_items"})
+    return {"call_text": call_text, **summary, "stages": [event]}
+
+
+def inspect_compile_wrapper_shape(repo_path: str | Path) -> dict[str, object]:
+    """Confirm that public ``compile`` is only the pinned ``compile_`` wrapper."""
+    compile_path = Path(repo_path) / "pettachainer" / "metta" / "chainer" / "compile.metta"
+    if not compile_path.exists():
+        raise FileNotFoundError(f"missing PeTTaChainer compile source: {compile_path}")
+    source = compile_path.read_text(encoding="utf-8")
+    definition = _extract_metta_definition(source, "compile")
+    normalized = " ".join(definition["snippet"].split()) if definition is not None else ""
+    shape_confirmed = normalized == "(= (compile $kb $stmt) (compile_ $kb $stmt))"
+    return {
+        "source": "pettachainer compile wrapper-shape inspection",
+        "repo_path": str(Path(repo_path)),
+        "definition": definition,
+        "shape_confirmed": shape_confirmed,
+        "interpretation": (
+            "The pinned public compile definition delegates directly to compile_ without an explicit transform."
+            if shape_confirmed
+            else "The pinned one-step compile wrapper was not found; do not compare wrapper and direct calls."
+        ),
+        "boundaries": {"source_inspection_only": True, "no_compileadd_or_query": True},
+    }
+
+
+def _compile_wrapper_direct_stage(
+    statement: str, max_output_items: int = 16,
+) -> dict[str, object]:
+    """Compare public ``compile`` with a direct ``compile_`` call in one runtime."""
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    from pettachainer import PeTTaChainer
+
+    handler = PeTTaChainer()
+
+    def summarize(call_text: str) -> dict[str, object]:
+        result = handler.handler.process_metta_string(call_text)
+        items = result if isinstance(result, list) else [result]
+        rendered = [str(item) for item in items]
+        unique = list(dict.fromkeys(rendered))
+        return {
+            "call_text": call_text,
+            "output_count": len(rendered),
+            "unique_output_count": len(unique),
+            "output_items": rendered[:max_output_items],
+            "output_truncated": len(rendered) > max_output_items,
+        }
+
+    return {
+        "public_compile": summarize(f"!(compile {handler.kb} {statement})"),
+        "direct_compile_": summarize(f"!(compile_ {handler.kb} {statement})"),
+    }
+
+
+def _compile_wrapper_direct_from_repo_stage(
+    statement: str, repo_path: str, max_output_items: int = 16,
+) -> dict[str, object]:
+    """Compare compiler entry points after selecting one isolated checkout."""
+    sys.path.insert(0, repo_path)
+    return _compile_wrapper_direct_stage(statement, max_output_items)
+
+
+def run_repaired_compile_wrapper_direct_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    candidate_repo_path: str | Path,
+    stage_timeout_sec: float = 5.0,
+    max_output_items: int = 16,
+) -> dict[str, object]:
+    """Remeasure the first downstream compiler rung on an exact repair.
+
+    The candidate must pass the same critical-file comparison as the admitted
+    duplicate-import repair.  This gate invokes only public ``compile`` and
+    direct ``compile_``; collector, add, and query paths remain closed.
+    """
+    if stage_timeout_sec <= 0:
+        raise ValueError("stage_timeout_sec must be positive")
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    baseline_repo = project_root / "repos" / "PeTTaChainer"
+    candidate_repo = Path(candidate_repo_path)
+    repair = inspect_duplicate_compile_import_repair(baseline_repo, candidate_repo)
+    dispatch = inspect_compile_dispatch_for_statement(candidate_repo, statement)
+    wrapper = inspect_compile_wrapper_shape(candidate_repo)
+    source_admitted = (
+        repair["exact_targeted_import_removal"] is True
+        and dispatch["selected_compile_branch"] == "fact-assertion"
+        and wrapper["shape_confirmed"] is True
+    )
+    if not source_admitted:
+        return {
+            "source": "non-live repaired PeTTaChainer compile wrapper/direct gate",
+            "status": "skipped",
+            "reason": "exact repair, fact dispatch, or compile wrapper source gate failed",
+            "repair_inspection": repair,
+            "inspection": dispatch,
+            "wrapper_inspection": wrapper,
+            "runtime_event": None,
+        }
+    _configure_local_runtime(project_root)
+    event = _run_isolated_stage(
+        "repaired_compile_wrapper_direct",
+        _compile_wrapper_direct_from_repo_stage,
+        (statement, str(candidate_repo), max_output_items),
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    rungs = (event.get("public_compile"), event.get("direct_compile_"))
+    completed = event.get("status") == "ok" and all(
+        isinstance(rung, dict)
+        and isinstance(rung.get("output_count"), int)
+        and not isinstance(rung.get("output_count"), bool)
+        and rung["output_count"] > 0
+        and rung.get("unique_output_count") == 1
+        for rung in rungs
+    )
+    return {
+        "source": "non-live repaired PeTTaChainer compile wrapper/direct gate",
+        "status": "completed" if completed else "blocked",
+        "repair_inspection": repair,
+        "inspection": dispatch,
+        "wrapper_inspection": wrapper,
+        "runtime_event": event,
+        "boundaries": {
+            "isolated_candidate_only": True,
+            "compile_entry_points_only": True,
+            "no_mm2compile_or_compileadd_or_query": True,
+            "no_memory_write_or_live_integration": True,
+        },
+    }
+
+
+def run_compile_wrapper_direct_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 5.0,
+    max_output_items: int = 16,
+) -> dict[str, object]:
+    """Localize compiler fan-out to public ``compile`` or direct ``compile_``."""
+    if stage_timeout_sec <= 0:
+        raise ValueError("stage_timeout_sec must be positive")
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    repo = project_root / "repos" / "PeTTaChainer"
+    dispatch = inspect_compile_dispatch_for_statement(repo, statement)
+    wrapper = inspect_compile_wrapper_shape(repo)
+    if dispatch["selected_compile_branch"] != "fact-assertion" or wrapper["shape_confirmed"] is not True:
+        return {
+            "source": "non-live PeTTaChainer compile wrapper/direct gate",
+            "status": "skipped",
+            "reason": "fact dispatch or pinned compile wrapper source shape was not confirmed",
+            "inspection": dispatch,
+            "wrapper_inspection": wrapper,
+            "runtime_event": None,
+        }
+    _configure_local_runtime(project_root)
+    event = _run_isolated_stage(
+        "compile_wrapper_direct",
+        _compile_wrapper_direct_stage,
+        (statement, max_output_items),
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    rungs = (event.get("public_compile"), event.get("direct_compile_"))
+    completed = event.get("status") == "ok" and all(
+        isinstance(rung, dict)
+        and isinstance(rung.get("output_count"), int)
+        and not isinstance(rung.get("output_count"), bool)
+        and rung["output_count"] > 0
+        for rung in rungs
+    )
+    return {
+        "source": "non-live PeTTaChainer compile wrapper/direct gate",
+        "status": "completed" if completed else "blocked",
+        "inspection": dispatch,
+        "wrapper_inspection": wrapper,
+        "runtime_event": event,
+        "boundaries": {
+            "diagnostic_only": True,
+            "no_mm2compile_or_compileadd": True,
+            "no_query_or_result_admission": True,
+            "no_memory_write_or_live_integration": True,
+        },
+    }
+
+
+def run_compile_dispatch_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 5.0,
+    max_output_items: int = 16,
+) -> dict[str, object]:
+    """Bound the ``compile_`` fact branch independently of ``mm2compile``.
+
+    Source inspection must first map the statement to the fact-assertion branch.
+    The runtime event is diagnostic only: even a non-empty completion is not a
+    checked add, query answer, inferred belief, or permission to write memory.
+    """
+    if stage_timeout_sec <= 0:
+        raise ValueError("stage_timeout_sec must be positive")
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    inspection = inspect_compile_dispatch_for_statement(
+        project_root / "repos" / "PeTTaChainer", statement,
+    )
+    if inspection["selected_compile_branch"] != "fact-assertion":
+        return {
+            "source": "non-live PeTTaChainer compile dispatch gate",
+            "status": "skipped",
+            "reason": "statement does not select the bounded fact-assertion branch",
+            "inspection": inspection,
+            "runtime_event": None,
+        }
+    _configure_local_runtime(project_root)
+    event = _run_isolated_stage(
+        "compile_fact_dispatch",
+        _compile_dispatch_stage,
+        (statement, max_output_items),
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    output_count = event.get("output_count")
+    completed = (
+        event.get("status") == "ok"
+        and isinstance(output_count, int)
+        and not isinstance(output_count, bool)
+        and output_count > 0
+    )
+    return {
+        "source": "non-live PeTTaChainer compile dispatch gate",
+        "status": "completed" if completed else "blocked",
+        "inspection": inspection,
+        "runtime_event": event,
+        "boundaries": {
+            "diagnostic_only": True,
+            "no_mm2compile_or_compileadd": True,
+            "no_query_or_result_admission": True,
+            "no_memory_write_or_live_integration": True,
+        },
+    }
+
+
+def inspect_compile_fact_branch_shape(repo_path: str | Path) -> dict[str, object]:
+    """Close the exact fact branch copied by the bounded component probe."""
+    compile_path = Path(repo_path) / "pettachainer" / "metta" / "chainer" / "compile.metta"
+    if not compile_path.exists():
+        raise FileNotFoundError(f"missing PeTTaChainer compile source: {compile_path}")
+    source = compile_path.read_text(encoding="utf-8")
+    definition = _extract_metta_definition(source, "compile_")
+    if definition is None:
+        raise ValueError("PeTTaChainer compile source has no compile_ definition")
+    normalized = " ".join(str(definition["snippet"]).split())
+    expected_branch = (
+        "(let $fact-kb (compile-fact-kb $kb) "
+        "(superpose ((() |- ((: $fact-kb $prf $Type $tv))) "
+        "(compile-outputs (: $fact-kb $prf $Type $tv)))))"
+    )
+    shape_confirmed = expected_branch in normalized
+    return {
+        "source": "pettachainer compile_ fact-branch shape inspection",
+        "repo_path": str(Path(repo_path)),
+        "definition": definition,
+        "shape_confirmed": shape_confirmed,
+        "interpretation": (
+            "The pinned fact branch binds compile-fact-kb, then superposes one base clause with compile-outputs."
+            if shape_confirmed
+            else "The pinned compile_ fact branch was not found; do not run the copied component probe."
+        ),
+        "boundaries": {
+            "source_inspection_only": True,
+            "no_upstream_semantic_change": True,
+            "no_mm2compile_or_compileadd_or_query": True,
+        },
+    }
+
+
+def _compile_fact_branch_component_stage(
+    statement: str, max_output_items: int = 16,
+) -> dict[str, object]:
+    """Measure fact-kb and output-adapter components without ``compile``."""
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    from pettachainer import PeTTaChainer
+
+    handler = PeTTaChainer()
+    form = parse_one_list(statement)
+    if len(form) != 4 or symbol_text(form[0]) != ":":
+        raise ValueError("statement must be a PeTTaChainer proof atom: (: proof type tv)")
+    proof_id, statement_type, truth_value = (to_source(part) for part in form[1:])
+
+    def summarize(result: object) -> dict[str, object]:
+        items = result if isinstance(result, list) else [result]
+        rendered = [str(item) for item in items]
+        unique = list(dict.fromkeys(rendered))
+        return {
+            "output_count": len(rendered),
+            "unique_output_count": len(unique),
+            "output_items": rendered[:max_output_items],
+            "output_truncated": len(rendered) > max_output_items,
+        }
+
+    fact_kb_call = f"!(compile-fact-kb {handler.kb})"
+    fact_kb_summary = summarize(handler.handler.process_metta_string(fact_kb_call))
+    fact_kb_items = fact_kb_summary["output_items"]
+    if fact_kb_summary["unique_output_count"] != 1 or not fact_kb_items:
+        return {
+            "fact_kb_call": fact_kb_call,
+            "fact_kb": fact_kb_summary,
+            "components_admitted": False,
+            "reason": "compile-fact-kb did not return exactly one unique rendered knowledge-base term",
+        }
+    fact_kb = fact_kb_items[0]
+    fact = f"(: {fact_kb} {proof_id} {statement_type} {truth_value})"
+    output_call = f"!(compile-outputs {fact})"
+    output_summary = summarize(handler.handler.process_metta_string(output_call))
+    return {
+        "fact_kb_call": fact_kb_call,
+        "fact_kb": fact_kb_summary,
+        "fact": fact,
+        "compile_outputs_call": output_call,
+        "compile_outputs": output_summary,
+        "components_admitted": True,
+    }
+
+
+def run_compile_fact_branch_component_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 5.0,
+    max_output_items: int = 16,
+) -> dict[str, object]:
+    """Isolate fact-branch components beneath the 256-copy dispatcher."""
+    if stage_timeout_sec <= 0:
+        raise ValueError("stage_timeout_sec must be positive")
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    repo = project_root / "repos" / "PeTTaChainer"
+    dispatch = inspect_compile_dispatch_for_statement(repo, statement)
+    branch = inspect_compile_fact_branch_shape(repo)
+    if dispatch["selected_compile_branch"] != "fact-assertion" or branch["shape_confirmed"] is not True:
+        return {
+            "source": "non-live PeTTaChainer compile fact-branch component gate",
+            "status": "skipped",
+            "reason": "fact dispatch or pinned fact-branch source shape was not confirmed",
+            "inspection": dispatch,
+            "branch_inspection": branch,
+            "runtime_event": None,
+        }
+    _configure_local_runtime(project_root)
+    event = _run_isolated_stage(
+        "compile_fact_branch_components",
+        _compile_fact_branch_component_stage,
+        (statement, max_output_items),
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    completed = event.get("status") == "ok" and event.get("components_admitted") is True
+    return {
+        "source": "non-live PeTTaChainer compile fact-branch component gate",
+        "status": "completed" if completed else "blocked",
+        "inspection": dispatch,
+        "branch_inspection": branch,
+        "runtime_event": event,
+        "boundaries": {
+            "diagnostic_only": True,
+            "no_compile_or_mm2compile_or_compileadd": True,
+            "no_query_or_result_admission": True,
+            "no_memory_write_or_live_integration": True,
+        },
+    }
+
+
+def _compile_fact_literal_kb_stage(
+    statement: str, max_output_items: int = 16,
+) -> dict[str, object]:
+    """Measure the copied fact branch after replacing ``compile-fact-kb``.
+
+    The literal KB removes the already measured eight-way ``compile-fact-kb``
+    fan-out.  The small ladder then distinguishes the base-clause superposition
+    from evaluation of the empty ``compile-outputs`` arm without calling
+    ``compile`` itself.
+    """
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    from pettachainer import PeTTaChainer
+
+    handler = PeTTaChainer()
+    form = parse_one_list(statement)
+    if len(form) != 4 or symbol_text(form[0]) != ":":
+        raise ValueError("statement must be a PeTTaChainer proof atom: (: proof type tv)")
+    proof_id, statement_type, truth_value = (to_source(part) for part in form[1:])
+    fact = f"(: ({handler.kb} MAIN Nil) {proof_id} {statement_type} {truth_value})"
+    clause = f"(() |- ({fact}))"
+    calls = (
+        ("base_clause_superpose", f"!(superpose ({clause}))"),
+        ("literal_kb_with_empty_arm", f"!(superpose ({clause} (empty)))"),
+        ("literal_kb_fact_branch", f"!(superpose ({clause} (compile-outputs {fact})))"),
+    )
+
+    def summarize(call_text: str) -> dict[str, object]:
+        result = handler.handler.process_metta_string(call_text)
+        items = result if isinstance(result, list) else [result]
+        rendered = [str(item) for item in items]
+        unique = list(dict.fromkeys(rendered))
+        return {
+            "call_text": call_text,
+            "output_count": len(rendered),
+            "unique_output_count": len(unique),
+            "output_items": rendered[:max_output_items],
+            "output_truncated": len(rendered) > max_output_items,
+        }
+
+    return {label: summarize(call_text) for label, call_text in calls}
+
+
+def run_compile_fact_literal_kb_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 5.0,
+    max_output_items: int = 16,
+) -> dict[str, object]:
+    """Isolate the remaining fact-branch fan-out after literal KB substitution."""
+    if stage_timeout_sec <= 0:
+        raise ValueError("stage_timeout_sec must be positive")
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    repo = project_root / "repos" / "PeTTaChainer"
+    dispatch = inspect_compile_dispatch_for_statement(repo, statement)
+    branch = inspect_compile_fact_branch_shape(repo)
+    if dispatch["selected_compile_branch"] != "fact-assertion" or branch["shape_confirmed"] is not True:
+        return {
+            "source": "non-live PeTTaChainer compile fact literal-KB gate",
+            "status": "skipped",
+            "reason": "fact dispatch or pinned fact-branch source shape was not confirmed",
+            "inspection": dispatch,
+            "branch_inspection": branch,
+            "runtime_event": None,
+        }
+    _configure_local_runtime(project_root)
+    event = _run_isolated_stage(
+        "compile_fact_literal_kb_ladder",
+        _compile_fact_literal_kb_stage,
+        (statement, max_output_items),
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    labels = ("base_clause_superpose", "literal_kb_with_empty_arm", "literal_kb_fact_branch")
+    completed = event.get("status") == "ok" and all(
+        isinstance(event.get(label), dict)
+        and isinstance(event[label].get("output_count"), int)
+        and not isinstance(event[label].get("output_count"), bool)
+        and event[label]["output_count"] > 0
+        for label in labels
+    )
+    return {
+        "source": "non-live PeTTaChainer compile fact literal-KB gate",
+        "status": "completed" if completed else "blocked",
+        "inspection": dispatch,
+        "branch_inspection": branch,
+        "runtime_event": event,
+        "boundaries": {
+            "diagnostic_only": True,
+            "literal_kb_substitution_only": True,
+            "no_compile_or_mm2compile_or_compileadd": True,
+            "no_query_or_result_admission": True,
+            "no_memory_write_or_live_integration": True,
+        },
+    }
+
+
+def inspect_compile_fact_dispatch_ladder_shape(repo_path: str | Path) -> dict[str, object]:
+    """Confirm the pinned nested predicates above ``compile_``'s fact branch."""
+    compile_path = Path(repo_path) / "pettachainer" / "metta" / "chainer" / "compile.metta"
+    if not compile_path.exists():
+        raise FileNotFoundError(f"missing PeTTaChainer compile source: {compile_path}")
+    definition = _extract_metta_definition(compile_path.read_text(encoding="utf-8"), "compile_")
+    normalized = " ".join(str(definition["snippet"]).split()) if definition is not None else ""
+    required_shapes = {
+        "variable_type_gate": "(if (is-var $Type) (empty)",
+        "implication_gate": "(if (= $Type (Implication (cons Premises $premises) (cons Conclusions $conclusions)))",
+        "bidirectional_gate": "(if (bidirectional-implication-type? $Type)",
+        "fact_branch": (
+            "(let $fact-kb (compile-fact-kb $kb) "
+            "(superpose ((() |- ((: $fact-kb $prf $Type $tv))) "
+            "(compile-outputs (: $fact-kb $prf $Type $tv)))))"
+        ),
+    }
+    matched = {name: shape in normalized for name, shape in required_shapes.items()}
+    return {
+        "source": "pettachainer compile_ fact-dispatch ladder inspection",
+        "repo_path": str(Path(repo_path)),
+        "definition": definition,
+        "matched_shapes": matched,
+        "shape_confirmed": all(matched.values()),
+        "boundaries": {
+            "source_inspection_only": True,
+            "no_upstream_semantic_change": True,
+            "no_compile_or_mm2compile_or_compileadd_or_query": True,
+        },
+    }
+
+
+def _compile_fact_dispatch_ladder_stage(
+    statement: str, max_output_items: int = 16,
+) -> dict[str, object]:
+    """Rebuild the fact-selected predicate ladder over a literal KB clause."""
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    from pettachainer import PeTTaChainer
+
+    handler = PeTTaChainer()
+    form = parse_one_list(statement)
+    if len(form) != 4 or symbol_text(form[0]) != ":":
+        raise ValueError("statement must be a PeTTaChainer proof atom: (: proof type tv)")
+    proof_id, statement_type, truth_value = (to_source(part) for part in form[1:])
+    fact = f"(: ({handler.kb} MAIN Nil) {proof_id} {statement_type} {truth_value})"
+    fact_branch = f"(superpose ((() |- ({fact})) (compile-outputs {fact})))"
+    bidirectional = f"(if (bidirectional-implication-type? {statement_type}) (empty) {fact_branch})"
+    implication = (
+        f"(if (= {statement_type} (Implication (cons Premises $premises) "
+        f"(cons Conclusions $conclusions))) (empty) {bidirectional})"
+    )
+    variable_type = f"(if (is-var {statement_type}) (empty) {implication})"
+    calls = (
+        ("literal_fact_branch", f"!{fact_branch}"),
+        ("with_bidirectional_gate", f"!{bidirectional}"),
+        ("with_implication_gate", f"!{implication}"),
+        ("with_variable_type_gate", f"!{variable_type}"),
+    )
+
+    def summarize(call_text: str) -> dict[str, object]:
+        result = handler.handler.process_metta_string(call_text)
+        items = result if isinstance(result, list) else [result]
+        rendered = [str(item) for item in items]
+        unique = list(dict.fromkeys(rendered))
+        return {
+            "call_text": call_text,
+            "output_count": len(rendered),
+            "unique_output_count": len(unique),
+            "output_items": rendered[:max_output_items],
+            "output_truncated": len(rendered) > max_output_items,
+        }
+
+    return {label: summarize(call_text) for label, call_text in calls}
+
+
+def run_compile_fact_dispatch_ladder_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 5.0,
+    max_output_items: int = 16,
+) -> dict[str, object]:
+    """Measure each nested fact-selection predicate without calling ``compile``."""
+    if stage_timeout_sec <= 0:
+        raise ValueError("stage_timeout_sec must be positive")
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    repo = project_root / "repos" / "PeTTaChainer"
+    dispatch = inspect_compile_dispatch_for_statement(repo, statement)
+    ladder = inspect_compile_fact_dispatch_ladder_shape(repo)
+    if dispatch["selected_compile_branch"] != "fact-assertion" or ladder["shape_confirmed"] is not True:
+        return {
+            "source": "non-live PeTTaChainer compile_ fact-dispatch ladder gate",
+            "status": "skipped",
+            "reason": "fact dispatch or pinned nested predicate ladder was not confirmed",
+            "inspection": dispatch,
+            "ladder_inspection": ladder,
+            "runtime_event": None,
+        }
+    _configure_local_runtime(project_root)
+    event = _run_isolated_stage(
+        "compile_fact_dispatch_ladder",
+        _compile_fact_dispatch_ladder_stage,
+        (statement, max_output_items),
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    labels = (
+        "literal_fact_branch", "with_bidirectional_gate",
+        "with_implication_gate", "with_variable_type_gate",
+    )
+    completed = event.get("status") == "ok" and all(
+        isinstance(event.get(label), dict)
+        and isinstance(event[label].get("output_count"), int)
+        and not isinstance(event[label].get("output_count"), bool)
+        and event[label]["output_count"] > 0
+        for label in labels
+    )
+    return {
+        "source": "non-live PeTTaChainer compile_ fact-dispatch ladder gate",
+        "status": "completed" if completed else "blocked",
+        "inspection": dispatch,
+        "ladder_inspection": ladder,
+        "runtime_event": event,
+        "boundaries": {
+            "diagnostic_only": True,
+            "literal_kb_substitution_only": True,
+            "no_compile_or_mm2compile_or_compileadd": True,
+            "no_query_or_result_admission": True,
+            "no_memory_write_or_live_integration": True,
+        },
+    }
+
+
+def inspect_compile_import_multiplicity(repo_path: str | Path) -> dict[str, object]:
+    """Confirm the two pinned import paths that register ``compile_``."""
+    metta = Path(repo_path) / "pettachainer" / "metta"
+    paths = {
+        "root": metta / "petta_chainer.metta",
+        "context": metta / "context" / "context_from_kb.metta",
+        "generation": metta / "context" / "context_generation.metta",
+    }
+    missing = [str(path) for path in paths.values() if not path.exists()]
+    if missing:
+        raise FileNotFoundError("missing PeTTaChainer import source: " + ", ".join(missing))
+    sources = {name: path.read_text(encoding="utf-8") for name, path in paths.items()}
+    matched = {
+        "root_imports_compile": "!(import! &self chainer/compile)" in sources["root"],
+        "root_imports_context": "!(import! &self context/context_from_kb)" in sources["root"],
+        "context_imports_generation": "!(import! &self context/context_generation)" in sources["context"],
+        "generation_imports_compile": "!(import! &self chainer/compile)" in sources["generation"],
+    }
+    return {
+        "source": "pettachainer compile import multiplicity inspection",
+        "repo_path": str(Path(repo_path)),
+        "matched_imports": matched,
+        "two_compile_import_paths_confirmed": all(matched.values()),
+        "import_paths": (
+            "petta_chainer -> chainer/compile",
+            "petta_chainer -> context/context_from_kb -> context/context_generation -> chainer/compile",
+        ),
+        "boundaries": {
+            "source_inspection_only": True,
+            "no_upstream_semantic_change": True,
+            "no_compileadd_or_query": True,
+        },
+    }
+
+
+def inspect_duplicate_compile_import_repair(
+    baseline_repo_path: str | Path, candidate_repo_path: str | Path,
+) -> dict[str, object]:
+    """Verify an isolated candidate removes only the duplicate compile import.
+
+    This closes the source side of the first repair-plan rung without modifying
+    either checkout.  The candidate must leave the root import chain and the
+    compiler source byte-identical and remove exactly one import line from
+    ``context_generation.metta``.
+    """
+    relative_paths = (
+        Path("pettachainer/metta/petta_chainer.metta"),
+        Path("pettachainer/metta/context/context_from_kb.metta"),
+        Path("pettachainer/metta/context/context_generation.metta"),
+        Path("pettachainer/metta/chainer/compile.metta"),
+    )
+    baseline_root = Path(baseline_repo_path)
+    candidate_root = Path(candidate_repo_path)
+    missing = [
+        str(root / relative)
+        for root in (baseline_root, candidate_root)
+        for relative in relative_paths
+        if not (root / relative).is_file()
+    ]
+    if missing:
+        raise FileNotFoundError("missing PeTTaChainer repair source: " + ", ".join(missing))
+    baseline = {
+        relative: (baseline_root / relative).read_text(encoding="utf-8")
+        for relative in relative_paths
+    }
+    candidate = {
+        relative: (candidate_root / relative).read_text(encoding="utf-8")
+        for relative in relative_paths
+    }
+    generation = Path("pettachainer/metta/context/context_generation.metta")
+    import_line = "!(import! &self chainer/compile)\n"
+    occurrence_count = baseline[generation].count(import_line)
+    expected_generation = baseline[generation].replace(import_line, "", 1)
+    unchanged_paths = tuple(str(relative) for relative in relative_paths if relative != generation)
+    exact_repair = (
+        occurrence_count == 1
+        and candidate[generation] == expected_generation
+        and all(candidate[relative] == baseline[relative] for relative in relative_paths if relative != generation)
+    )
+
+    def digest(text: str) -> str:
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    return {
+        "source": "isolated PeTTaChainer duplicate compile-import repair inspection",
+        "baseline_repo_path": str(baseline_root),
+        "candidate_repo_path": str(candidate_root),
+        "target_import_occurrences": occurrence_count,
+        "exact_targeted_import_removal": exact_repair,
+        "unchanged_paths": unchanged_paths,
+        "baseline_hashes": {str(path): digest(text) for path, text in baseline.items()},
+        "candidate_hashes": {str(path): digest(text) for path, text in candidate.items()},
+        "boundaries": {
+            "source_inspection_only": True,
+            "candidate_checkout_only": True,
+            "no_compileadd_or_query": True,
+        },
+    }
+
+
+def _compile_direct_from_repo_stage(
+    statement: str, repo_path: str, max_output_items: int = 16,
+) -> dict[str, object]:
+    """Run direct ``compile_`` after selecting one isolated checkout."""
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    sys.path.insert(0, repo_path)
+    from pettachainer import PeTTaChainer
+
+    handler = PeTTaChainer()
+    call_text = f"!(compile_ {handler.kb} {statement})"
+    result = handler.handler.process_metta_string(call_text)
+    items = result if isinstance(result, list) else [result]
+    rendered = [str(item) for item in items]
+    unique = list(dict.fromkeys(rendered))
+    normalized = list(dict.fromkeys(item.replace(str(handler.kb), "$KB") for item in rendered))
+    return {
+        "call_text": call_text,
+        "output_count": len(rendered),
+        "unique_output_count": len(unique),
+        "output_items": rendered[:max_output_items],
+        "normalized_output_items": normalized[:max_output_items],
+        "output_truncated": len(rendered) > max_output_items,
+    }
+
+
+def run_duplicate_compile_import_repair_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    candidate_repo_path: str | Path,
+    stage_timeout_sec: float = 5.0,
+    max_output_items: int = 16,
+) -> dict[str, object]:
+    """Compare direct compilation before/after one exact isolated import repair."""
+    if stage_timeout_sec <= 0:
+        raise ValueError("stage_timeout_sec must be positive")
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    baseline_repo = project_root / "repos" / "PeTTaChainer"
+    candidate_repo = Path(candidate_repo_path)
+    inspection = inspect_duplicate_compile_import_repair(baseline_repo, candidate_repo)
+    if inspection["exact_targeted_import_removal"] is not True:
+        return {
+            "source": "non-live PeTTaChainer duplicate compile-import repair gate",
+            "status": "skipped",
+            "reason": "candidate is not the exact one-line duplicate-import removal",
+            "inspection": inspection,
+            "baseline_event": None,
+            "candidate_event": None,
+        }
+    _configure_local_runtime(project_root)
+    baseline_event = _run_isolated_stage(
+        "compile_direct_baseline",
+        _compile_direct_from_repo_stage,
+        (statement, str(baseline_repo), max_output_items),
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    candidate_event = _run_isolated_stage(
+        "compile_direct_repaired_candidate",
+        _compile_direct_from_repo_stage,
+        (statement, str(candidate_repo), max_output_items),
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    admitted = (
+        baseline_event.get("status") == "ok"
+        and candidate_event.get("status") == "ok"
+        and baseline_event.get("unique_output_count") == 1
+        and candidate_event.get("unique_output_count") == 1
+        and candidate_event.get("output_count") == 1
+        and isinstance(baseline_event.get("output_count"), int)
+        and baseline_event["output_count"] > candidate_event["output_count"]
+        and baseline_event.get("normalized_output_items")
+        == candidate_event.get("normalized_output_items")
+    )
+    return {
+        "source": "non-live PeTTaChainer duplicate compile-import repair gate",
+        "status": "admitted" if admitted else "blocked",
+        "inspection": inspection,
+        "baseline_event": baseline_event,
+        "candidate_event": candidate_event,
+        "boundaries": {
+            "isolated_candidate_only": True,
+            "direct_compile_only": True,
+            "no_mm2compile_or_compileadd_or_query": True,
+            "no_memory_write_or_live_integration": True,
+        },
+    }
+
+
+def _compile_single_registration_stage(
+    statement: str, max_output_items: int = 16,
+) -> dict[str, object]:
+    """Compare direct ``compile_`` with one source-equivalent local definition."""
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    from pettachainer import PeTTaChainer
+
+    handler = PeTTaChainer()
+    clone = "pm-profile-single-compile-fact"
+    definition = (
+        f"(= ({clone} $kb (@ $stmt (: $prf $Type $tv))) "
+        "(if (is-var $Type) (empty) "
+        "(if (= $Type (Implication (cons Premises $premises) (cons Conclusions $conclusions))) (empty) "
+        "(if (bidirectional-implication-type? $Type) (empty) "
+        "(let $fact-kb (compile-fact-kb $kb) "
+        "(superpose ((() |- ((: $fact-kb $prf $Type $tv))) "
+        "(compile-outputs (: $fact-kb $prf $Type $tv)))))))))"
+    )
+    handler.handler.process_metta_string(definition)
+
+    def summarize(call_text: str) -> dict[str, object]:
+        result = handler.handler.process_metta_string(call_text)
+        items = result if isinstance(result, list) else [result]
+        rendered = [str(item) for item in items]
+        unique = list(dict.fromkeys(rendered))
+        return {
+            "call_text": call_text,
+            "output_count": len(rendered),
+            "unique_output_count": len(unique),
+            "output_items": rendered[:max_output_items],
+            "output_truncated": len(rendered) > max_output_items,
+        }
+
+    return {
+        "single_registration_clone": summarize(f"!({clone} {handler.kb} {statement})"),
+        "direct_compile_": summarize(f"!(compile_ {handler.kb} {statement})"),
+    }
+
+
+def run_compile_single_registration_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 5.0,
+    max_output_items: int = 16,
+) -> dict[str, object]:
+    """Measure duplicate compiler registration without adding compiled atoms."""
+    if stage_timeout_sec <= 0:
+        raise ValueError("stage_timeout_sec must be positive")
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    repo = project_root / "repos" / "PeTTaChainer"
+    dispatch = inspect_compile_dispatch_for_statement(repo, statement)
+    ladder = inspect_compile_fact_dispatch_ladder_shape(repo)
+    imports = inspect_compile_import_multiplicity(repo)
+    confirmed = (
+        dispatch["selected_compile_branch"] == "fact-assertion"
+        and ladder["shape_confirmed"] is True
+        and imports["two_compile_import_paths_confirmed"] is True
+    )
+    if not confirmed:
+        return {
+            "source": "non-live PeTTaChainer single-registration compile gate",
+            "status": "skipped",
+            "reason": "fact dispatch, definition shape, or duplicate import paths were not confirmed",
+            "inspection": dispatch,
+            "ladder_inspection": ladder,
+            "import_inspection": imports,
+            "runtime_event": None,
+        }
+    _configure_local_runtime(project_root)
+    event = _run_isolated_stage(
+        "compile_single_registration",
+        _compile_single_registration_stage,
+        (statement, max_output_items),
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    clone = event.get("single_registration_clone")
+    direct = event.get("direct_compile_")
+    completed = event.get("status") == "ok" and all(
+        isinstance(rung, dict)
+        and isinstance(rung.get("output_count"), int)
+        and not isinstance(rung.get("output_count"), bool)
+        and rung["output_count"] > 0
+        for rung in (clone, direct)
+    )
+    return {
+        "source": "non-live PeTTaChainer single-registration compile gate",
+        "status": "completed" if completed else "blocked",
+        "inspection": dispatch,
+        "ladder_inspection": ladder,
+        "import_inspection": imports,
+        "runtime_event": event,
+        "boundaries": {
+            "diagnostic_only": True,
+            "single_local_definition_only": True,
+            "no_upstream_semantic_change": True,
+            "no_mm2compile_or_compileadd_or_query": True,
+            "no_memory_write_or_live_integration": True,
+        },
+    }
+
+
+def _compile_annotation_dispatch_stage(
+    statement: str, max_output_items: int = 16,
+) -> dict[str, object]:
+    """Compare annotated and structural heads for one copied fact dispatcher."""
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    from pettachainer import PeTTaChainer
+
+    handler = PeTTaChainer()
+    annotated = "pm-profile-annotated-compile-fact"
+    structural = "pm-profile-structural-compile-fact"
+    body = (
+        "(if (is-var $Type) (empty) "
+        "(if (= $Type (Implication (cons Premises $premises) (cons Conclusions $conclusions))) (empty) "
+        "(if (bidirectional-implication-type? $Type) (empty) "
+        "(let $fact-kb (compile-fact-kb $kb) "
+        "(superpose ((() |- ((: $fact-kb $prf $Type $tv))) "
+        "(compile-outputs (: $fact-kb $prf $Type $tv))))))))"
+    )
+    definitions = (
+        f"(= ({annotated} $kb (@ $stmt (: $prf $Type $tv))) {body})",
+        f"(= ({structural} $kb (: $prf $Type $tv)) {body})",
+    )
+    for definition in definitions:
+        handler.handler.process_metta_string(definition)
+
+    def summarize(call_text: str) -> dict[str, object]:
+        result = handler.handler.process_metta_string(call_text)
+        items = result if isinstance(result, list) else [result]
+        rendered = [str(item) for item in items]
+        unique = list(dict.fromkeys(rendered))
+        return {
+            "call_text": call_text,
+            "output_count": len(rendered),
+            "unique_output_count": len(unique),
+            "output_items": rendered[:max_output_items],
+            "output_truncated": len(rendered) > max_output_items,
+        }
+
+    return {
+        "annotated_head": summarize(f"!({annotated} {handler.kb} {statement})"),
+        "structural_head": summarize(f"!({structural} {handler.kb} {statement})"),
+    }
+
+
+def run_compile_annotation_dispatch_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 5.0,
+    max_output_items: int = 16,
+) -> dict[str, object]:
+    """Measure the ``@`` annotated-head boundary without calling ``compile``."""
+    if stage_timeout_sec <= 0:
+        raise ValueError("stage_timeout_sec must be positive")
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    repo = project_root / "repos" / "PeTTaChainer"
+    dispatch = inspect_compile_dispatch_for_statement(repo, statement)
+    ladder = inspect_compile_fact_dispatch_ladder_shape(repo)
+    definition = ladder.get("definition")
+    snippet = str(definition.get("snippet", "")) if isinstance(definition, dict) else ""
+    annotated_head_confirmed = "(@ $stmt (: $prf $Type $tv))" in " ".join(snippet.split())
+    confirmed = (
+        dispatch["selected_compile_branch"] == "fact-assertion"
+        and ladder["shape_confirmed"] is True
+        and annotated_head_confirmed
+    )
+    if not confirmed:
+        return {
+            "source": "non-live PeTTaChainer annotated-dispatch compile gate",
+            "status": "skipped",
+            "reason": "fact dispatch, nested ladder, or annotated source head was not confirmed",
+            "inspection": dispatch,
+            "ladder_inspection": ladder,
+            "annotated_head_confirmed": annotated_head_confirmed,
+            "runtime_event": None,
+        }
+    _configure_local_runtime(project_root)
+    event = _run_isolated_stage(
+        "compile_annotation_dispatch",
+        _compile_annotation_dispatch_stage,
+        (statement, max_output_items),
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    rungs = (event.get("annotated_head"), event.get("structural_head"))
+    completed = event.get("status") == "ok" and all(
+        isinstance(rung, dict)
+        and isinstance(rung.get("output_count"), int)
+        and not isinstance(rung.get("output_count"), bool)
+        and rung["output_count"] > 0
+        for rung in rungs
+    )
+    return {
+        "source": "non-live PeTTaChainer annotated-dispatch compile gate",
+        "status": "completed" if completed else "blocked",
+        "inspection": dispatch,
+        "ladder_inspection": ladder,
+        "annotated_head_confirmed": annotated_head_confirmed,
+        "runtime_event": event,
+        "boundaries": {
+            "diagnostic_only": True,
+            "source_equivalent_local_definitions_only": True,
+            "no_upstream_semantic_change": True,
+            "no_compile_or_mm2compile_or_compileadd_or_query": True,
+            "no_memory_write_or_live_integration": True,
+        },
+    }
+
+
+def build_pettachainer_fact_fanout_repair_plan(
+    *,
+    public_compile_count: int,
+    direct_compile_count: int,
+    single_registration_annotated_count: int,
+    single_registration_structural_count: int,
+    literal_fact_count: int,
+    bidirectional_gate_count: int,
+    fact_kb_count: int,
+    mm2stmt_count: int,
+    mm2compile_collection_count: int,
+) -> dict[str, object]:
+    """Close measured fact-path multiplicity before proposing a repair.
+
+    The inputs are deliberately explicit: this plan is valid only for a set of
+    observed counts from the source-gated probes above.  Any arithmetic drift
+    fails closed instead of silently preserving a stale upstream diagnosis.
+    """
+    counts = {
+        "public_compile": public_compile_count,
+        "direct_compile": direct_compile_count,
+        "single_registration_annotated": single_registration_annotated_count,
+        "single_registration_structural": single_registration_structural_count,
+        "literal_fact": literal_fact_count,
+        "bidirectional_gate": bidirectional_gate_count,
+        "fact_kb": fact_kb_count,
+        "mm2stmt": mm2stmt_count,
+        "mm2compile_collection": mm2compile_collection_count,
+    }
+    for name, value in counts.items():
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError(f"{name} count must be a positive integer")
+
+    factor_inputs = (
+        ("public_wrapper", public_compile_count, direct_compile_count),
+        ("duplicate_registration", direct_compile_count, single_registration_annotated_count),
+        (
+            "annotated_head",
+            single_registration_annotated_count,
+            single_registration_structural_count,
+        ),
+        ("bidirectional_classifier", bidirectional_gate_count, literal_fact_count),
+        ("fact_kb", fact_kb_count, literal_fact_count),
+        ("mm2stmt_overlap", mm2stmt_count, literal_fact_count),
+        ("mm2compile_collection", mm2compile_collection_count, mm2stmt_count),
+    )
+    factors: dict[str, int] = {}
+    for name, numerator, denominator in factor_inputs:
+        factor, remainder = divmod(numerator, denominator)
+        if remainder or factor <= 0:
+            raise ValueError(f"{name} counts do not form a positive integer factor")
+        factors[name] = factor
+
+    compiler_product = (
+        factors["public_wrapper"]
+        * factors["duplicate_registration"]
+        * factors["annotated_head"]
+        * factors["bidirectional_classifier"]
+        * factors["fact_kb"]
+        * literal_fact_count
+    )
+    if compiler_product != public_compile_count:
+        raise ValueError("compiler factors do not close the public compile count")
+    collection_product = (
+        factors["mm2stmt_overlap"]
+        * factors["mm2compile_collection"]
+        * literal_fact_count
+    )
+    if collection_product != mm2compile_collection_count:
+        raise ValueError("collection factors do not close the deduplicated mm2compile count")
+
+    return {
+        "schema": "petta-memory-pettachainer-fact-fanout-repair-plan-v1",
+        "status": "attribution-closed",
+        "counts": counts,
+        "factors": factors,
+        "closure": {
+            "compiler_product": compiler_product,
+            "public_compile_count": public_compile_count,
+            "collection_product": collection_product,
+            "mm2compile_collection_count": mm2compile_collection_count,
+        },
+        "repair_order": [
+            {
+                "rank": 1,
+                "target": "duplicate compiler registration",
+                "kind": "source/import repair",
+                "acceptance_gate": "one compile_ definition is registered and direct compile_ falls from 128 to 64 unique-equivalent outputs",
+            },
+            {
+                "rank": 2,
+                "target": "overlapping zero-premise mm2stmt arms",
+                "kind": "source pattern repair",
+                "acceptance_gate": "one canonical zero-premise clause yields one fact without changing non-empty-premise conversion",
+            },
+            {
+                "rank": 3,
+                "target": "bidirectional classifier, annotated head, fact-kb, and wrapper evaluator multiplicity",
+                "kind": "upstream matcher/evaluator investigation",
+                "acceptance_gate": "each source-gated rung returns one unique-equivalent output before compileadd is retried",
+            },
+            {
+                "rank": 4,
+                "target": "deduplicating collector",
+                "kind": "experimental fallback only",
+                "acceptance_gate": "set collapse is limited to byte-identical fact clauses and passes fact/rule semantic parity tests",
+            },
+        ],
+        "next_bounded_gate": (
+            "Apply no production change yet; test the duplicate-registration import repair in an isolated pinned "
+            "PeTTaChainer checkout, rerun the existing compile rungs, and keep compileadd/query closed."
+        ),
+        "boundaries": {
+            "diagnostic_plan_only": True,
+            "no_upstream_change": True,
+            "no_set_collapse_approved": True,
+            "no_compileadd_or_query": True,
+            "no_memory_write_or_live_integration": True,
+        },
+    }
+
+
+def _fact_compiled_clause(statement: str, kb: str) -> str:
+    """Build the one base-fact clause emitted by the ``compile_`` fact branch."""
+    form = parse_one_list(statement)
+    if len(form) != 4 or symbol_text(form[0]) != ":":
+        raise ValueError("statement must be a PeTTaChainer proof atom: (: proof type tv)")
+    if not kb or any(character.isspace() or character in "()" for character in kb):
+        raise ValueError("kb must be a non-empty atomic symbol")
+    proof_id, statement_type, truth_value = (to_source(part) for part in form[1:])
+    return f"(() |- ((: ({kb} MAIN Nil) {proof_id} {statement_type} {truth_value})))"
+
+
+def inspect_mm2stmt_fact_case_overlap(repo_path: str | Path) -> dict[str, object]:
+    """Identify the source-level overlap that duplicates zero-premise facts.
+
+    In the pinned compiler, ``mm2stmt`` has a specialized zero-premise case and
+    a general premise-list case.  A fact clause with ``()`` premises unifies with
+    both patterns, so MeTTa ``case`` emits the direct fact and the general
+    ``rules`` conversion.  This inspection is deliberately exact and fail-closed:
+    source drift is reported rather than silently attributing runtime fan-out to
+    the current two-arm definition.
+    """
+    compile_path = Path(repo_path) / "pettachainer" / "metta" / "chainer" / "compile.metta"
+    if not compile_path.exists():
+        raise FileNotFoundError(f"missing PeTTaChainer compile source: {compile_path}")
+    source = compile_path.read_text(encoding="utf-8")
+    definition = _extract_metta_definition(source, "mm2stmt")
+    if definition is None:
+        raise ValueError("PeTTaChainer compile source has no mm2stmt definition")
+    normalized = " ".join(str(definition["snippet"]).split())
+    fact_arm = "((() |- ($ccl)) $ccl)"
+    general_arm = "(($prms |- ($ccl)) (rules ($prms |- $ccl)))"
+    fact_arm_present = fact_arm in normalized
+    general_arm_present = general_arm in normalized
+    return {
+        "source": "pettachainer mm2stmt case-overlap inspection",
+        "repo_path": str(Path(repo_path)),
+        "definition": definition,
+        "fact_arm_present": fact_arm_present,
+        "general_arm_present": general_arm_present,
+        "zero_premises_match_fact_arm": fact_arm_present,
+        "zero_premises_match_general_arm": general_arm_present,
+        "overlap_confirmed": fact_arm_present and general_arm_present,
+        "interpretation": (
+            "A (() |- ($ccl)) fact matches both mm2stmt case arms; the two identical runtime outputs are source-explained."
+            if fact_arm_present and general_arm_present
+            else "The pinned two-arm mm2stmt overlap was not found; do not attribute duplicate output to it."
+        ),
+        "boundaries": {
+            "source_inspection_only": True,
+            "no_upstream_semantic_change": True,
+            "no_compileadd_or_query": True,
+        },
+    }
+
+
+def inspect_mm2compile_collection_shape(repo_path: str | Path) -> dict[str, object]:
+    """Close the source shape copied by the deduplicated collection probe."""
+    compile_path = Path(repo_path) / "pettachainer" / "metta" / "chainer" / "compile.metta"
+    if not compile_path.exists():
+        raise FileNotFoundError(f"missing PeTTaChainer compile source: {compile_path}")
+    source = compile_path.read_text(encoding="utf-8")
+    definition = _extract_metta_definition(source, "mm2compile")
+    if definition is None:
+        raise ValueError("PeTTaChainer compile source has no mm2compile definition")
+    normalized = " ".join(str(definition["snippet"]).split())
+    expected_body = (
+        "(progn (remove-all-atoms ctx) "
+        "(superpose ((mm2stmt (compile $kb $stmt)) (get-atoms ctx))))"
+    )
+    shape_confirmed = expected_body in normalized
+    return {
+        "source": "pettachainer mm2compile collection-shape inspection",
+        "repo_path": str(Path(repo_path)),
+        "definition": definition,
+        "shape_confirmed": shape_confirmed,
+        "interpretation": (
+            "The pinned mm2compile collector clears ctx and superposes mm2stmt output with ctx atoms."
+            if shape_confirmed
+            else "The pinned mm2compile collection shape was not found; do not run the copied collector probe."
+        ),
+        "boundaries": {
+            "source_inspection_only": True,
+            "no_upstream_semantic_change": True,
+            "no_compileadd_or_query": True,
+        },
+    }
+
+
+def _mm2stmt_deduplicated_fact_stage(statement: str, max_output_items: int = 16) -> dict[str, object]:
+    """Convert one canonical fact clause and inspect ``ctx`` independently.
+
+    The upstream ``compile`` probe can return hundreds of identical clauses. This
+    stage deliberately constructs one source-equivalent base-fact clause, passes
+    it through ``mm2stmt`` once, and reads the temporary context after clearing it.
+    It never invokes ``compile``, ``mm2compile``, or an add operation.
+    """
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    from pettachainer import PeTTaChainer
+
+    handler = PeTTaChainer()
+    clause = _fact_compiled_clause(statement, handler.kb)
+    handler.handler.process_metta_string("!(remove-all-atoms ctx)")
+    converted = handler.handler.process_metta_string(f"!(mm2stmt {clause})")
+    context_atoms = handler.handler.process_metta_string("!(get-atoms ctx)")
+
+    converted_items = converted if isinstance(converted, list) else [converted]
+    context_items = context_atoms if isinstance(context_atoms, list) else [context_atoms]
+    converted_rendered = [str(item) for item in converted_items]
+    context_rendered = [str(item) for item in context_items]
+    expected_fact = to_source(parse_one_list(clause)[2][0])
+    return {
+        "compiled_clause": clause,
+        "expected_fact": expected_fact,
+        "converted_count": len(converted_rendered),
+        "converted_unique_count": len(set(converted_rendered)),
+        "converted_items": converted_rendered[:max_output_items],
+        "converted_truncated": len(converted_rendered) > max_output_items,
+        "expected_fact_present": _materialize_identity_matches(expected_fact, converted_rendered),
+        "ctx_atom_count": len(context_rendered),
+        "ctx_unique_atom_count": len(set(context_rendered)),
+        "ctx_atoms": context_rendered[:max_output_items],
+        "ctx_truncated": len(context_rendered) > max_output_items,
+    }
+
+
+def _mm2compile_deduplicated_fact_stage(
+    statement: str, max_output_items: int = 16,
+) -> dict[str, object]:
+    """Run the pinned mm2compile collector over one canonical fact clause.
+
+    The expression copies mm2compile's clear/convert/collect structure while
+    replacing only ``(compile $kb $stmt)`` with one source-equivalent clause.
+    Thus it measures collection semantics without reintroducing compiler fan-out.
+    """
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    from pettachainer import PeTTaChainer
+
+    handler = PeTTaChainer()
+    clause = _fact_compiled_clause(statement, handler.kb)
+    call_text = (
+        "!(progn (remove-all-atoms ctx) "
+        f"(superpose ((mm2stmt {clause}) (get-atoms ctx))))"
+    )
+    result = handler.handler.process_metta_string(call_text)
+    items = result if isinstance(result, list) else [result]
+    rendered = [str(item) for item in items]
+    unique = list(dict.fromkeys(rendered))
+    expected_fact = to_source(parse_one_list(clause)[2][0])
+    return {
+        "call_text": call_text,
+        "compiled_clause": clause,
+        "expected_fact": expected_fact,
+        "output_count": len(rendered),
+        "unique_output_count": len(unique),
+        "output_items": rendered[:max_output_items],
+        "output_truncated": len(rendered) > max_output_items,
+        "expected_fact_present": _materialize_identity_matches(expected_fact, rendered),
+    }
+
+
+def _mm2stmt_deduplicated_fact_from_repo_stage(
+    statement: str, repo_path: str, max_output_items: int = 16,
+) -> dict[str, object]:
+    """Run the isolated conversion rung from one selected checkout."""
+    sys.path.insert(0, repo_path)
+    return _mm2stmt_deduplicated_fact_stage(statement, max_output_items)
+
+
+def _mm2compile_deduplicated_fact_from_repo_stage(
+    statement: str, repo_path: str, max_output_items: int = 16,
+) -> dict[str, object]:
+    """Run the isolated collector rung from one selected checkout."""
+    sys.path.insert(0, repo_path)
+    return _mm2compile_deduplicated_fact_stage(statement, max_output_items)
+
+
+def _full_mm2compile_from_repo_stage(
+    statement: str, repo_path: str, max_output_items: int = 16,
+) -> dict[str, object]:
+    """Run the real ``mm2compile`` entry point from one selected checkout."""
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    sys.path.insert(0, repo_path)
+    from pettachainer import PeTTaChainer
+
+    handler = PeTTaChainer()
+    call_text = f"!(mm2compile {handler.kb} {statement})"
+    result = handler.handler.process_metta_string(call_text)
+    items = result if isinstance(result, list) else [result]
+    rendered = [str(item) for item in items]
+    unique = list(dict.fromkeys(rendered))
+    expected_fact = to_source(parse_one_list(statement)[2])
+    return {
+        "call_text": call_text,
+        "expected_fact": expected_fact,
+        "output_count": len(rendered),
+        "unique_output_count": len(unique),
+        "output_items": rendered[:max_output_items],
+        "output_truncated": len(rendered) > max_output_items,
+        "expected_fact_present": _materialize_identity_matches(expected_fact, rendered),
+    }
+
+
+def _compileadd_add_only_from_repo_stage(
+    statement: str, repo_path: str, max_output_items: int = 16,
+) -> dict[str, object]:
+    """Run one repaired ``compileadd`` and verify its exact stored fact.
+
+    This deliberately stops at an exact ``&kb`` membership check.  It does not
+    invoke PeTTaChainer's query compiler or treat the add result as an inferred
+    answer.
+    """
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    sys.path.insert(0, repo_path)
+    from pettachainer import PeTTaChainer
+
+    handler = PeTTaChainer()
+    parsed = parse_one_list(statement)
+    if len(parsed) != 4 or symbol_text(parsed[0]) != ":":
+        raise ValueError("statement must be a four-field PeTTaChainer proof statement")
+    proof, fact_type, truth_value = (to_source(item) for item in parsed[1:])
+    kb_context = f"({handler.kb} MAIN Nil)"
+    expected_external = f"(: {kb_context} {proof} {fact_type} {truth_value})"
+    expected_internal = f"({fact_type} {kb_context} {proof} {truth_value})"
+    call_text = f"!(compileadd {handler.kb} {statement})"
+    result = handler.handler.process_metta_string(call_text)
+    items = result if isinstance(result, list) else [result]
+    rendered = [str(item) for item in items]
+    stored_call_text = f"!(match &kb {expected_internal} {expected_internal})"
+    stored_result = handler.handler.process_metta_string(stored_call_text)
+    stored_items = stored_result if isinstance(stored_result, list) else [stored_result]
+    stored_rendered = [str(item) for item in stored_items]
+    return {
+        "call_text": call_text,
+        "stored_check_call_text": stored_call_text,
+        "expected_external": expected_external,
+        "expected_internal": expected_internal,
+        "output_count": len(rendered),
+        "unique_output_count": len(dict.fromkeys(rendered)),
+        "output_items": rendered[:max_output_items],
+        "output_truncated": len(rendered) > max_output_items,
+        "expected_external_present": _materialize_identity_matches(expected_external, rendered),
+        "stored_match_count": len(stored_rendered),
+        "stored_match_items": stored_rendered[:max_output_items],
+        "stored_match_truncated": len(stored_rendered) > max_output_items,
+        "expected_internal_stored": _materialize_identity_matches(expected_internal, stored_rendered),
+    }
+
+
+def _compileadd_exact_fact_query_from_repo_stage(
+    statement: str,
+    repo_path: str,
+    query_steps: int = 1,
+    max_output_items: int = 16,
+) -> dict[str, object]:
+    """Add one repaired fact and query only that exact fact in one process."""
+    if query_steps <= 0:
+        raise ValueError("query_steps must be positive")
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    sys.path.insert(0, repo_path)
+    from pettachainer import PeTTaChainer
+
+    handler = PeTTaChainer()
+    parsed = parse_one_list(statement)
+    if len(parsed) != 4 or symbol_text(parsed[0]) != ":":
+        raise ValueError("statement must be a four-field PeTTaChainer proof statement")
+    proof, fact_type, truth_value = (to_source(item) for item in parsed[1:])
+    expected_answer = f"(: {proof} {fact_type} {truth_value})"
+    query = f"(: $prf {fact_type} $tv)"
+
+    add_call_text = f"!(compileadd {handler.kb} {statement})"
+    add_result = handler.handler.process_metta_string(add_call_text)
+    add_items = add_result if isinstance(add_result, list) else [add_result]
+    add_rendered = [str(item) for item in add_items]
+
+    kb_context = f"({handler.kb} MAIN Nil)"
+    expected_internal = f"({fact_type} {kb_context} {proof} {truth_value})"
+    stored_call_text = f"!(match &kb {expected_internal} {expected_internal})"
+    stored_result = handler.handler.process_metta_string(stored_call_text)
+    stored_items = stored_result if isinstance(stored_result, list) else [stored_result]
+    stored_rendered = [str(item) for item in stored_items]
+
+    query_call_text = f"!(query {query_steps} {handler.kb} {query})"
+    query_result = handler.handler.process_metta_string(query_call_text)
+    query_items = query_result if isinstance(query_result, list) else [query_result]
+    query_rendered = [str(item) for item in query_items if str(item).strip() != "()"]
+    exact_answer_only = _all_materialize_identity_matches(expected_answer, query_rendered)
+    return {
+        "add_call_text": add_call_text,
+        "stored_check_call_text": stored_call_text,
+        "query_call_text": query_call_text,
+        "query": query,
+        "query_steps": query_steps,
+        "expected_answer": expected_answer,
+        "add_output_count": len(add_rendered),
+        "expected_internal_stored": _materialize_identity_matches(expected_internal, stored_rendered),
+        "query_answer_count": len(query_rendered),
+        "query_unique_answer_count": len(dict.fromkeys(query_rendered)),
+        "query_answer_items": query_rendered[:max_output_items],
+        "query_answer_truncated": len(query_rendered) > max_output_items,
+        "exact_answer_present": _materialize_identity_matches(expected_answer, query_rendered),
+        "exact_answer_only": exact_answer_only,
+        "unexpected_answer_count": sum(
+            not _materialize_identity_matches(expected_answer, [item])
+            for item in query_rendered
+        ),
+    }
+
+
+def _compileadd_one_rule_derivation_from_repo_stage(
+    fact_statement: str,
+    rule_statement: str,
+    query_term: str,
+    repo_path: str,
+    query_steps: int = 5,
+    max_output_items: int = 16,
+) -> dict[str, object]:
+    """Add one fact and one rule, then require query answers to be derived."""
+    if query_steps <= 0:
+        raise ValueError("query_steps must be positive")
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    canonical_query_term = to_source(parse_one_list(query_term))
+    if canonical_query_term != query_term:
+        raise ValueError("query_term must already be canonical")
+    parsed_statements = [parse_one_list(item) for item in (fact_statement, rule_statement)]
+    if any(len(item) != 4 or symbol_text(item[0]) != ":" for item in parsed_statements):
+        raise ValueError("inputs must be four-field PeTTaChainer proof statements")
+    input_proofs = {to_source(item[1]) for item in parsed_statements}
+    fact_proof = to_source(parsed_statements[0][1])
+    rule_proof = to_source(parsed_statements[1][1])
+    expected_proof = f"(rule-proof {rule_proof} {fact_proof})"
+    fact_term = to_source(parsed_statements[0][2])
+    if fact_term == query_term:
+        raise ValueError("derived query term must differ from the stored input fact")
+    fact_tv = parsed_statements[0][3]
+    rule_tv = parsed_statements[1][3]
+    if any(
+        not isinstance(tv, tuple) or len(tv) != 3 or symbol_text(tv[0]) != "STV"
+        for tv in (fact_tv, rule_tv)
+    ):
+        raise ValueError("fact and rule must have STV truth values")
+    fact_strength, fact_confidence = (float(symbol_text(item)) for item in fact_tv[1:])
+    rule_strength, rule_confidence = (float(symbol_text(item)) for item in rule_tv[1:])
+    fallback_strength = fallback_confidence = 0.2
+    expected_strength = rule_strength * fact_strength + fallback_strength * (1.0 - fact_strength)
+    expected_confidence = (
+        fact_strength * min(rule_confidence, fact_confidence)
+        + (1.0 - fact_strength) * min(fallback_confidence, fact_confidence)
+    )
+
+    sys.path.insert(0, repo_path)
+    from pettachainer import PeTTaChainer
+
+    handler = PeTTaChainer()
+    add_events: list[dict[str, object]] = []
+    for label, statement in (("fact", fact_statement), ("rule", rule_statement)):
+        call_text = f"!(compileadd {handler.kb} {statement})"
+        result = handler.handler.process_metta_string(call_text)
+        items = result if isinstance(result, list) else [result]
+        add_events.append({
+            "label": label,
+            "call_text": call_text,
+            "output_count": len(items),
+            "output_items": [str(item) for item in items[:max_output_items]],
+            "output_truncated": len(items) > max_output_items,
+        })
+
+    query = f"(: $prf {query_term} $tv)"
+    query_call_text = f"!(query {query_steps} {handler.kb} {query})"
+    result = handler.handler.process_metta_string(query_call_text)
+    items = result if isinstance(result, list) else [result]
+    rendered = [str(item) for item in items if str(item).strip() != "()"]
+    parsed_answers: list[tuple[object, ...]] = []
+    malformed_answers: list[str] = []
+    for answer in rendered:
+        try:
+            parsed = parse_one_list(answer)
+        except ValueError:
+            malformed_answers.append(answer)
+            continue
+        if len(parsed) != 4 or symbol_text(parsed[0]) != ":":
+            malformed_answers.append(answer)
+            continue
+        parsed_answers.append(parsed)
+    target_only = bool(parsed_answers) and not malformed_answers and all(
+        to_source(answer[2]) == query_term for answer in parsed_answers
+    )
+    exact_derived_proof_only = target_only and all(
+        to_source(answer[1]) == expected_proof for answer in parsed_answers
+    )
+    typed_stv_only = target_only
+    truth_formula_match = target_only
+    for answer in parsed_answers:
+        truth = answer[3]
+        if not isinstance(truth, tuple) or len(truth) != 3 or symbol_text(truth[0]) != "STV":
+            typed_stv_only = False
+            break
+        try:
+            strength, confidence = (float(symbol_text(item)) for item in truth[1:])
+        except (TypeError, ValueError):
+            typed_stv_only = False
+            break
+        if not all(math.isfinite(value) and 0.0 <= value <= 1.0 for value in (strength, confidence)):
+            typed_stv_only = False
+            break
+        if not (
+            math.isclose(strength, expected_strength, rel_tol=1e-12, abs_tol=1e-12)
+            and math.isclose(confidence, expected_confidence, rel_tol=1e-12, abs_tol=1e-12)
+        ):
+            truth_formula_match = False
+    return {
+        "add_events": add_events,
+        "query_call_text": query_call_text,
+        "query": query,
+        "query_steps": query_steps,
+        "input_proof_ids": sorted(input_proofs),
+        "query_answer_count": len(rendered),
+        "query_unique_answer_count": len(dict.fromkeys(rendered)),
+        "query_answer_items": rendered[:max_output_items],
+        "query_answer_truncated": len(rendered) > max_output_items,
+        "malformed_answer_count": len(malformed_answers),
+        "query_target_only": target_only,
+        "expected_derived_proof": expected_proof,
+        "exact_derived_proof_only": exact_derived_proof_only,
+        "typed_stv_only": typed_stv_only,
+        "truth_formula": "TotalMpFormula-with-0.2-fallback",
+        "expected_truth_value": [expected_strength, expected_confidence],
+        "truth_formula_match": truth_formula_match and typed_stv_only,
+    }
+
+
+def inspect_one_rule_truth_formula_path(repo_path: str | Path) -> dict[str, object]:
+    """Close the exact TotalMP source path used by a unary implication."""
+    root = Path(repo_path) / "pettachainer" / "metta" / "chainer"
+    compile_path = root / "compile.metta"
+    formula_path = root / "tv_formulas.metta"
+    missing = [str(path) for path in (compile_path, formula_path) if not path.is_file()]
+    if missing:
+        raise FileNotFoundError("missing PeTTaChainer truth-formula source: " + ", ".join(missing))
+    compile_source = " ".join(compile_path.read_text(encoding="utf-8").split())
+    formula_source = " ".join(formula_path.read_text(encoding="utf-8").split())
+    shapes = {
+        "forward_rule_calls_total_mp_conclusion": (
+            "(CPU TotalMpConclusionFormula ($source-kb $pair-a $b $atv $tv (STV 0.2 0.2)) $btv)"
+            in compile_source
+        ),
+        "missing_complement_uses_fallback": (
+            "(if (== $hits ()) $fallback (car-atom $hits))" in compile_source
+        ),
+        "positive_premise_calls_total_mp": (
+            "($_ (TotalMpFormula $atv $tv (complement-implication-tv $kb $premise $conclusion $fallback)))"
+            in compile_source
+        ),
+        "total_mp_formula_exact": (
+            "(= (TotalMpFormula (STV $as $ac) (STV $bs_a $bc_a) (STV $bs_na $bc_na)) "
+            "(STV (+ (* $bs_a $as) (* $bs_na (- 1 $as))) "
+            "(+ (* $as (min $bc_a $ac)) (* (- 1 $as) (min $bc_na $ac)))))"
+            in formula_source
+        ),
+    }
+    return {
+        "source": "pettachainer unary implication TotalMP truth-formula inspection",
+        "repo_path": str(Path(repo_path)),
+        "matched_shapes": shapes,
+        "shape_confirmed": all(shapes.values()),
+        "fallback_truth_value": [0.2, 0.2],
+        "source_sha256": {
+            "compile.metta": hashlib.sha256(compile_path.read_bytes()).hexdigest(),
+            "tv_formulas.metta": hashlib.sha256(formula_path.read_bytes()).hexdigest(),
+        },
+        "boundaries": {
+            "source_inspection_only": True,
+            "no_formula_or_upstream_change": True,
+            "no_promotion_write_or_live_integration": True,
+        },
+    }
+
+
+def run_repaired_compileadd_exact_fact_query_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    candidate_repo_path: str | Path,
+    stage_timeout_sec: float = 5.0,
+    query_steps: int = 1,
+    max_output_items: int = 16,
+) -> dict[str, object]:
+    """Run the first exact-fact query only after the admitted import repair."""
+    if stage_timeout_sec <= 0:
+        raise ValueError("stage_timeout_sec must be positive")
+    if query_steps <= 0:
+        raise ValueError("query_steps must be positive")
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    baseline_repo = project_root / "repos" / "PeTTaChainer"
+    candidate_repo = Path(candidate_repo_path)
+    repair = inspect_duplicate_compile_import_repair(baseline_repo, candidate_repo)
+    dispatch = inspect_compile_dispatch_for_statement(candidate_repo, statement)
+    collection = inspect_mm2compile_collection_shape(candidate_repo)
+    source_admitted = (
+        repair["exact_targeted_import_removal"] is True
+        and dispatch["selected_compile_branch"] == "fact-assertion"
+        and collection["shape_confirmed"] is True
+    )
+    if not source_admitted:
+        return {
+            "source": "non-live repaired PeTTaChainer exact-fact query gate",
+            "status": "skipped",
+            "reason": "exact repair, fact dispatch, or mm2compile source gate failed",
+            "repair_inspection": repair,
+            "inspection": dispatch,
+            "mm2compile_inspection": collection,
+            "runtime_event": None,
+        }
+    _configure_local_runtime(project_root)
+    event = _run_isolated_stage(
+        "repaired_compileadd_exact_fact_query",
+        _compileadd_exact_fact_query_from_repo_stage,
+        (statement, str(candidate_repo), query_steps, max_output_items),
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    completed = (
+        event.get("status") == "ok"
+        and _captured_stream_provenance_complete(event)
+        and event.get("expected_internal_stored") is True
+        and event.get("exact_answer_present") is True
+        and event.get("exact_answer_only") is True
+        and isinstance(event.get("query_answer_count"), int)
+        and not isinstance(event.get("query_answer_count"), bool)
+        and event["query_answer_count"] > 0
+    )
+    return {
+        "source": "non-live repaired PeTTaChainer exact-fact query gate",
+        "status": "completed" if completed else "blocked",
+        "repair_inspection": repair,
+        "inspection": dispatch,
+        "mm2compile_inspection": collection,
+        "runtime_event": event,
+        "boundaries": {
+            "isolated_candidate_only": True,
+            "single_compileadd_then_exact_fact_query": True,
+            "bounded_query_steps": query_steps,
+            "exact_answer_only": True,
+            "content_addressed_process_streams": True,
+            "no_inferred_result_promotion_or_memory_write": True,
+            "no_live_integration": True,
+        },
+    }
+
+
+def run_repaired_pettachainer_episode_contract_gate(
+    contract: PeTTaChainerEpisodeContract,
+    *,
+    project_root: Path,
+    candidate_repo_path: str | Path,
+    stage_timeout_sec: float = 5.0,
+    query_steps: int = 1,
+    max_output_items: int = 16,
+) -> dict[str, object]:
+    """Admit one typed contract only as repaired exact stored-fact recall.
+
+    This deliberately supports the smallest compiler-to-runtime rung: one
+    immutable input statement whose term is exactly the contract query term.
+    It first closes PeTTaChainer's public validators, then delegates execution
+    to the exact source-repair/add/storage/answer-set gate.  A successful result
+    is classified as stored-fact retrieval, never as a derived PLN result.
+    """
+    if not isinstance(contract, PeTTaChainerEpisodeContract):
+        raise ValueError("contract must be an immutable PeTTaChainer episode contract")
+    if len(contract.statements) != 1:
+        raise ValueError("repaired contract gate currently requires exactly one statement")
+    statement = contract.statements[0]
+    if statement.canonical_term != contract.query_term:
+        raise ValueError("repaired contract gate requires an exact stored-fact query term")
+
+    _configure_local_runtime(project_root)
+    validation = _run_isolated_stage(
+        "validate_repaired_episode_contract",
+        _check_episode_contract_stage,
+        ([statement.atom], contract.query_atom),
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    validators_admitted = (
+        validation.get("status") == "ok"
+        and validation.get("statement_results") == [1.0]
+        and not isinstance(validation.get("statement_results", [None])[0], bool)
+        and validation.get("query_result") == 1.0
+        and not isinstance(validation.get("query_result"), bool)
+        and _captured_stream_provenance_complete(validation)
+    )
+    runtime_gate = None
+    if validators_admitted:
+        runtime_gate = run_repaired_compileadd_exact_fact_query_gate(
+            statement.atom,
+            project_root=project_root,
+            candidate_repo_path=candidate_repo_path,
+            stage_timeout_sec=stage_timeout_sec,
+            query_steps=query_steps,
+            max_output_items=max_output_items,
+        )
+    admitted = validators_admitted and runtime_gate is not None and runtime_gate.get("status") == "completed"
+    return {
+        "schema": "petta-memory-repaired-pettachainer-contract-gate-v1",
+        "episode_id": contract.episode_id,
+        "chart_fingerprint": contract.chart_fingerprint,
+        "statement_digest": statement.sentence_digest,
+        "query_term": contract.query_term,
+        "validators_admitted": validators_admitted,
+        "runtime_admitted": admitted,
+        "result_classification": "stored-fact-retrieval" if admitted else None,
+        "validation_event": validation,
+        "runtime_gate": runtime_gate,
+        "diagnostic_stream_classification": "opaque-runtime-diagnostics-content-addressed",
+        "boundaries": {
+            "single_compiler_emitted_statement": True,
+            "exact_stored_fact_query_only": True,
+            "not_a_derived_pln_result": True,
+            "no_episode_manifest": True,
+            "no_inferred_result_promotion_or_memory_write": True,
+            "no_live_integration": True,
+        },
+    }
+
+
+def run_repaired_pettachainer_rule_episode_contract_gate(
+    contract: PeTTaChainerEpisodeContract,
+    *,
+    project_root: Path,
+    candidate_repo_path: str | Path,
+    stage_timeout_sec: float = 5.0,
+    query_steps: int = 5,
+    max_output_items: int = 16,
+) -> dict[str, object]:
+    """Bind one repaired derived result to immutable compiler output.
+
+    The contract must contain exactly one ordinary fact and one implication.
+    Their content-addressed proof ids, truth values, stamps, and evidence bases
+    come from ``build_pettachainer_episode_contract``.  The existing repaired
+    one-rule gate then requires the runtime proof to be exactly
+    ``(rule-proof <rule-proof-id> <fact-proof-id>)``.  This wrapper records that
+    typed binding but does not construct a patham9 ``EpisodeManifest`` or grant
+    promotion authority.
+    """
+    if not isinstance(contract, PeTTaChainerEpisodeContract):
+        raise ValueError("contract must be an immutable PeTTaChainer episode contract")
+    if len(contract.statements) != 2:
+        raise ValueError("repaired rule contract gate requires exactly two statements")
+
+    classified: list[tuple[str, PeTTaChainerInputStatement]] = []
+    for statement in contract.statements:
+        term = parse_one_list(statement.canonical_term)
+        role = "rule" if term and symbol_text(term[0]) == "Implication" else "fact"
+        classified.append((role, statement))
+    facts = [statement for role, statement in classified if role == "fact"]
+    rules = [statement for role, statement in classified if role == "rule"]
+    if len(facts) != 1 or len(rules) != 1:
+        raise ValueError("repaired rule contract gate requires one fact and one implication")
+    fact = facts[0]
+    rule = rules[0]
+    if contract.query_term in {fact.canonical_term, rule.canonical_term}:
+        raise ValueError("repaired rule contract query must differ from stored inputs")
+
+    runtime_gate = run_repaired_pettachainer_one_rule_derivation_gate(
+        fact.atom,
+        rule.atom,
+        contract.query_term,
+        project_root=project_root,
+        candidate_repo_path=candidate_repo_path,
+        stage_timeout_sec=stage_timeout_sec,
+        query_steps=query_steps,
+        max_output_items=max_output_items,
+    )
+    admitted = runtime_gate.get("status") == "completed"
+    return {
+        "schema": "petta-memory-repaired-pettachainer-rule-contract-gate-v1",
+        "episode_id": contract.episode_id,
+        "chart_fingerprint": contract.chart_fingerprint,
+        "query_term": contract.query_term,
+        "fact_statement_digest": fact.sentence_digest,
+        "rule_statement_digest": rule.sentence_digest,
+        "fact_proof_id": fact.proof_id,
+        "rule_proof_id": rule.proof_id,
+        "expected_derived_proof": f"(rule-proof {rule.proof_id} {fact.proof_id})",
+        "fact_stamps": list(fact.stamp_ints),
+        "rule_stamps": list(rule.stamp_ints),
+        "fact_evidence_basis_ids": list(fact.evidence_basis_ids),
+        "rule_evidence_basis_ids": list(rule.evidence_basis_ids),
+        "runtime_admitted": admitted,
+        "result_classification": "compiler-bound-one-rule-derived-result" if admitted else None,
+        "runtime_gate": runtime_gate,
+        "boundaries": {
+            "exactly_one_compiler_emitted_fact_and_rule": True,
+            "content_addressed_input_proof_ids": True,
+            "typed_input_provenance_retained": True,
+            "exact_rule_proof_required": True,
+            "no_episode_manifest": True,
+            "no_inferred_result_promotion_or_memory_write": True,
+            "no_live_integration": True,
+        },
+    }
+
+
+def build_repaired_pettachainer_rule_episode_capture(
+    contract: PeTTaChainerEpisodeContract,
+    gate: dict[str, object],
+) -> PeTTaChainerDerivedResultCapture:
+    """Close one admitted rule-contract gate into a typed capture artifact.
+
+    The artifact binds the canonical derived atom to compiler input identities
+    and to content commitments for both isolated stages. Raw diagnostic stream
+    content is deliberately not claimed or reconstructed.
+    """
+    if not isinstance(contract, PeTTaChainerEpisodeContract):
+        raise ValueError("contract must be an immutable PeTTaChainer episode contract")
+    if not isinstance(gate, dict):
+        raise ValueError("gate must be a repaired rule-contract gate object")
+    if (
+        gate.get("schema") != "petta-memory-repaired-pettachainer-rule-contract-gate-v1"
+        or gate.get("runtime_admitted") is not True
+        or gate.get("result_classification") != "compiler-bound-one-rule-derived-result"
+        or gate.get("episode_id") != contract.episode_id
+        or gate.get("chart_fingerprint") != contract.chart_fingerprint
+        or gate.get("query_term") != contract.query_term
+    ):
+        raise ValueError("repaired rule-contract gate is not admitted for this contract")
+
+    facts: list[PeTTaChainerInputStatement] = []
+    rules: list[PeTTaChainerInputStatement] = []
+    for statement in contract.statements:
+        term = parse_one_list(statement.canonical_term)
+        (rules if term and symbol_text(term[0]) == "Implication" else facts).append(statement)
+    if len(facts) != 1 or len(rules) != 1:
+        raise ValueError("capture requires one compiler-emitted fact and one implication")
+    fact, rule = facts[0], rules[0]
+    identity_fields = {
+        "fact_statement_digest": fact.sentence_digest,
+        "rule_statement_digest": rule.sentence_digest,
+        "fact_proof_id": fact.proof_id,
+        "rule_proof_id": rule.proof_id,
+        "fact_stamps": list(fact.stamp_ints),
+        "rule_stamps": list(rule.stamp_ints),
+        "fact_evidence_basis_ids": list(fact.evidence_basis_ids),
+        "rule_evidence_basis_ids": list(rule.evidence_basis_ids),
+    }
+    if any(gate.get(field) != expected for field, expected in identity_fields.items()):
+        raise ValueError("repaired rule-contract gate input provenance drifted")
+
+    runtime_gate = gate.get("runtime_gate")
+    if not isinstance(runtime_gate, dict) or runtime_gate.get("status") != "completed":
+        raise ValueError("nested repaired derivation gate is not completed")
+    validation = runtime_gate.get("validation_event")
+    runtime = runtime_gate.get("runtime_event")
+    if not isinstance(validation, dict) or not isinstance(runtime, dict):
+        raise ValueError("completed derivation gate lacks isolated stage captures")
+    if runtime.get("query_unique_answer_count") != 1:
+        raise ValueError("typed capture requires one unique derived answer")
+    answers = runtime.get("query_answer_items")
+    if not isinstance(answers, list) or not answers or not isinstance(answers[0], str):
+        raise ValueError("typed capture requires a retained derived answer sample")
+    parsed = parse_one_list(answers[0])
+    if len(parsed) != 4 or symbol_text(parsed[0]) != ":":
+        raise ValueError("retained derived answer is not a proof/type/STV atom")
+    proof, query_term = (to_source(item) for item in parsed[1:3])
+    truth = parsed[3]
+    if not isinstance(truth, tuple) or len(truth) != 3 or symbol_text(truth[0]) != "STV":
+        raise ValueError("retained derived answer lacks an STV")
+    try:
+        strength, confidence = (float(symbol_text(item)) for item in truth[1:])
+    except (TypeError, ValueError) as error:
+        raise ValueError("retained derived STV is not numeric") from error
+    expected_proof = f"(rule-proof {rule.proof_id} {fact.proof_id})"
+    expected_truth = runtime.get("expected_truth_value")
+    if (
+        proof != expected_proof
+        or query_term != contract.query_term
+        or not isinstance(expected_truth, list)
+        or len(expected_truth) != 2
+        or any(isinstance(value, bool) or not isinstance(value, (int, float)) for value in expected_truth)
+        or not math.isclose(strength, float(expected_truth[0]), rel_tol=1e-12, abs_tol=1e-12)
+        or not math.isclose(confidence, float(expected_truth[1]), rel_tol=1e-12, abs_tol=1e-12)
+    ):
+        raise ValueError("retained derived answer does not match admitted proof or truth formula")
+
+    def stage_capture(event: dict[str, object]):
+        try:
+            return build_pettachainer_stage_capture(
+                label=event["label"], elapsed_seconds=event["seconds"],
+                stdout_bytes=event["stdout_bytes"], stdout_sha256=event["stdout_sha256"],
+                stderr_bytes=event["stderr_bytes"], stderr_sha256=event["stderr_sha256"],
+            )
+        except (KeyError, TypeError) as error:
+            raise ValueError("isolated stage capture provenance is incomplete") from error
+
+    validator_capture = stage_capture(validation)
+    runtime_capture = stage_capture(runtime)
+    derived_atom = f"(: {proof} {query_term} (STV {strength} {confidence}))"
+    return build_pettachainer_derived_result_capture(
+        episode_id=contract.episode_id,
+        chart_fingerprint=contract.chart_fingerprint,
+        fact=fact,
+        rule=rule,
+        query_term=query_term,
+        derived_atom=derived_atom,
+        derived_proof=proof,
+        strength=strength,
+        confidence=confidence,
+        validator_capture=validator_capture,
+        runtime_capture=runtime_capture,
+    )
+
+
+def run_repaired_pettachainer_one_rule_derivation_gate(
+    fact_statement: str,
+    rule_statement: str,
+    query_term: str,
+    *,
+    project_root: Path,
+    candidate_repo_path: str | Path,
+    stage_timeout_sec: float = 5.0,
+    query_steps: int = 5,
+    max_output_items: int = 16,
+) -> dict[str, object]:
+    """Admit one repaired fact-plus-rule result as a derived runtime result."""
+    if stage_timeout_sec <= 0:
+        raise ValueError("stage_timeout_sec must be positive")
+    if query_steps <= 0:
+        raise ValueError("query_steps must be positive")
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    baseline_repo = project_root / "repos" / "PeTTaChainer"
+    candidate_repo = Path(candidate_repo_path)
+    repair = inspect_duplicate_compile_import_repair(baseline_repo, candidate_repo)
+    fact_dispatch = inspect_compile_dispatch_for_statement(candidate_repo, fact_statement)
+    rule_dispatch = inspect_compile_dispatch_for_statement(candidate_repo, rule_statement)
+    collection = inspect_mm2compile_collection_shape(candidate_repo)
+    truth_formula = inspect_one_rule_truth_formula_path(candidate_repo)
+    source_admitted = (
+        repair.get("exact_targeted_import_removal") is True
+        and fact_dispatch.get("selected_compile_branch") == "fact-assertion"
+        and rule_dispatch.get("selected_compile_branch") == "implication-rule"
+        and collection.get("shape_confirmed") is True
+        and truth_formula.get("shape_confirmed") is True
+    )
+    if not source_admitted:
+        return {
+            "schema": "petta-memory-repaired-pettachainer-one-rule-derivation-v1",
+            "status": "skipped",
+            "reason": "exact repair, dispatch, or mm2compile source gate failed",
+            "repair_inspection": repair,
+            "fact_inspection": fact_dispatch,
+            "rule_inspection": rule_dispatch,
+            "mm2compile_inspection": collection,
+            "truth_formula_inspection": truth_formula,
+            "validation_event": None,
+            "runtime_event": None,
+        }
+
+    query_atom = f"(: $prf {query_term} $tv)"
+    _configure_local_runtime(project_root)
+    validation = _run_isolated_stage(
+        "validate_repaired_one_rule_derivation",
+        _check_episode_contract_stage,
+        ([fact_statement, rule_statement], query_atom),
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    validators_admitted = (
+        validation.get("status") == "ok"
+        and validation.get("statement_results") == [1.0, 1.0]
+        and all(not isinstance(value, bool) for value in validation.get("statement_results", []))
+        and validation.get("query_result") == 1.0
+        and not isinstance(validation.get("query_result"), bool)
+        and _captured_stream_provenance_complete(validation)
+    )
+    runtime = None
+    if validators_admitted:
+        runtime = _run_isolated_stage(
+            "repaired_one_rule_derivation",
+            _compileadd_one_rule_derivation_from_repo_stage,
+            (fact_statement, rule_statement, query_term, str(candidate_repo), query_steps, max_output_items),
+            stage_timeout_sec=stage_timeout_sec,
+        )
+    admitted = (
+        runtime is not None
+        and runtime.get("status") == "ok"
+        and _captured_stream_provenance_complete(runtime)
+        and isinstance(runtime.get("query_answer_count"), int)
+        and not isinstance(runtime.get("query_answer_count"), bool)
+        and runtime["query_answer_count"] > 0
+        and runtime.get("malformed_answer_count") == 0
+        and runtime.get("query_target_only") is True
+        and runtime.get("exact_derived_proof_only") is True
+        and runtime.get("typed_stv_only") is True
+        and runtime.get("truth_formula_match") is True
+    )
+    return {
+        "schema": "petta-memory-repaired-pettachainer-one-rule-derivation-v1",
+        "status": "completed" if admitted else "blocked",
+        "validators_admitted": validators_admitted,
+        "runtime_admitted": admitted,
+        "result_classification": "one-rule-derived-result" if admitted else None,
+        "repair_inspection": repair,
+        "fact_inspection": fact_dispatch,
+        "rule_inspection": rule_dispatch,
+        "mm2compile_inspection": collection,
+        "truth_formula_inspection": truth_formula,
+        "validation_event": validation,
+        "runtime_event": runtime,
+        "diagnostic_stream_classification": "opaque-runtime-diagnostics-content-addressed",
+        "boundaries": {
+            "isolated_candidate_only": True,
+            "one_fact_one_rule": True,
+            "query_term_must_differ_from_stored_fact": True,
+            "exact_rule_proof_required": True,
+            "typed_unit_interval_stv_required": True,
+            "exact_total_mp_truth_formula_required": True,
+            "no_episode_manifest": True,
+            "no_inferred_result_promotion_or_memory_write": True,
+            "no_live_integration": True,
+        },
+    }
+
+
+def run_repaired_compileadd_add_only_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    candidate_repo_path: str | Path,
+    stage_timeout_sec: float = 5.0,
+    max_output_items: int = 16,
+) -> dict[str, object]:
+    """Retry exactly one ``compileadd`` after the admitted import repair."""
+    if stage_timeout_sec <= 0:
+        raise ValueError("stage_timeout_sec must be positive")
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    baseline_repo = project_root / "repos" / "PeTTaChainer"
+    candidate_repo = Path(candidate_repo_path)
+    repair = inspect_duplicate_compile_import_repair(baseline_repo, candidate_repo)
+    dispatch = inspect_compile_dispatch_for_statement(candidate_repo, statement)
+    collection = inspect_mm2compile_collection_shape(candidate_repo)
+    source_admitted = (
+        repair["exact_targeted_import_removal"] is True
+        and dispatch["selected_compile_branch"] == "fact-assertion"
+        and collection["shape_confirmed"] is True
+    )
+    if not source_admitted:
+        return {
+            "source": "non-live repaired PeTTaChainer compileadd add-only gate",
+            "status": "skipped",
+            "reason": "exact repair, fact dispatch, or mm2compile source gate failed",
+            "repair_inspection": repair,
+            "inspection": dispatch,
+            "mm2compile_inspection": collection,
+            "runtime_event": None,
+        }
+    _configure_local_runtime(project_root)
+    event = _run_isolated_stage(
+        "repaired_compileadd_add_only",
+        _compileadd_add_only_from_repo_stage,
+        (statement, str(candidate_repo), max_output_items),
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    completed = (
+        event.get("status") == "ok"
+        and event.get("expected_external_present") is True
+        and event.get("expected_internal_stored") is True
+        and isinstance(event.get("stored_match_count"), int)
+        and not isinstance(event.get("stored_match_count"), bool)
+        and event["stored_match_count"] > 0
+    )
+    return {
+        "source": "non-live repaired PeTTaChainer compileadd add-only gate",
+        "status": "completed" if completed else "blocked",
+        "repair_inspection": repair,
+        "inspection": dispatch,
+        "mm2compile_inspection": collection,
+        "runtime_event": event,
+        "boundaries": {
+            "isolated_candidate_only": True,
+            "single_compileadd_only": True,
+            "exact_kb_membership_check_only": True,
+            "no_query_or_result_admission": True,
+            "no_memory_write_or_live_integration": True,
+        },
+    }
+
+
+def run_repaired_full_mm2compile_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    candidate_repo_path: str | Path,
+    stage_timeout_sec: float = 5.0,
+    max_output_items: int = 16,
+) -> dict[str, object]:
+    """Run full ``compile`` -> conversion -> collection after the exact repair."""
+    if stage_timeout_sec <= 0:
+        raise ValueError("stage_timeout_sec must be positive")
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    baseline_repo = project_root / "repos" / "PeTTaChainer"
+    candidate_repo = Path(candidate_repo_path)
+    repair = inspect_duplicate_compile_import_repair(baseline_repo, candidate_repo)
+    dispatch = inspect_compile_dispatch_for_statement(candidate_repo, statement)
+    collection = inspect_mm2compile_collection_shape(candidate_repo)
+    source_admitted = (
+        repair["exact_targeted_import_removal"] is True
+        and dispatch["selected_compile_branch"] == "fact-assertion"
+        and collection["shape_confirmed"] is True
+    )
+    if not source_admitted:
+        return {
+            "source": "non-live repaired PeTTaChainer full mm2compile gate",
+            "status": "skipped",
+            "reason": "exact repair, fact dispatch, or mm2compile source gate failed",
+            "repair_inspection": repair,
+            "inspection": dispatch,
+            "mm2compile_inspection": collection,
+            "runtime_event": None,
+        }
+    _configure_local_runtime(project_root)
+    event = _run_isolated_stage(
+        "repaired_full_mm2compile",
+        _full_mm2compile_from_repo_stage,
+        (statement, str(candidate_repo), max_output_items),
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    completed = (
+        event.get("status") == "ok"
+        and event.get("expected_fact_present") is True
+        and isinstance(event.get("output_count"), int)
+        and not isinstance(event.get("output_count"), bool)
+        and event["output_count"] > 0
+    )
+    return {
+        "source": "non-live repaired PeTTaChainer full mm2compile gate",
+        "status": "completed" if completed else "blocked",
+        "repair_inspection": repair,
+        "inspection": dispatch,
+        "mm2compile_inspection": collection,
+        "runtime_event": event,
+        "boundaries": {
+            "isolated_candidate_only": True,
+            "full_compile_conversion_collection": True,
+            "no_compileadd_or_query_or_result_admission": True,
+            "no_memory_write_or_live_integration": True,
+        },
+    }
+
+
+def run_repaired_fact_conversion_collection_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    candidate_repo_path: str | Path,
+    stage_timeout_sec: float = 5.0,
+    max_output_items: int = 16,
+) -> dict[str, object]:
+    """Remeasure conversion and collection after the exact import repair.
+
+    Both runtime stages receive one source-equivalent compiled fact clause.  The
+    public compiler is deliberately not called, so this gate can determine
+    whether the old two-copy ``mm2stmt`` and four-copy collector behavior also
+    collapsed when duplicate compiler registration was removed.
+    """
+    if stage_timeout_sec <= 0:
+        raise ValueError("stage_timeout_sec must be positive")
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    baseline_repo = project_root / "repos" / "PeTTaChainer"
+    candidate_repo = Path(candidate_repo_path)
+    repair = inspect_duplicate_compile_import_repair(baseline_repo, candidate_repo)
+    dispatch = inspect_compile_dispatch_for_statement(candidate_repo, statement)
+    conversion = inspect_mm2stmt_fact_case_overlap(candidate_repo)
+    collection = inspect_mm2compile_collection_shape(candidate_repo)
+    source_admitted = (
+        repair["exact_targeted_import_removal"] is True
+        and dispatch["selected_compile_branch"] == "fact-assertion"
+        and conversion["overlap_confirmed"] is True
+        and collection["shape_confirmed"] is True
+    )
+    if not source_admitted:
+        return {
+            "source": "non-live repaired PeTTaChainer fact conversion/collection gate",
+            "status": "skipped",
+            "reason": "exact repair, fact dispatch, conversion, or collection source gate failed",
+            "repair_inspection": repair,
+            "inspection": dispatch,
+            "mm2stmt_inspection": conversion,
+            "mm2compile_inspection": collection,
+            "runtime_events": [],
+        }
+    _configure_local_runtime(project_root)
+    stage_args = (statement, str(candidate_repo), max_output_items)
+    conversion_event = _run_isolated_stage(
+        "repaired_mm2stmt_deduplicated_fact",
+        _mm2stmt_deduplicated_fact_from_repo_stage,
+        stage_args,
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    events = [conversion_event]
+    conversion_completed = (
+        conversion_event.get("status") == "ok"
+        and conversion_event.get("expected_fact_present") is True
+        and isinstance(conversion_event.get("converted_count"), int)
+        and not isinstance(conversion_event.get("converted_count"), bool)
+        and conversion_event["converted_count"] > 0
+    )
+    if conversion_completed:
+        events.append(_run_isolated_stage(
+            "repaired_mm2compile_deduplicated_fact_collection",
+            _mm2compile_deduplicated_fact_from_repo_stage,
+            stage_args,
+            stage_timeout_sec=stage_timeout_sec,
+        ))
+    collection_event = events[1] if len(events) == 2 else None
+    collection_completed = (
+        isinstance(collection_event, dict)
+        and collection_event.get("status") == "ok"
+        and collection_event.get("expected_fact_present") is True
+        and isinstance(collection_event.get("output_count"), int)
+        and not isinstance(collection_event.get("output_count"), bool)
+        and collection_event["output_count"] > 0
+    )
+    return {
+        "source": "non-live repaired PeTTaChainer fact conversion/collection gate",
+        "status": "completed" if conversion_completed and collection_completed else "blocked",
+        "repair_inspection": repair,
+        "inspection": dispatch,
+        "mm2stmt_inspection": conversion,
+        "mm2compile_inspection": collection,
+        "runtime_events": events,
+        "boundaries": {
+            "isolated_candidate_only": True,
+            "one_source_equivalent_compiled_clause": True,
+            "no_compile_or_compileadd_or_query": True,
+            "no_memory_write_or_live_integration": True,
+        },
+    }
+
+
+def run_mm2compile_deduplicated_fact_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 5.0,
+    max_output_items: int = 16,
+) -> dict[str, object]:
+    """Measure mm2compile-equivalent collection after compiler deduplication."""
+    if stage_timeout_sec <= 0:
+        raise ValueError("stage_timeout_sec must be positive")
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    repo = project_root / "repos" / "PeTTaChainer"
+    inspection = inspect_compile_dispatch_for_statement(repo, statement)
+    mm2compile_inspection = inspect_mm2compile_collection_shape(repo)
+    if inspection["selected_compile_branch"] != "fact-assertion":
+        return {
+            "source": "non-live PeTTaChainer deduplicated fact mm2compile collection gate",
+            "status": "skipped",
+            "reason": "statement does not select the fact-assertion branch",
+            "inspection": inspection,
+            "mm2compile_inspection": mm2compile_inspection,
+            "runtime_event": None,
+        }
+    if mm2compile_inspection["shape_confirmed"] is not True:
+        return {
+            "source": "non-live PeTTaChainer deduplicated fact mm2compile collection gate",
+            "status": "skipped",
+            "reason": "pinned mm2compile collection source shape was not confirmed",
+            "inspection": inspection,
+            "mm2compile_inspection": mm2compile_inspection,
+            "runtime_event": None,
+        }
+    _configure_local_runtime(project_root)
+    event = _run_isolated_stage(
+        "mm2compile_deduplicated_fact_collection",
+        _mm2compile_deduplicated_fact_stage,
+        (statement, max_output_items),
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    completed = (
+        event.get("status") == "ok"
+        and event.get("expected_fact_present") is True
+        and isinstance(event.get("output_count"), int)
+        and not isinstance(event.get("output_count"), bool)
+        and event.get("output_count") > 0
+    )
+    return {
+        "source": "non-live PeTTaChainer deduplicated fact mm2compile collection gate",
+        "status": "completed" if completed else "blocked",
+        "inspection": inspection,
+        "mm2compile_inspection": mm2compile_inspection,
+        "runtime_event": event,
+        "boundaries": {
+            "one_source_equivalent_compiled_clause": True,
+            "no_compile_or_compileadd": True,
+            "no_query_or_result_admission": True,
+            "no_memory_write_or_live_integration": True,
+        },
+    }
+
+
+def run_mm2stmt_deduplicated_fact_gate(
+    statement: str,
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 5.0,
+    max_output_items: int = 16,
+) -> dict[str, object]:
+    """Bound ``mm2stmt`` and ``ctx`` inspection after deduplicating compile output."""
+    if stage_timeout_sec <= 0:
+        raise ValueError("stage_timeout_sec must be positive")
+    if max_output_items <= 0:
+        raise ValueError("max_output_items must be positive")
+    inspection = inspect_compile_dispatch_for_statement(
+        project_root / "repos" / "PeTTaChainer", statement,
+    )
+    mm2stmt_inspection = inspect_mm2stmt_fact_case_overlap(
+        project_root / "repos" / "PeTTaChainer",
+    )
+    if inspection["selected_compile_branch"] != "fact-assertion":
+        return {
+            "source": "non-live PeTTaChainer deduplicated fact mm2stmt gate",
+            "status": "skipped",
+            "reason": "statement does not select the fact-assertion branch",
+            "inspection": inspection,
+            "mm2stmt_inspection": mm2stmt_inspection,
+            "runtime_event": None,
+        }
+    _configure_local_runtime(project_root)
+    event = _run_isolated_stage(
+        "mm2stmt_deduplicated_fact",
+        _mm2stmt_deduplicated_fact_stage,
+        (statement, max_output_items),
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    completed = (
+        event.get("status") == "ok"
+        and event.get("expected_fact_present") is True
+        and isinstance(event.get("ctx_atom_count"), int)
+        and not isinstance(event.get("ctx_atom_count"), bool)
+    )
+    return {
+        "source": "non-live PeTTaChainer deduplicated fact mm2stmt gate",
+        "status": "completed" if completed else "blocked",
+        "inspection": inspection,
+        "mm2stmt_inspection": mm2stmt_inspection,
+        "runtime_event": event,
+        "boundaries": {
+            "one_source_equivalent_compiled_clause": True,
+            "no_compile_or_mm2compile_or_compileadd": True,
+            "no_query_or_result_admission": True,
+            "no_memory_write_or_live_integration": True,
+        },
+    }
+
+
+def _static_import_safe_symbol(text: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_]", "_", text).strip("_").lower()
+    if not safe:
+        return "atom"
+    if re.match(r"^[0-9]", safe):
+        return f"n_{safe}"
+    return safe
+
+
+def _static_import_statement_key(statement_type: object) -> str:
+    if isinstance(statement_type, tuple) and statement_type:
+        head = symbol_text(statement_type[0]) or "stmt"
+        args = [symbol_text(part) if not isinstance(part, tuple) else to_source(part) for part in statement_type[1:]]
+        return _static_import_safe_symbol("_".join([head, *[arg or "arg" for arg in args]]))
+    return _static_import_safe_symbol(to_source(statement_type))
+
+
+def design_static_import_microbenchmark_atoms(sample_atoms: Iterable[str]) -> dict[str, object]:
+    """Design Prolog-safe scratch atoms for a future PeTTa ``static-import!`` gate.
+
+    The prior source inspection showed current PeTTaChainer exports are unsafe for
+    PeTTa's line-oriented converter.  This pure helper sketches a bounded
+    alternative for a later temporary-directory benchmark: lower/underscore atom
+    names, flat three-argument top-level records matching the loader's declared
+    space-predicate arity, and enough mapping metadata to compare loaded facts
+    back to the original STV/EvidencePacket exports.  It does not run SWI,
+    qcompile, consult, or PeTTaChainer.
+    """
+    records: list[dict[str, object]] = []
+    for atom in sample_atoms:
+        form = parse_one_list(atom)
+        normalized_atom: str | None = None
+        kind = "unsupported"
+        if len(form) == 4 and symbol_text(form[0]) == ":":
+            proof_id = _static_import_safe_symbol(to_source(form[1]))
+            statement_key = _static_import_statement_key(form[2])
+            tv = form[3]
+            strength = to_source(tv[1]) if isinstance(tv, tuple) and len(tv) >= 3 else "unknown"
+            confidence = to_source(tv[2]) if isinstance(tv, tuple) and len(tv) >= 3 else "unknown"
+            normalized_atom = (
+                f"(pm_stv_statement {proof_id} "
+                f"(pm_stv_payload {statement_key} {strength} {confidence}))"
+            )
+            kind = "stv_statement"
+        elif len(form) == 5 and symbol_text(form[0]) == "EvidencePacket":
+            statement_key = _static_import_statement_key(form[1])
+            ec = form[2]
+            support = to_source(ec[1]) if isinstance(ec, tuple) and len(ec) >= 3 else "0"
+            opposition = to_source(ec[2]) if isinstance(ec, tuple) and len(ec) >= 3 else "0"
+            provenance = _static_import_safe_symbol(to_source(form[4]))
+            normalized_atom = (
+                f"(pm_evidence_packet {statement_key} "
+                f"(pm_ec_payload {support} {opposition} {provenance}))"
+            )
+            kind = "evidence_packet"
+        records.append(
+            {
+                "kind": kind,
+                "original_atom": atom,
+                "normalized_atom": normalized_atom,
+                "converted_prolog_fact": _petta_static_import_convert_line(normalized_atom) if normalized_atom else None,
+                "safe_for_current_converter": bool(
+                    normalized_atom
+                    and not re.search(r"[A-Z-]", normalized_atom)
+                    and len(parse_one_list(normalized_atom)) == 3
+                ),
+            }
+        )
+    return {
+        "source": "petta static-import microbenchmark atom design",
+        "records": records,
+        "all_records_safe_for_current_converter": all(record["safe_for_current_converter"] for record in records),
+        "benchmark_gate": [
+            "Write normalized atoms only to a temporary scratch .metta file; do not append them to petta-memory journals.",
+            "Run static-import! only in a bounded non-live runtime gate, then query the generated space predicate and compare to these expected facts.",
+            "Treat this as a loader semantics benchmark, not as PeTTaChainer compileadd/query success or inferred belief evidence.",
+        ],
+    }
+
+
+def _petta_static_import_convert_line(atom: str, space: str = "gckb") -> str:
+    inner = atom[1:-1]
+    inner = inner.replace("(", "[").replace(")", "]").replace(" ", ",")
+    return f"'{space}'({inner})."
+
+
+def _petta_static_import_fact_goal(fact: str) -> str:
+    """Return a Prolog goal for checking one generated static-import fact.
+
+    The loader benchmark already compares the generated ``scratch.pl`` text, but
+    the runtime gate should also prove that each expected fact is actually
+    consultable in SWI after ``static-import!``.  The generated facts are complete
+    Prolog clauses like ``'pmbench'(...).``; as a query goal they are the same
+    term without the trailing full stop.
+    """
+    stripped = fact.strip()
+    if not stripped.endswith("."):
+        raise ValueError("static-import fact must end with a full stop")
+    return stripped[:-1]
+
+
+def inspect_petta_static_import_source(petta_repo_path: str | Path, sample_atoms: Iterable[str] | None = None) -> dict[str, object]:
+    """Inspect PeTTa's ``static-import!`` bulk-load source for petta-memory use.
+
+    Ben pointed at ``trueagi-io/PeTTa`` ``lib/lib_import.pl`` as a possible fast
+    static atom path.  This helper keeps that exploration source-level and
+    non-live: it reads the checked-out Prolog loader, models its documented
+    line-by-line transformation for a few sample atoms, and reports whether the
+    current petta-memory/PeTTaChainer exports look safe to feed through it.
+    It does not invoke SWI, create ``.pl``/``.qlf`` files, consult code, or
+    change any memory/integration state.
+    """
+    repo = Path(petta_repo_path)
+    import_path = repo / "lib" / "lib_import.pl"
+    if not import_path.exists():
+        raise FileNotFoundError(f"missing PeTTa static import source: {import_path}")
+
+    source = import_path.read_text(encoding="utf-8")
+    default_atoms = [
+        "(: b-profile-000 (Requires MemoryTarget0 PLNReadyViews) (STV 0.70 0.55))",
+        "(EvidencePacket (Requires MemoryTarget0 PLNReadyViews) (EC 3.0 1.0) ((domain omegaclaw-memory) (promotion-rule explicit-profile-workload)) pe-profile-000)",
+    ]
+    atoms = list(sample_atoms) if sample_atoms is not None else default_atoms
+
+    def converted_line(atom: str, space: str = "gckb") -> str:
+        # Mirrors lib_import.pl convert_line/3 for one already-line-oriented atom.
+        return _petta_static_import_convert_line(atom, space=space)
+
+    def token_warnings(atom: str) -> list[str]:
+        tokens = re.findall(r'"(?:[^"\\]|\\.)*"|[^\s()]+', atom)
+        warnings: list[str] = []
+        for token in tokens:
+            if token.startswith('"'):
+                warnings.append(f"string literal {token!r} would be passed through without Prolog escaping semantics")
+            elif re.match(r"^[A-Z_]", token):
+                warnings.append(f"token {token!r} would be read by Prolog as a variable unless quoted")
+            elif re.search(r"[^A-Za-z0-9_:.]", token):
+                warnings.append(f"token {token!r} contains punctuation that is not a plain unquoted Prolog atom")
+        return warnings
+
+    source_features = {
+        "defines_static_import": bool(re.search(r"'static-import!'\s*\(", source)),
+        "uses_metta_file_to_prolog": "metta_file_to_prolog" in source,
+        "uses_qcompile": "qcompile" in source,
+        "consults_qlf": "consult(QlfFile)" in source,
+        "line_oriented_converter": "read_line_to_string" in source and "convert_line" in source,
+        "declares_space_predicate_arity_3": bool(re.search(r"multifile '~w'/3", source)),
+    }
+    conversion_limitations = [
+        "Input is documented as S-expression data only: no code and no bangs.",
+        "Conversion is line-oriented and strips the first/last character of each line, so multiline atoms/comments are not safe.",
+        "The converter replaces parentheses with Prolog lists and spaces with commas without token quoting.",
+        "Current petta-memory proof atoms contain uppercase symbols and hyphenated identifiers that are unsafe as unquoted Prolog terms.",
+        "The generated predicate stores converted atoms under a space predicate; this is a bulk data loader, not a PeTTaChainer compileadd/indexing API.",
+    ]
+    samples = [
+        {
+            "input": atom,
+            "converted_prolog_fact": converted_line(atom),
+            "warnings": token_warnings(atom),
+        }
+        for atom in atoms
+    ]
+    sample_safe = all(not sample["warnings"] for sample in samples)
+    recommendation = (
+        "Do not use static-import! directly for current petta-memory PeTTaChainer exports. "
+        "It is worth a later non-live benchmark only after either the export format or PeTTa converter quotes/escapes symbols safely "
+        "and after query/index semantics are compared against compileadd-derived atoms."
+    )
+    return {
+        "source": "PeTTa lib_import.pl static-import source inspection",
+        "repo_path": str(repo),
+        "source_file": str(import_path),
+        "source_features": source_features,
+        "sample_conversions": samples,
+        "sample_atoms_safe_for_current_converter": sample_safe,
+        "conversion_limitations": conversion_limitations,
+        "recommendation": recommendation,
+        "next_probe": {
+            "kind": "non-live static-import microbenchmark",
+            "preconditions": [
+                "Use a temporary directory only and no OmegaClaw/live memory writes.",
+                "Generate Prolog-safe quoted/lowercase normalized atoms or patch the converter in a scratch copy.",
+                "Compare loaded predicate contents and read-only query behavior against expected normalized atoms before considering PeTTaChainer integration.",
+            ],
+        },
+        "gates": [
+            "Source inspection only; no SWI qcompile/consult/static-import execution.",
+            "Do not treat static-import! as a supported PeTTaChainer precompiled-add API.",
+            "Keep compileadd/query/live OmegaClaw paths gated until a separate runtime semantics test passes.",
+        ],
+    }
+
+
+
+def _static_import_microbenchmark_stage(
+    normalized_atoms: list[str],
+    expected_facts: list[str],
+    space: str = "gckb",
+) -> dict[str, object]:
+    """Run PeTTa ``static-import!`` on normalized atoms in a subprocess.
+
+    This stage is designed to be called via ``_run_isolated_stage`` so that the
+    SWI/PeTTa runtime noise and time are bounded.  It writes normalized atoms to
+    a temporary ``.metta`` file, loads PeTTa's ``lib_import.pl`` to register
+    the ``static-import!`` Prolog predicate, sets ``working_dir`` to the temp
+    directory, calls ``static-import!`` directly via janus, then queries the
+    loaded space predicate and compares results against expected facts.
+    """
+    import tempfile as _tempfile
+
+    from petta import PeTTa
+
+    # Initialize PeTTa so janus_swi is configured.
+    PeTTa(verbose=False)
+
+    import janus_swi as janus
+
+    with _tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        scratch_metta = td_path / "scratch.metta"
+        scratch_metta.write_text("\n".join(normalized_atoms) + "\n", encoding="utf-8")
+
+        # Load lib_import.pl to register the static-import! Prolog predicate.
+        import_path = str(Path(__file__).resolve().parents[4] / "repos" / "PeTTa" / "lib" / "lib_import.pl")
+        janus.query_once(f"consult('{import_path}')")
+
+        # Set working_dir so static-import! finds scratch.metta in the temp dir.
+        td_str = str(td).replace("\\", "/")
+        janus.query_once(f"retractall(working_dir(_))")
+        janus.query_once(f"assertz(working_dir('{td_str}'))")
+
+        # Call static-import! directly via janus (not through process_metta_string,
+        # which would need the MeTTa-level import_prolog_functions_from_file wrapper).
+        files_before = set(p.name for p in td_path.iterdir())
+        try:
+            janus.query_once(f"'static-import!'({space}, scratch, true)")
+            import_status = "called"
+        except Exception as exc:
+            import_status = f"error: {type(exc).__name__}: {exc}"
+        files_after = set(p.name for p in td_path.iterdir())
+        generated_files = sorted(files_after - files_before)
+
+        # Query the loaded space predicate to retrieve all loaded facts.
+        # janus_swi's query_once returns the first solution; for counting
+        # and verification, use aggregate_all and check the first solution.
+        loaded_facts_raw: list = []
+        fact_count = 0
+        try:
+            count_result = janus.query_once(
+                f"aggregate_all(count, {space}(_, _, _), Count)"
+            )
+            fact_count = count_result.get("Count", 0) if count_result else 0
+        except Exception as exc:
+            import_status += f"; count_error: {type(exc).__name__}: {exc}"
+
+        first_solution: dict[str, object] = {}
+        try:
+            first_result = janus.query_once(f"{space}(A, B, C)")
+            if first_result and first_result.get("truth"):
+                first_solution = {
+                    "A": str(first_result.get("A", "")),
+                    "B": str(first_result.get("B", "")),
+                    "C": str(first_result.get("C", "")),
+                }
+        except Exception as exc:
+            import_status += f"; first_query_error: {type(exc).__name__}: {exc}"
+
+        # Read the generated .pl file to compare against expected facts.
+        pl_content = ""
+        pl_path = td_path / "scratch.pl"
+        if pl_path.exists():
+            pl_content = pl_path.read_text(encoding="utf-8")
+        # Extract fact lines (skip directives) for comparison.
+        pl_fact_lines = sorted(
+            line.strip() for line in pl_content.splitlines()
+            if line.strip() and not line.strip().startswith(":-")
+        )
+        expected_sorted = sorted(expected_facts)
+        facts_match = pl_fact_lines == expected_sorted
+
+        # Verify the expected facts against the consulted runtime predicate too,
+        # not just against the generated scratch.pl text.  This catches false
+        # positives where conversion worked but qcompile/consult or the selected
+        # named space did not actually make the facts queryable.
+        runtime_fact_checks: list[dict[str, object]] = []
+        for fact in expected_sorted:
+            goal = _petta_static_import_fact_goal(fact)
+            try:
+                query_result = janus.query_once(goal)
+                present = bool(query_result and query_result.get("truth"))
+                runtime_fact_checks.append({"fact": fact, "goal": goal, "present": present})
+            except Exception as exc:
+                runtime_fact_checks.append(
+                    {"fact": fact, "goal": goal, "present": False, "error": f"{type(exc).__name__}: {exc}"}
+                )
+        runtime_expected_facts_present = all(check["present"] for check in runtime_fact_checks)
+
+        return {
+            "result": "loaded" if fact_count > 0 else "empty",
+            "space": space,
+            "import_status": import_status,
+            "generated_files": generated_files,
+            "loaded_fact_count": fact_count,
+            "expected_fact_count": len(expected_sorted),
+            "facts_match": facts_match,
+            "runtime_expected_facts_present": runtime_expected_facts_present,
+            "runtime_fact_checks": runtime_fact_checks,
+            "pl_fact_lines": pl_fact_lines,
+            "expected_facts": expected_sorted,
+            "first_solution": first_solution,
+        }
+
+
+def run_static_import_microbenchmark(
+    sample_atoms: list[str],
+    *,
+    project_root: Path,
+    stage_timeout_sec: float = 30.0,
+    space: str = "gckb",
+) -> dict[str, object]:
+    """Run a non-live PeTTa ``static-import!`` microbenchmark over normalized atoms.
+
+    This consumes the output of ``design_static_import_microbenchmark_atoms``
+    and runs the actual ``static-import!`` loader in a bounded subprocess to
+    verify that (1) the converter accepts the normalized atoms, (2) the loaded
+    space predicate contains the expected facts, and (3) the conversion timing
+    is bounded.  It does not append to petta-memory journals, does not invoke
+    PeTTaChainer ``compileadd``/query, and does not touch OmegaClaw.
+    """
+    if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", space):
+        raise ValueError("space must be a Prolog-safe predicate symbol")
+    design = design_static_import_microbenchmark_atoms(sample_atoms)
+    if not design["all_records_safe_for_current_converter"]:
+        return {
+            "source": "non-live static-import microbenchmark",
+            "status": "skipped",
+            "reason": "not all normalized atoms are safe for the current PeTTa static-import converter",
+            "design": design,
+            "gates": [
+                "No runtime execution attempted; unsafe atoms were not loaded.",
+                "Do not treat this as PeTTaChainer compileadd/query success or inferred belief evidence.",
+            ],
+        }
+
+    normalized_atoms = [r["normalized_atom"] for r in design["records"] if r["normalized_atom"]]
+    expected_facts = [_petta_static_import_convert_line(atom, space=space) for atom in normalized_atoms]
+
+    _configure_local_runtime(project_root)
+    event = _run_isolated_stage(
+        "static_import_load_and_query",
+        _static_import_microbenchmark_stage,
+        (normalized_atoms, expected_facts, space),
+        stage_timeout_sec=stage_timeout_sec,
+    )
+    return {
+        "source": "non-live static-import microbenchmark",
+        "design": design,
+        "runtime_event": event,
+        "gates": [
+            "Temporary directory only; no petta-memory journal writes or OmegaClaw integration.",
+            "This is a loader semantics benchmark, not PeTTaChainer compileadd/query success.",
+            "Do not treat loaded facts as inferred beliefs or PLN premises.",
+            "Keep compileadd/query/live OmegaClaw paths gated until a separate runtime semantics test passes.",
+        ],
+    }
+
+
+def summarize_compileadd_strategy(profile: dict[str, object]) -> dict[str, object]:
+    """Summarize the bounded PeTTaChainer add-path decision from a profile.
+
+    The profile artifacts are intentionally noisy and stage-oriented.  This
+    pure helper extracts the decision-relevant statuses so cron slices and
+    project records can make the add-path choice reproducibly without rerunning
+    PeTTaChainer.  It does not change export semantics or call the runtime.
+    """
+    results = profile.get("results")
+    if not isinstance(results, list) or not results:
+        raise ValueError("profile must contain at least one result row")
+    row = results[0]
+    if not isinstance(row, dict):
+        raise ValueError("profile result row must be an object")
+    events = row.get("events")
+    if not isinstance(events, list):
+        raise ValueError("profile result row must contain events")
+    by_label = {event.get("label"): event for event in events if isinstance(event, dict) and event.get("label")}
+
+    def status(label: str) -> str:
+        event = by_label.get(label, {})
+        value = event.get("status") if isinstance(event, dict) else None
+        return str(value) if value is not None else "missing"
+
+    materialize_direct = status("compileadd_probe_materialize_direct")
+    materialize_eval = status("compileadd_probe_materialize_eval_control")
+    mm2compile_direct = status("compileadd_probe_mm2compile_direct")
+    mm2compile_eval = status("compileadd_probe_mm2compile_eval_control")
+    proof_add = status("proof_runtime_add_only")
+    check_stmt = status("check_stmt_all")
+    init_only = status("pettachainer_init_only")
+    fast_later_probes = [
+        label
+        for label in ("compileadd_probe_index_source_direct", "compileadd_probe_maybe_process_on_add_direct")
+        if status(label) == "ok"
+    ]
+
+    direct_and_eval_timeout = all(
+        value == "timeout"
+        for value in (materialize_direct, materialize_eval, mm2compile_direct, mm2compile_eval)
+    )
+    add_path_blocked = proof_add == "timeout" or direct_and_eval_timeout
+    if check_stmt == "ok" and init_only == "ok" and add_path_blocked:
+        recommendation = "precompiled_statement_cache_gate"
+        rationale = (
+            "Validated STV/EvidencePacket exports and PeTTaChainer construction are healthy, "
+            "but compileadd materialization/mm2compile and proof add remain timeout-bound. "
+            "The next bounded petta-memory path should cache checked promoted statements/packets "
+            "as a non-live PLN-ready handoff artifact while leaving full PeTTaChainer add/query "
+            "behind an explicit gate and reserving upstream materialization instrumentation for follow-up."
+        )
+    elif check_stmt == "ok" and not add_path_blocked:
+        recommendation = "continue_runtime_add_query_gate"
+        rationale = "The checked profile does not show the compileadd/add timeout pattern; continue with runtime add/query smoke gates."
+    else:
+        recommendation = "runtime_setup_or_export_debug"
+        rationale = "Basic statement validation or constructor setup is not healthy enough to choose an add optimization path."
+
+    return {
+        "recommended_next_add_path": recommendation,
+        "rationale": rationale,
+        "observed_statuses": {
+            "check_stmt_all": check_stmt,
+            "pettachainer_init_only": init_only,
+            "compileadd_probe_materialize_direct": materialize_direct,
+            "compileadd_probe_materialize_eval_control": materialize_eval,
+            "compileadd_probe_mm2compile_direct": mm2compile_direct,
+            "compileadd_probe_mm2compile_eval_control": mm2compile_eval,
+            "proof_runtime_add_only": proof_add,
+        },
+        "fast_later_probes": fast_later_probes,
+        "gates": [
+            "Do not enable live OmegaClaw integration from this artifact.",
+            "Do not treat cached statements as inferred beliefs; they are checked handoff inputs only.",
+            "Revisit full compileadd/query after upstream materialize/mm2compile instrumentation or a precompiled add API exists.",
+        ],
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Profile narrow PeTTaChainer workloads generated from petta-memory exports")
+    parser.add_argument("--sizes", default="1,3", help="Comma-separated promoted-belief cluster counts")
+    parser.add_argument("--steps", type=int, default=5, help="PeTTaChainer query step bound")
+    parser.add_argument("--timeout-sec", type=float, default=5.0, help="Per-query timeout")
+    parser.add_argument("--stage-timeout-sec", type=float, default=30.0, help="Hard subprocess timeout for each PeTTaChainer stage")
+    parser.add_argument("--project-root", type=Path, default=Path(__file__).resolve().parents[4])
+    parser.add_argument("--include-runtime-add", action="store_true", help="Also time PeTTaChainer compileadd/query in isolated subprocesses; can be noisy/slow")
+    parser.add_argument("--include-contextual", action="store_true", help="Also time EvidencePacket contextual projection; implies --include-runtime-add")
+    parser.add_argument("--output", type=Path, help="Optional JSON output path")
+    args = parser.parse_args(argv)
+    sizes = [int(part) for part in args.sizes.split(",") if part.strip()]
+    profile = profile_sizes(
+        sizes,
+        steps=args.steps,
+        timeout_sec=args.timeout_sec,
+        project_root=args.project_root,
+        stage_timeout_sec=args.stage_timeout_sec,
+        include_runtime_add=args.include_runtime_add or args.include_contextual,
+        include_contextual=args.include_contextual,
+    )
+    text = json.dumps(profile, indent=2, sort_keys=True) + "\n"
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(text, encoding="utf-8")
+    print(text, end="")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
