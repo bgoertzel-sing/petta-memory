@@ -335,8 +335,37 @@ class MediumMemoryStore:
         return None
 
     def query_type(self, type_name: str, *, limit: int = 20) -> list[MemoryCluster]:
-        pat = re.compile(rf"^\({re.escape(type_name)}\s+", re.MULTILINE)
-        return self._bounded([c for c in self.clusters() if pat.search(c.text)], limit)
+        # Union semantics:
+        #  1. match clusters containing an atom whose head predicate is the
+        #     ID-declaring predicate <type_name> (index-parity path), OR
+        #  2. match clusters whose (ClusterType <cluster-id> <type_name>) atom
+        #     declares the type -- needed when the type name only appears inside
+        #     compound atoms such as PromotionEvent / PromotionDomain.
+        hits: list[MemoryCluster] = []
+        for cluster in self.clusters():
+            matched = False
+            for atom in cluster.atoms:
+                try:
+                    lst = parse_one_list(atom)
+                except (SExpressionSyntaxError, ValidationError):
+                    continue
+                if not lst:
+                    continue
+                head = symbol_text(lst[0])
+                if head == type_name and type_name in _ID_DECLARING_PREDICATES:
+                    matched = True
+                    break
+                if (
+                    head == "ClusterType"
+                    and len(lst) == 3
+                    and symbol_text(lst[1]) == cluster.cluster_id
+                    and symbol_text(lst[2]) == type_name
+                ):
+                    matched = True
+                    break
+            if matched:
+                hits.append(cluster)
+        return self._bounded(hits, limit)
 
     def query_about(self, entity: str, *, limit: int = 20) -> list[MemoryCluster]:
         pat = re.compile(rf"^\(About\s+[^\s()]+\s+{re.escape(entity)}\)", re.MULTILINE)

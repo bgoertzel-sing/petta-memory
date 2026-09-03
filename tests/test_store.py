@@ -25,6 +25,20 @@ VALID_CLUSTER = """
 (HasStatus e1 recorded)
 """
 
+PROMO_CLUSTER = """
+(MemoryCluster mc-promo)
+(SchemaVersion mc-promo medium-memory-v1)
+(ClusterType mc-promo Promotion)
+(ClusterOpenedAt mc-promo "2026-09-02 21:20 UTC")
+(ClusterSource mc-promo iter-consolidation)
+(Contains mc-promo pe1)
+(ClusterStatus mc-promo active)
+(PromotionEvent pe1)
+(Promotes pe1 bel-x)
+(PromotionDomain mc-promo goalchainer)
+(PromotionTrust mc-promo (STV 0.90 0.95))
+"""
+
 QUOTE_CLUSTER = """
 (MemoryCluster mc2)
 (SchemaVersion mc2 medium-memory-v1)
@@ -449,6 +463,22 @@ class MediumMemoryStoreTests(unittest.TestCase):
             self.assertEqual([c.cluster_id for c in store.query_about("MediumPeTTaMemory")], ["mc1"])
             self.assertEqual([c.cluster_id for c in store.query_status("active")], ["mc1"])
             self.assertEqual([c.cluster_id for c in store.query_role("observed-event")], ["mc1"])
+
+    def test_query_type_matches_cluster_type_declared_atoms(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "medium_memory.metta")
+            store.append_cluster(VALID_CLUSTER)
+            store.append_cluster(PROMO_CLUSTER)
+            # atom-head path (index-parity): ObservedEvent is an atom head in mc1
+            self.assertEqual([c.cluster_id for c in store.query_type("ObservedEvent")], ["mc1"])
+            # ClusterType-declared path: "Promotion" only appears in ClusterType and
+            # compound atoms (PromotionEvent/PromotionDomain), never as an atom head.
+            self.assertEqual([c.cluster_id for c in store.query_type("Promotion")], ["mc-promo"])
+            # ClusterType value "episode-record" resolves to the declaring cluster
+            self.assertEqual(
+                sorted(c.cluster_id for c in store.query_type("episode-record")),
+                ["mc1"],
+            )
 
     def test_prompt_view_is_bounded(self):
         with tempfile.TemporaryDirectory() as td:
