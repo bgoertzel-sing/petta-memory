@@ -27,6 +27,7 @@ DEFAULT_ECAN_PARAMS: dict[str, float] = {
     "AFB_DECAY": 0.05,
     "AFB_BOTTOM": 50.0,
     "FORGET_THRESHOLD": 0.05,
+    "NON_AF_DECAY_RATE": 0.15,
     "MAX_SPREAD_PERCENTAGE": 0.4,
     "DIFFUSION_TOURNAMENT_SIZE": 5.0,
     "RENT_TOURNAMENT_SIZE": 5.0,
@@ -158,6 +159,18 @@ class AttentionBank:
         if av.sti < self._min_sti_seen:
             self._min_sti_seen = av.sti
         self._update_af(atom_id, av.sti)
+
+    def apply_non_af_decay(self) -> None:
+        """Apply percentage decay to non-AF atoms each cycle.
+
+        Atoms outside the attentional focus gradually lose STI,
+        eventually becoming forget candidates.
+        """
+        decay_rate = self.params["NON_AF_DECAY_RATE"]
+        for atom_id, av in list(self._av.items()):
+            if atom_id not in self._af:
+                new_sti = av.sti * (1.0 - decay_rate)
+                self.set_av(atom_id, av.with_sti(new_sti))
 
     def _update_af(self, atom_id: str, sti: float) -> None:
         """Add/remove atom from attentional focus based on STI threshold."""
@@ -418,6 +431,11 @@ class RentCollection:
             if new_sti < forget_threshold:
                 self._forget_candidates.append(atom_id)
 
+        # Also check all non-AF atoms for forget candidacy
+        for atom_id, av in self.bank._av.items():
+            if atom_id not in self._forget_candidates and av.sti < forget_threshold:
+                self._forget_candidates.append(atom_id)
+
         return results
 
 
@@ -485,7 +503,10 @@ class ECANCycle:
         # 2. Diffuse
         diffused = self.diffusion.diffuse_af()
 
-        # 3. Collect rent
+        # 3. Decay non-AF atoms
+        self.bank.apply_non_af_decay()
+
+        # 4. Collect rent
         rent_results = self.rent.collect_rent()
 
         # 4. Build result
