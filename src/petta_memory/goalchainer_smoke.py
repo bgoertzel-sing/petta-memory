@@ -173,6 +173,8 @@ def run_goalchainer_precompiled_handoff_smoke(
         raise ValidationError(f"GoalChainer repo not found or incomplete: {repo}")
 
     action_evidence = _action_evidence_from_handoff(items)
+    # Force the heuristic-with-memory path so memory-evidence proofs appear
+    os.environ["GOALCHAINER_USE_HEURISTIC_PLN"] = "1"
     inserted = False
     if str(src) not in sys.path:
         sys.path.insert(0, str(src))
@@ -291,7 +293,7 @@ def _run_heuristic_memory_probe(
     if not (src / "goal_chainer" / "pipeline.py").exists():
         raise ValidationError(f"GoalChainer pipeline not found: {goalchainer_repo}")
 
-    old_env = {key: os.environ.get(key) for key in ("GOALCHAINER_PETTA_DIR", "GOALCHAINER_PETTACHAINER_DIR", "GOALCHAINER_PETTA_SWIPL")}
+    old_env = {key: os.environ.get(key) for key in ("GOALCHAINER_PETTA_DIR", "GOALCHAINER_PETTACHAINER_DIR", "GOALCHAINER_PETTA_SWIPL", "GOALCHAINER_USE_HEURISTIC_PLN")}
     if "GOALCHAINER_PETTA_DIR" not in os.environ and (DEFAULT_PETTA_DIR / "src" / "main.pl").exists():
         os.environ["GOALCHAINER_PETTA_DIR"] = str(DEFAULT_PETTA_DIR)
     if (
@@ -302,6 +304,8 @@ def _run_heuristic_memory_probe(
     if "GOALCHAINER_PETTA_SWIPL" not in os.environ and DEFAULT_SWIPL.exists():
         os.environ["GOALCHAINER_PETTA_SWIPL"] = str(DEFAULT_SWIPL)
 
+    # Force the heuristic-with-memory path so memory-evidence proofs appear
+    os.environ["GOALCHAINER_USE_HEURISTIC_PLN"] = "1"
     inserted = False
     if str(src) not in sys.path:
         sys.path.insert(0, str(src))
