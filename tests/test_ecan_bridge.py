@@ -270,3 +270,117 @@ class TestECANBridgePrioritization(unittest.TestCase):
             total_sti = sum(bridge.bank.get_sti(a) for a in ["b1", "b2", "e1", "e2", "e3", "e4"])
             self.assertGreater(total_sti, 0)
             self.assertLess(total_sti, 500000)
+
+
+
+class TestClaimStateExtraction(unittest.TestCase):
+    """Tests for ClaimState atom extraction (GOLEM-Iter Phase G2)."""
+
+    def _make_cluster_with_claim_state(self, belief_id, state, cluster_id="mc-cs"):
+        """Build a valid cluster with a ClaimState atom."""
+        atoms = [
+            f"(MemoryCluster {cluster_id})",
+            f"(SchemaVersion {cluster_id} medium-memory-v1)",
+            f"(ClusterType {cluster_id} evidence)",
+            f"(ClusterOpenedAt {cluster_id} 2026-01-01T00:00:00Z)",
+            f"(ClusterSource {cluster_id} test)",
+            f"(Contains {cluster_id} {belief_id})",
+            f"(DerivedBelief {belief_id})",
+            f"(BeliefContent {belief_id} (Acceptable action1))",
+            f"(TruthValue {belief_id} (STV 0.9 0.8))",
+            f"(ClaimState {belief_id} {state})",
+        ]
+        return "\n".join(atoms) + "\n"
+
+    def test_claim_state_extracted(self):
+        """ClaimState atoms are extracted by sync_from_store."""
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "journal.metta")
+            store.append_cluster(
+                self._make_cluster_with_claim_state("b1", "KernelChecked")
+            )
+            bridge = ECANBridge(store)
+            bridge.sync_from_store()
+            self.assertEqual(bridge.get_claim_state("b1"), "KernelChecked")
+
+    def test_claim_state_default_self_reported(self):
+        """Beliefs without ClaimState default to 'SelfReported'."""
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "journal.metta")
+            store.append_cluster(_make_belief_cluster("b1", "(Acceptable action1)"))
+            bridge = ECANBridge(store)
+            bridge.sync_from_store()
+            self.assertEqual(bridge.get_claim_state("b1"), "SelfReported")
+
+    def test_claim_states_map_includes_all_beliefs(self):
+        """get_claim_states() returns a map covering all known beliefs."""
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "journal.metta")
+            store.append_cluster(
+                self._make_cluster_with_claim_state("b1", "ExternallyVerified", "mc-1")
+            )
+            store.append_cluster(_make_belief_cluster("b2", "(Acceptable action2)", cluster_id="mc-2"))
+            bridge = ECANBridge(store)
+            bridge.sync_from_store()
+            states = bridge.get_claim_states()
+            self.assertEqual(len(states), 2)
+            self.assertEqual(states["b1"], "ExternallyVerified")
+            self.assertEqual(states["b2"], "SelfReported")
+
+    def test_claim_state_last_write_wins(self):
+        """When multiple ClaimState atoms exist for the same belief, last one wins."""
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "journal.metta")
+            atoms = [
+                "(MemoryCluster mc-1)",
+                "(SchemaVersion mc-1 medium-memory-v1)",
+                "(ClusterType mc-1 evidence)",
+                "(ClusterOpenedAt mc-1 2026-01-01T00:00:00Z)",
+                "(ClusterSource mc-1 test)",
+                "(Contains mc-1 b1)",
+                "(DerivedBelief b1)",
+                f"(ClaimState b1 KernelChecked)",
+                f"(ClaimState b1 ExternallyVerified)",
+            ]
+            store.append_cluster("\n".join(atoms) + "\n")
+            bridge = ECANBridge(store)
+            bridge.sync_from_store()
+            self.assertEqual(bridge.get_claim_state("b1"), "ExternallyVerified")
+
+    def test_claim_state_in_summary(self):
+        """Summary dict includes claim_states."""
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "journal.metta")
+            store.append_cluster(
+                self._make_cluster_with_claim_state("b1", "KernelChecked")
+            )
+            bridge = ECANBridge(store)
+            bridge.sync_from_store()
+            result = bridge.run_cycle()
+            # summary is in the cycle result or we can call it directly
+            # Let's check summary method
+            s = bridge.summary()
+            self.assertIn("claim_states", s)
+            self.assertEqual(s["claim_states"]["b1"], "KernelChecked")
+
+    def test_invalid_claim_state_rejected(self):
+        """Invalid ClaimState values raise ValidationError."""
+        from petta_memory.store import ValidationError
+        with tempfile.TemporaryDirectory() as td:
+            store = MediumMemoryStore(Path(td) / "journal.metta")
+            with self.assertRaises(ValidationError):
+                store.append_cluster(
+                    self._make_cluster_with_claim_state("b1", "BogusState")
+                )
+
+    def test_all_valid_claim_states(self):
+        """All four valid state values are accepted."""
+        for state in ["SelfReported", "KernelChecked", "ExternallyVerified", "Unavailable"]:
+            with tempfile.TemporaryDirectory() as td:
+                store = MediumMemoryStore(Path(td) / "journal.metta")
+                store.append_cluster(
+                    self._make_cluster_with_claim_state("b1", state)
+                )
+                bridge = ECANBridge(store)
+                bridge.sync_from_store()
+                self.assertEqual(bridge.get_claim_state("b1"), state)

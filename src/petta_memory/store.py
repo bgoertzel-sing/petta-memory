@@ -87,6 +87,7 @@ _BINARY_RELATION_PREDICATES = {
     "PromotionRule",
     "PromotionTrust",
     "PromotionDomain",
+    "ClaimState",
 }
 
 
@@ -221,12 +222,17 @@ class MediumMemoryStore:
 
     def _validate_relation_values(self, atoms: tuple[str, ...]) -> None:
         """Validate values whose range is part of the v0 schema boundary."""
+        _valid_claim_states = {"SelfReported", "KernelChecked", "ExternallyVerified", "Unavailable"}
         for atom in atoms:
             parsed = _parse_single_atom(atom)
             if parsed and parsed[0] in {"EvidenceSupportCount", "EvidenceOppositionCount"}:
                 value = _render_sexpr(parsed[2])
                 if not _is_non_negative_number(value):
                     raise ValidationError(f"evidence count must be non-negative numeric value: {atom}")
+            if parsed and parsed[0] == "ClaimState":
+                value = _render_sexpr(parsed[2])
+                if value not in _valid_claim_states:
+                    raise ValidationError(f"invalid ClaimState value: {value}; must be one of {sorted(_valid_claim_states)}")
 
     def _validate_contains_edges(self, atoms: tuple[str, ...], *, cluster_id: str, declared_ids: set[str]) -> None:
         """Ensure the cluster envelope only lists local declared memory records.

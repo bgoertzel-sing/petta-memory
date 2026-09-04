@@ -33,6 +33,7 @@ class ECANBridge:
         self.cycle = ECANCycle(self.bank, self.diffusion, self.rent)
         self._belief_ids: set[str] = set()
         self._evidence_map: dict[str, list[str]] = {}
+        self._claim_states: dict[str, str] = {}
 
     def sync_from_store(self) -> dict[str, int]:
         """Extract beliefs and evidence links from the store journal.
@@ -41,6 +42,7 @@ class ECANBridge:
         """
         self._belief_ids.clear()
         self._evidence_map.clear()
+        self._claim_states.clear()
 
         for cluster in self.store.clusters():
             atoms = cluster.atoms
@@ -50,6 +52,12 @@ class ECANBridge:
                 # Register atom in bank if not already present
                 if self.bank.get_sti(belief_id) == 0.0 and self.bank.get_lti(belief_id) == 0.0:
                     self.bank.set_av(belief_id, AttentionValue(sti=0, lti=0, vlti=0))
+
+                # Extract claim state: (ClaimState belief_id state_value)
+                state_values = _second_objects_for_subject(atoms, "ClaimState", belief_id)
+                if state_values:
+                    # Last write wins (append-only journal; latest state is authoritative)
+                    self._claim_states[belief_id] = state_values[-1]
 
                 # Extract evidence links: EvidenceFor belief_id source_id
                 evidence_sources = _second_objects_for_subject(atoms, "EvidenceFor", belief_id)
@@ -115,6 +123,21 @@ class ECANBridge:
         """Return the evidence link map {belief_id: [source_ids]}."""
         return dict(self._evidence_map)
 
+    def get_claim_states(self) -> dict[str, str]:
+        """Return the claim-state map {belief_id: state_string}.
+
+        State values: 'SelfReported', 'KernelChecked', 'ExternallyVerified', 'Unavailable'.
+        Beliefs without an explicit ClaimState atom default to 'SelfReported'.
+        """
+        result = {}
+        for bid in self._belief_ids:
+            result[bid] = self._claim_states.get(bid, "SelfReported")
+        return result
+
+    def get_claim_state(self, belief_id: str) -> str:
+        """Return the claim state for a single belief, or 'SelfReported' if unset."""
+        return self._claim_states.get(belief_id, "SelfReported")
+
     def summary(self) -> dict[str, object]:
         """Return a summary of the ECAN bridge state."""
         return {
@@ -126,4 +149,5 @@ class ECANBridge:
             "cycle_count": self.cycle.cycle_count,
             "evidence_links": sum(len(v) for v in self._evidence_map.values()),
             "min_af_sti": self.bank.min_af_sti,
+            "claim_states": dict(self._claim_states),
         }
