@@ -20,7 +20,7 @@ DEFAULT_ECAN_PARAMS: dict[str, float] = {
     "TARGET_LTI": 10_000.0,
     "STI_ATOM_WAGE": 10.0,
     "LTI_ATOM_WAGE": 10.0,
-    "STI_FUNDS_BUFFER": 10_000.0,
+    "STI_FUNDS_BUFFER": 90_000.0,
     "LTI_FUNDS_BUFFER": 10_000.0,
     "MAX_AF_SIZE": 1000.0,
     "MIN_AF_STI": 100.0,
@@ -28,9 +28,11 @@ DEFAULT_ECAN_PARAMS: dict[str, float] = {
     "AFB_BOTTOM": 50.0,
     "FORGET_THRESHOLD": 0.05,
     "NON_AF_DECAY_RATE": 0.15,
-    "MAX_SPREAD_PERCENTAGE": 0.4,
+    "MAX_SPREAD_PERCENTAGE": 0.08,
     "DIFFUSION_TOURNAMENT_SIZE": 5.0,
     "RENT_TOURNAMENT_SIZE": 5.0,
+    "STI_RENT_RATE": 0.01,
+    "LTI_RENT_RATE": 0.005,
     "AFRentFrequency": 5.0,
     "HEBBIAN_MAX_ALLOCATION_PERCENTAGE": 0.05,
 }
@@ -257,25 +259,30 @@ class AttentionBank:
         self.set_av(atom_id, av.with_av(new_sti, new_lti))
 
     def calculate_sti_rent(self, base_rent: float = 1.0) -> float:
-        """Calculate STI rent based on fund deficit (equilibrium seeking)."""
+        """Calculate STI rent rate based on fund equilibrium.
+
+        Returns a multiplier applied to each atom's STI to determine rent.
+        When funds are above target, rent is low (atoms keep more STI).
+        When funds are below target, rent increases (drains atoms to refill funds).
+        Always returns > 0 to ensure dominant atoms are gradually drained.
+        """
         funds = self._funds_sti
         target = self.params["TARGET_STI"]
         buffer = self.params["STI_FUNDS_BUFFER"]
         diff = target - funds
-        if diff <= 0:
-            return 0.0
         ndiff = diff / buffer
         ndiff = max(-0.99, min(1.0, ndiff))
         return base_rent + base_rent * ndiff
 
     def calculate_lti_rent(self, base_rent: float = 1.0) -> float:
-        """Calculate LTI rent based on fund deficit."""
+        """Calculate LTI rent rate based on fund equilibrium.
+
+        Returns a multiplier for LTI rent. Always positive.
+        """
         funds = self._funds_lti
         target = self.params["TARGET_LTI"]
         buffer = self.params["LTI_FUNDS_BUFFER"]
         diff = target - funds
-        if diff <= 0:
-            return 0.0
         ndiff = diff / buffer
         ndiff = max(-1.0, min(1.0, ndiff))
         return base_rent + base_rent * ndiff
@@ -406,14 +413,17 @@ class RentCollection:
         rent_freq = self.bank.get_param("AFRentFrequency")
         forget_threshold = self.bank.get_param("FORGET_THRESHOLD")
 
-        sti_rent_rate = self.bank.calculate_sti_rent()
-        lti_rent_rate = self.bank.calculate_lti_rent()
+        rent_multiplier = self.bank.calculate_sti_rent()
+        lti_rent_multiplier = self.bank.calculate_lti_rent()
+        sti_rate = self.bank.get_param("STI_RENT_RATE")
+        lti_rate = self.bank.get_param("LTI_RENT_RATE")
 
         for atom_id in af_atoms:
             av = self.bank.get_av(atom_id)
-            # Scale rent by rent frequency
-            sti_rent = sti_rent_rate * rent_freq / self.bank.get_param("AFRentFrequency")
-            lti_rent = lti_rent_rate * rent_freq / self.bank.get_param("AFRentFrequency")
+            # Proportional rent: percentage of atom's own STI/LTI
+            # Multiplied by equilibrium factor (higher when funds low)
+            sti_rent = av.sti * sti_rate * rent_multiplier
+            lti_rent = av.lti * lti_rate * lti_rent_multiplier
 
             new_sti = av.sti - sti_rent
             new_lti = av.lti - lti_rent
