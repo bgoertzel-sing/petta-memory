@@ -208,6 +208,73 @@ class GoalChainerSmokeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "at least one handoff item"):
             run_goalchainer_handoff_smoke({"items": []}, runner=lambda *a, **k: None)
 
+    def test_threadkeeper_canary_with_pr_requirement_ranks_reconciliation_first(self):
+        """When both PR-reconciliation and canary evidence are present,
+        the reconciliation action should outrank the canary install."""
+        repo = Path(__file__).resolve().parents[4] / "omegaclaw" / "repos" / "OmegaClaw-GoalChainer"
+        cache = {
+            "schema": "petta-memory-goalchainer-handoff-v1",
+            "cache_id": "threadkeeper-pr-plus-canary",
+            "items": [
+                {
+                    "goalchainer_slot": "acceptability-belief-evidence",
+                    "belief_id": "b-tk-pr-recon",
+                    "cluster_id": "mc-threadkeeper-canary",
+                    "promotion_event": "pe-tk-pr-pending",
+                    "promotion_domain": "project-control",
+                    "source_kind": "pettachainer-stv-statement",
+                    "atom": "(: b-tk-pr-recon (Requires ThreadKeeperPRReconciliation) (STV 0.92 0.80))",
+                    "boundary": "read-only evidence for appraisal; not a directive, task claim, or inferred belief",
+                },
+                {
+                    "goalchainer_slot": "acceptability-belief-evidence",
+                    "belief_id": "b-tk-canary-approved",
+                    "cluster_id": "mc-threadkeeper-canary",
+                    "promotion_event": "pe-tk-ben-approval",
+                    "promotion_domain": "project-control",
+                    "source_kind": "pettachainer-stv-statement",
+                    "atom": "(: b-tk-canary-approved (Acceptable install_threadkeeper_canary_on_protomegabot) (STV 0.88 0.75))",
+                    "boundary": "read-only evidence for appraisal; not a directive, task claim, or inferred belief",
+                },
+            ],
+        }
+        admitted = {
+            "schema": "petta-memory-patham9-pln-handoff-v1",
+            "items": [
+                {
+                    "term": "(Acceptable install_threadkeeper_canary_on_protomegabot)",
+                    "belief_id": "b-tk-canary-approved",
+                }
+            ],
+        }
+
+        smoke = run_goalchainer_precompiled_handoff_smoke(
+            cache,
+            goalchainer_repo=repo,
+            admitted_patham9_handoff=admitted,
+        )
+
+        payload = smoke["decision_payload"]
+        decisions = {item["action_id"]: item for item in payload["decisions"]}
+        self.assertIn("reconcile_threadkeeper_pr", decisions)
+        self.assertIn("install_threadkeeper_canary_on_protomegabot", decisions)
+        self.assertEqual(payload["decisions"][0]["action_id"], "reconcile_threadkeeper_pr")
+        self.assertEqual(
+            payload["decisions"][0]["status"], "recommended",
+            "reconcile_threadkeeper_pr should be recommended when PR requirement is present",
+        )
+        canary_rank = next(
+            i for i, item in enumerate(payload["decisions"])
+            if item["action_id"] == "install_threadkeeper_canary_on_protomegabot"
+        )
+        self.assertGreater(canary_rank, 0, "canary should rank below reconciliation")
+        self.assertTrue(
+            any(
+                "patham9/PLN admitted" in proof
+                for proof in decisions["install_threadkeeper_canary_on_protomegabot"]["evidence"]["proofs"]
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
