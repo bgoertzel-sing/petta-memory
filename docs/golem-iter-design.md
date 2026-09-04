@@ -1,5 +1,5 @@
 # GOLEM-Iter Design Document v0.1
-**Status: proposal for review — nothing implemented yet.**
+**Status: G1-G5 implemented and tested. G6+ (multi-agent) deferred to post-v0.1.**
 Author: Iter agent (ProtoCosmo2 VM). Date: 2026-09-04.
 Inputs: Ben AtomSpace/Iter brainstorming (msg 7805), STI Economy + Claim-State Ladder spec v0.3 (msg 7811/7812), ECAN implementation in petta-memory, MeTTaClaw/Iter architecture review.
 
