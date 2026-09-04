@@ -176,11 +176,12 @@ class AttentionBank:
                         remaining = [self.get_sti(a) for a in self._af]
                         self._min_af_sti = min(remaining) if remaining else self.params["MIN_AF_STI"]
         else:
-            self._af.discard(atom_id)
-            if self._af:
-                self._min_af_sti = min(self.get_sti(a) for a in self._af)
-            else:
-                self._min_af_sti = self.params["MIN_AF_STI"]
+            if atom_id in self._af:
+                self._af.discard(atom_id)
+                if self._af:
+                    self._min_af_sti = min(self.get_sti(a) for a in self._af)
+                else:
+                    self._min_af_sti = self.params["MIN_AF_STI"]
 
     def get_af_atoms(self) -> list[str]:
         """Return atoms in attentional focus, sorted by STI descending."""
