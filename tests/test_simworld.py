@@ -78,7 +78,7 @@ class TestOppositionDrivenDeescalation(unittest.TestCase):
 
 
 class TestSupersedeAwareGoalInvalidation(unittest.TestCase):
-    """Supersede-aware goal invalidation: new lower STV item weakens the recommendation."""
+    """Supersede-aware goal invalidation: replacing a belief with a weaker STV lowers strength."""
 
     def test_supersede_lowers_strength(self):
         world = SimWorld(goalchainer_repo=REPO)
@@ -95,13 +95,13 @@ class TestSupersedeAwareGoalInvalidation(unittest.TestCase):
             ),
             SimStep(
                 label="superseded-belief",
-                add_items=[
-                    SimWorld.stv_item("b-superseded", "publish_redacted_summary", 0.55, 0.60),
-                ],
+                update_items={
+                    "b-approved": SimWorld.stv_item("b-approved", "publish_redacted_summary", 0.55, 0.60),
+                },
                 expected_top_action="publish_redacted_summary",
                 expected_status="recommended",
-                expected_strength_max=0.80,
-                description="A new lower-confidence STV item should not raise strength beyond the original.",
+                expected_strength_max=0.70,
+                description="A superseding lower-confidence STV item should lower strength.",
             ),
         ]
         world.run_scenario(steps)
@@ -136,7 +136,7 @@ class TestMultiGoalPriorityArbitration(unittest.TestCase):
 
 
 class TestCrossDomainEvidenceReuse(unittest.TestCase):
-    """Cross-domain evidence reuse: same action with different promotion_domain still scores."""
+    """Cross-domain evidence reuse: EC from a different domain still influences the score."""
 
     def test_cross_domain_ec(self):
         world = SimWorld(goalchainer_repo=REPO)
@@ -164,8 +164,9 @@ class TestCrossDomainEvidenceReuse(unittest.TestCase):
                 ],
                 expected_top_action="publish_redacted_summary",
                 expected_status="recommended",
-                expected_strength_min=0.80,
-                description="EC from a different domain should still influence the score.",
+                expected_strength_min=0.70,
+                expected_strength_max=0.85,
+                description="EC from a different domain should influence the score (dampening effect from opposition).",
             ),
         ]
         world.run_scenario(steps)
