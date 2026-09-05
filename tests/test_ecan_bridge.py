@@ -384,3 +384,52 @@ class TestClaimStateExtraction(unittest.TestCase):
                 bridge = ECANBridge(store)
                 bridge.sync_from_store()
                 self.assertEqual(bridge.get_claim_state("b1"), state)
+
+
+class TestCrossClusterEvidence(unittest.TestCase):
+    """Regression test: EvidenceFor links in a different cluster than DerivedBelief."""
+
+    def test_cross_cluster_evidence(self):
+        """EvidenceFor in cluster B should be found for belief in cluster A."""
+        # Cluster A: has the belief but NO evidence
+        cluster_a = _make_belief_cluster(
+            "bel-cross-test",
+            '"cross-cluster belief"',
+            cluster_id="mc-belief-only",
+        )
+        # Cluster B: has the evidence link (no DerivedBelief here)
+        cluster_b = "\n".join([
+            "(MemoryCluster mc-evidence-only)",
+            "(SchemaVersion mc-evidence-only medium-memory-v1)",
+            "(ClusterType mc-evidence-only evidence)",
+            "(ClusterOpenedAt mc-evidence-only 2026-01-01T00:00:00Z)",
+            "(ClusterSource mc-evidence-only test)",
+            "(Contains mc-evidence-only ev-cross-1)",
+            "(ObservedEvent ev-cross-1)",
+            "(EvidenceFor bel-cross-test ev-cross-1)",
+            "(EvidenceSupportCount bel-cross-test 1)",
+            "(EvidenceOppositionCount bel-cross-test 0)",
+            "",
+        ])
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".metta", delete=False
+        ) as f:
+            f.write(cluster_a + "\n" + cluster_b)
+            f.flush()
+            store = MediumMemoryStore(f.name)
+
+        bridge = ECANBridge(store)
+        stats = bridge.sync_from_store()
+
+        # Belief should be found
+        self.assertIn("bel-cross-test", bridge._belief_ids)
+        # Evidence link should be found despite being in a different cluster
+        self.assertIn("bel-cross-test", bridge._evidence_map)
+        self.assertIn("ev-cross-1", bridge._evidence_map["bel-cross-test"])
+        # Stats should reflect the link
+        self.assertEqual(stats["evidence_links"], 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

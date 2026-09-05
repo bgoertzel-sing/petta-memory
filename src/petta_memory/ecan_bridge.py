@@ -38,15 +38,19 @@ class ECANBridge:
     def sync_from_store(self) -> dict[str, int]:
         """Extract beliefs and evidence links from the store journal.
 
+        Two-pass approach: first collect all DerivedBelief IDs, then
+        scan all clusters for EvidenceFor links (which may live in
+        different clusters than the DerivedBelief assertion).
+
         Returns summary: {beliefs, evidence_links, new_atoms}.
         """
         self._belief_ids.clear()
         self._evidence_map.clear()
         self._claim_states.clear()
 
+        # Pass 1: collect all DerivedBelief IDs and claim states
         for cluster in self.store.clusters():
             atoms = cluster.atoms
-            # Extract DerivedBelief IDs
             for belief_id in _objects_for_predicate(atoms, "DerivedBelief"):
                 self._belief_ids.add(belief_id)
                 # Register atom in bank if not already present
@@ -59,14 +63,31 @@ class ECANBridge:
                     # Last write wins (append-only journal; latest state is authoritative)
                     self._claim_states[belief_id] = state_values[-1]
 
-                # Extract evidence links: EvidenceFor belief_id source_id
-                evidence_sources = _second_objects_for_subject(atoms, "EvidenceFor", belief_id)
-                if evidence_sources:
-                    self._evidence_map[belief_id] = evidence_sources
-                    # Register evidence source atoms in bank
-                    for src in evidence_sources:
-                        if self.bank.get_sti(src) == 0.0 and self.bank.get_lti(src) == 0.0:
-                            self.bank.set_av(src, AttentionValue(sti=0, lti=0, vlti=0))
+        # Pass 2: collect EvidenceFor links from ALL clusters
+        # EvidenceFor(belief_id, source_id) may appear in a different
+        # cluster than the DerivedBelief(belief_id) assertion.
+        # Collect all EvidenceFor assertions in one pass, then filter by known beliefs.
+        belief_set = self._belief_ids
+        for cluster in self.store.clusters():
+            atoms = cluster.atoms
+            # Get all EvidenceFor (belief_id, source_id) pairs at once
+            for atom in atoms:
+                atom = atom.strip()
+                if not atom.startswith("(EvidenceFor "):
+                    continue
+                parts = atom.strip("()").split()
+                if len(parts) < 3:
+                    continue
+                belief_id, source_id = parts[1], parts[2]
+                if belief_id not in belief_set:
+                    continue
+                if belief_id not in self._evidence_map:
+                    self._evidence_map[belief_id] = []
+                if source_id not in self._evidence_map[belief_id]:
+                    self._evidence_map[belief_id].append(source_id)
+                # Register evidence source atoms in bank
+                if self.bank.get_sti(source_id) == 0.0 and self.bank.get_lti(source_id) == 0.0:
+                    self.bank.set_av(source_id, AttentionValue(sti=0, lti=0, vlti=0))
 
         # Build diffusion graph from evidence map
         self.diffusion.build_from_evidence_map(self._evidence_map)
