@@ -35,6 +35,8 @@ DEFAULT_ECAN_PARAMS: dict[str, float] = {
     "LTI_RENT_RATE": 0.005,
     "AFRentFrequency": 5.0,
     "HEBBIAN_MAX_ALLOCATION_PERCENTAGE": 0.05,
+    "EVIDENCE_STI_BOOST": 5.0,
+    "EVIDENCE_STI_BOOST_MAX": 50.0,
 }
 
 

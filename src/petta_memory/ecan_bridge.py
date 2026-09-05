@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from .ecan import AttentionBank, AttentionValue, ECANCycle, ImportanceDiffusion, RentCollection
+from .ecan import AttentionBank, AttentionValue, DEFAULT_ECAN_PARAMS, ECANCycle, ImportanceDiffusion, RentCollection
 from .store import MediumMemoryStore, _second_objects_for_subject, _objects_for_predicate
 
 
@@ -34,6 +34,8 @@ class ECANBridge:
         self._belief_ids: set[str] = set()
         self._evidence_map: dict[str, list[str]] = {}
         self._claim_states: dict[str, str] = {}
+        self._evidence_sti_boost: float = DEFAULT_ECAN_PARAMS.get("EVIDENCE_STI_BOOST", 5.0)
+        self._evidence_sti_boost_max: float = DEFAULT_ECAN_PARAMS.get("EVIDENCE_STI_BOOST_MAX", 50.0)
 
     def sync_from_store(self) -> dict[str, int]:
         """Extract beliefs and evidence links from the store journal.
@@ -109,11 +111,39 @@ class ECANBridge:
 
         Returns ECANCycleResult.
         """
-        return self.cycle.step(stimuli=stimuli)
+        result = self.cycle.step(stimuli=stimuli)
+        self._apply_evidence_boost()
+        return result
 
     def run_cycles(self, num_cycles: int, stimuli_fn=None) -> list[object]:
-        """Run multiple ECAN cycles."""
-        return self.cycle.run(num_cycles, stimuli_fn=stimuli_fn)
+        """Run multiple ECAN cycles with evidence-based STI boost.
+
+        After each ECAN cycle, beliefs that have active evidence links
+        receive a small STI top-up (EVIDENCE_STI_BOOST per link, capped
+        at EVIDENCE_STI_BOOST_MAX per cycle). This ensures well-supported
+        beliefs remain in attentional focus longer than unsupported ones.
+        """
+        results = []
+        for i in range(num_cycles):
+            stimuli = stimuli_fn(i) if stimuli_fn else None
+            result = self.cycle.step(stimuli=stimuli)
+            self._apply_evidence_boost()
+            results.append(result)
+        return results
+
+    def _apply_evidence_boost(self) -> None:
+        """Apply evidence-based STI boost to beliefs with evidence links.
+
+        Each belief with N evidence sources gets N * EVIDENCE_STI_BOOST STI,
+        capped at EVIDENCE_STI_BOOST_MAX total per cycle.
+        """
+        if self._evidence_sti_boost <= 0:
+            return
+        for belief_id, sources in self._evidence_map.items():
+            if not sources:
+                continue
+            boost = min(len(sources) * self._evidence_sti_boost, self._evidence_sti_boost_max)
+            self.bank.stimulate(belief_id, boost)
 
     def get_prioritized_beliefs(self, limit: int = 20) -> list[tuple[str, float]]:
         """Return beliefs sorted by STI descending (attention-prioritized).
