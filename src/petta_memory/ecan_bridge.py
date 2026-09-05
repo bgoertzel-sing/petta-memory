@@ -34,8 +34,8 @@ class ECANBridge:
         self._belief_ids: set[str] = set()
         self._evidence_map: dict[str, list[str]] = {}
         self._claim_states: dict[str, str] = {}
-        self._evidence_sti_boost: float = self.bank.params.get("EVIDENCE_STI_BOOST", 5.0)
-        self._evidence_sti_boost_max: float = self.bank.params.get("EVIDENCE_STI_BOOST_MAX", 50.0)
+        self._evidence_sti_boost: float = self.bank.params.get("EVIDENCE_STI_BOOST", 2.0)
+        self._evidence_sti_boost_max: float = self.bank.params.get("EVIDENCE_STI_BOOST_MAX", 20.0)
 
     def sync_from_store(self) -> dict[str, int]:
         """Extract beliefs and evidence links from the store journal.
