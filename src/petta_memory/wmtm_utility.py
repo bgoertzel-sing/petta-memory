@@ -53,11 +53,43 @@ class WMTMUtility:
         scored.sort(key=lambda x: -x[0])
         return [item for score, item in scored if score >= self.writeback_threshold]
 
+    def _build_cluster_text(self, item) -> str:
+        """Build a valid s-expression cluster for a derived WMTM item."""
+        import time
+        import uuid
+
+        short_uuid = uuid.uuid4().hex[:8]
+        cluster_id = f"wmtm-{short_uuid}"
+        episode_id = f"wmtm-ep-{short_uuid}"
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
+
+        safe_text = item.text.replace('"', '\\"').replace('\n', ' ')
+
+        source_desc = "wmtm-derived"
+        if item.derived_from:
+            source_desc = f"wmtm-derived-from:{','.join(item.derived_from[:3])}"
+
+        cluster_text = (
+            f"(MemoryCluster {cluster_id})\n"
+            f"(SchemaVersion {cluster_id} medium-memory-v1)\n"
+            f"(ClusterType {cluster_id} episode-record)\n"
+            f"(ClusterOpenedAt {cluster_id} \"{timestamp}\")\n"
+            f"(ClusterSource {cluster_id} {source_desc})\n"
+            f"(Contains {cluster_id} {episode_id})\n"
+            f"(ClusterStatus {cluster_id} active)\n"
+            f"(ObservedEvent {episode_id})\n"
+            f"(EpistemicRole {episode_id} observed-event)\n"
+            f"(About {episode_id} \"{safe_text}\")\n"
+            f"(HasStatus {episode_id} recorded)\n"
+        )
+        return cluster_text
+
     def writeback(self, item_ids: Optional[list[str]] = None) -> list[str]:
-        """Write high-utility items back to LTM via petta_append.
+        """Write high-utility items back to LTM.
 
         For recalled items: boost STI via ECAN stimulate.
-        For derived items: append as new cluster via store.append_cluster.
+        For derived items: append as new cluster via store.append_cluster
+        using a properly formatted s-expression cluster.
 
         Returns list of successfully written item IDs.
         """
@@ -76,14 +108,13 @@ class WMTMUtility:
                 stimuli[item.origin_cluster] = self.sti_writeback_boost
                 written.append(item.id)
             elif item.source_type == "derived":
-                # Try to persist derived item to store
+                # Persist derived item to store as a valid s-expression cluster
                 try:
-                    note = f"[WMTM-derived] {item.text}"
-                    # Use store's append method if available
+                    cluster_text = self._build_cluster_text(item)
                     if hasattr(self.store, "append_cluster"):
-                        self.store.append_cluster(note)
+                        self.store.append_cluster(cluster_text)
                     elif hasattr(self.store, "append"):
-                        self.store.append(note)
+                        self.store.append(cluster_text)
                     written.append(item.id)
                 except Exception as e:
                     log.warning("Writeback failed for %s: %s", item.id, e)
@@ -97,6 +128,7 @@ class WMTMUtility:
 
         log.debug("Utility: wrote back %d items", len(written))
         return written
+
 
     def summary(self) -> dict:
         scores = self.score_all()

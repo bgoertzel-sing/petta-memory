@@ -179,3 +179,44 @@ class TestWMTMUtility:
         s = util.summary()
         assert s["total_items"] == 1
         assert s["avg_utility"] > 0
+
+
+class TestWritebackRealStore:
+    """Regression test: writeback with a real MediumMemoryStore, not a mock.
+
+    The original bug was that writeback called store.append_cluster() with plain
+    English text, which silently failed validation. This test proves the fix
+    produces valid s-expression clusters that the store accepts.
+    """
+
+    def test_writeback_derived_with_real_store(self, tmp_path):
+        from petta_memory.store import MediumMemoryStore
+        from petta_memory.wmtm import WMTMStore
+        from petta_memory.wmtm_utility import WMTMUtility
+        from petta_memory.wmtm_inference import WMTMInferenceEngine
+        from petta_memory.ecan import AttentionBank
+        from unittest.mock import MagicMock
+
+        # Real store backed by a temp file
+        store = MediumMemoryStore(tmp_path / "test_journal.metta")
+
+        # Real ECAN bank
+        ecan = AttentionBank()
+
+        wmtm = WMTMStore()
+        wmtm.admit("b1", "source fact about ECAN", sti=30.0, origin_cluster="c1")
+        engine = WMTMInferenceEngine(wmtm)
+        derived = engine.derive("derived insight from source", ["b1"], sti=20.0)
+        item = wmtm.get(derived.id)
+        item.use_count = 5
+
+        util = WMTMUtility(wmtm, store, ecan, writeback_threshold=1.0)
+        written = util.writeback()
+
+        assert derived.id in written
+        # Verify the cluster was actually persisted to the journal file
+        journal_text = (tmp_path / "test_journal.metta").read_text()
+        assert "MemoryCluster" in journal_text
+        assert "wmtm-" in journal_text
+        assert "About" in journal_text
+        assert "derived insight from source" in journal_text
