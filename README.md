@@ -137,3 +137,35 @@ passed as that hook to check the canonical cluster with an explicitly configured
 local PeTTa runtime; it is opt-in and does not enable live OmegaClaw writes. This
 is conservative and local-first; a later OmegaClaw integration can replace it
 with an AtomSpace-backed journal.
+
+## ECAN attention allocation
+
+The `ecan` module provides Economic Attention Network (ECAN) importance spreading
+for memory clusters:
+
+- `AttentionValue` — STI/LTI/VLTI importance values per atom.
+- `AttentionBank` — bounded STI/LTI reservoir with stimulus injection.
+- `ImportanceDiffusion` — Hebbian importance spreading along `EvidenceFor` / `Contains` edges.
+- `RentCollection` — periodic rent/tax decay to keep the bank bounded.
+- `ECANCycle` / `ECANCycleResult` — one full diffusion + rent + stimulus cycle.
+- `ECANBridge` — wires ECAN to a `MediumMemoryStore`, reading live edge structure
+  and writing updated importance atoms back as promoted beliefs.
+
+All ECAN classes are importable directly: `from petta_memory import ECANBridge, ECANCycle, AttentionValue`.
+
+## WMTM — Working Memory with Tick-driven Maintenance
+
+The `wmtm_*` modules provide a working-memory layer above the medium store:
+
+- `WMTMStore` — bounded working-memory buffer with tick-driven decay.
+- `WMTMItem` — working-memory entry with activation, decay, and source tracking.
+- `ForgettingPolicy` — configurable decay/eviction thresholds.
+- `RecallBridge` — retrieves clusters from the medium store into working memory.
+- `WMTMUtility` — utility scoring for working-memory items.
+- `WMTMInferenceEngine` — lightweight inference over working-memory contents.
+- `WMTMCoordinator` — orchestrates store, recall, utility, inference, and ECAN
+  into a single tick cycle.
+
+All WMTM classes are importable directly: `from petta_memory import WMTMCoordinator, WMTMStore, RecallBridge`.
+
+Design doc: `docs/ecan-integration-design.md`.
