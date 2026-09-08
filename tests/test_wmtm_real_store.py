@@ -237,10 +237,10 @@ class F07_Coordinator(unittest.TestCase):
         self.coord.on_tick()
         self.assertEqual(self.coord.wmtm._cycle - c0, 2)
     def test_atoms_unchanged(self):
-        n0 = len(self.e.bank.num_atoms)
+        n0 = self.e.bank.num_atoms
         self.coord.on_tick()
         self.coord.on_tick()
-        self.assertEqual(len(self.e.bank.num_atoms), n0)
+        self.assertEqual(self.e.bank.num_atoms, n0)
 
 
 class F08_Serialization(unittest.TestCase):
