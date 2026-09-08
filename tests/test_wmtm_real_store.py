@@ -10,7 +10,8 @@ from petta_memory.wmtm_utility import WMTMUtility
 from petta_memory.wmtm_coordinator import WMTMCoordinator
 from petta_memory.ecan_bridge import ECANBridge
 
-CLUSTER_A = "(MemoryCluster mc-a)\n"
+CLUSTER_A = (
+    "(MemoryCluster mc-a)\n"
 "(SchemaVersion mc-a medium-memory-v1)\n"
 "(ClusterType mc-a belief-record)\n"
 '(ClusterOpenedAt mc-a "2026-09-08T00:00:00Z")\n'
@@ -24,7 +25,8 @@ CLUSTER_A = "(MemoryCluster mc-a)\n"
 "(ObservedEvent event-a)\n"
 "(EvidenceFor belief-a event-a)\n"
 
-CLUSTER_B = "(MemoryCluster mc-b)\n"
+CLUSTER_B = (
+    "(MemoryCluster mc-b)\n"
 "(SchemaVersion mc-b medium-memory-v1)\n"
 "(ClusterType mc-b belief-record)\n"
 '(ClusterOpenedAt mc-b "2026-09-08T00:00:00Z")\n'
@@ -38,7 +40,8 @@ CLUSTER_B = "(MemoryCluster mc-b)\n"
 "(ObservedEvent event-b)\n"
 "(EvidenceFor belief-b event-b)\n"
 
-CLUSTER_MULTI = "(MemoryCluster mc-c)\n"
+CLUSTER_MULTI = (
+    "(MemoryCluster mc-c)\n"
 "(SchemaVersion mc-c medium-memory-v1)\n"
 "(ClusterType mc-c belief-record)\n"
 '(ClusterOpenedAt mc-c "2026-09-08T00:00:00Z")\n'
