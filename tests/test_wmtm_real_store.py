@@ -105,3 +105,64 @@ class F01_RecallIdentity(unittest.TestCase):
         finally:
             _cleanup(path)
 
+
+class F06_Capacity(unittest.TestCase):
+    def test_capacity_one_with_large_policy_holds_two(self):
+        wmtm = WMTMStore(capacity=1, forgetting=ForgettingPolicy(max_items=5, sti_threshold=0.0))
+        wmtm.admit("a", "a", sti=10.0)
+        wmtm.admit("b", "b", sti=10.0)
+        self.assertEqual(len(wmtm.all_items()), 2)
+    def test_capacity_one_with_matching_policy_holds_one(self):
+        wmtm = WMTMStore(capacity=1, forgetting=ForgettingPolicy(max_items=1, sti_threshold=0.0))
+        wmtm.admit("a", "a", sti=10.0)
+        wmtm.admit("b", "b", sti=10.0)
+        self.assertEqual(len(wmtm.all_items()), 1)
+
+class F07_Coordinator(unittest.TestCase):
+    def setUp(self):
+        self.store, self.path = _make_store(CLUSTER_A)
+        self.ecan = ECANBridge(self.store)
+        self.ecan.sync_from_store()
+        self.coord = WMTMCoordinator(self.store, self.ecan, capacity=100)
+    def tearDown(self):
+        _cleanup(self.path)
+    def test_on_tick_ticks_wmtm(self):
+        cycle_before = self.coord.wmtm._cycle
+        self.coord.on_tick()
+        self.coord.on_tick()
+        self.assertEqual(self.coord.wmtm._cycle - cycle_before, 2)
+    def test_ecan_not_run_by_coordinator(self):
+        atoms_before = self.ecan.bank.num_atoms
+        self.coord.on_tick()
+        self.coord.on_tick()
+        atoms_after = self.ecan.bank.num_atoms
+        self.assertEqual(atoms_before, atoms_after)
+
+class F08_Serialization(unittest.TestCase):
+    def setUp(self):
+        self.store, self.path = _make_store(CLUSTER_A)
+        self.ecan = ECANBridge(self.store)
+        self.ecan.sync_from_store()
+        self.wmtm = WMTMStore()
+        self.utility = WMTMUtility(self.wmtm, self.store, self.ecan)
+    def tearDown(self):
+        _cleanup(self.path)
+    def test_writeback_uses_quoted_text(self):
+        self.wmtm.admit("d1", "memory is useful", source_type="derived", derived_from=["mc-a"], sti=32.0)
+        self.utility.writeback(["d1"])
+        new = [c for c in self.store.clusters() if c.cluster_id != "mc-a"]
+        self.assertGreater(len(new), 0)
+        atoms_text = chr(10).join(new[0].atoms)
+        self.assertIn("memory is useful", atoms_text)
+    def test_query_about_finds_symbol(self):
+        results = self.store.query_about("memory")
+        self.assertGreater(len(results), 0)
+    def test_query_about_misses_quoted_sentence(self):
+        self.wmtm.admit("d2", "complex sentence about memory", source_type="derived", derived_from=["mc-a"], sti=32.0)
+        self.utility.writeback(["d2"])
+        store2 = MediumMemoryStore(self.path)
+        results = store2.query_about("complex sentence about memory")
+        self.assertEqual(len(results), 0)
+
+if __name__ == "__main__":
+    unittest.main()
