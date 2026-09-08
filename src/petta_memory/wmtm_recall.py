@@ -87,11 +87,11 @@ class RecallBridge:
             except Exception:
                 clusters = []
             for cluster in clusters:
-                cid = getattr(cluster, "id", None) or str(cluster)
+                cid = getattr(cluster, "cluster_id", None) or str(cluster)
                 if cid in candidates:
                     candidates[cid]["keywords_matched"] += 1
                 else:
-                    text = getattr(cluster, "text", str(cluster))
+                    text = cluster.text
                     candidates[cid] = {
                         "text": text,
                         "keywords_matched": 1,
