@@ -90,15 +90,24 @@ class F01_RecallIdentity(unittest.TestCase):
         self.assertTrue(hasattr(c, "cluster_id"))
         self.assertEqual(c.cluster_id, "mc-a")
         self.assertFalse(hasattr(c, "id"))
-    def test_recall_returns_debug_strings(self):
+    def test_recall_returns_cluster_ids(self):
         a = self.b.recall("memory useful", top_k=10)
         self.assertGreater(len(a), 0)
         for i in a:
-            self.assertTrue(i.startswith("MemoryCluster("))
-    def test_recall_not_cluster_id(self):
+            self.assertIn(i, ("mc-a", "mc-b"))
+    def test_recall_not_debug_strings(self):
         a = self.b.recall("memory useful", top_k=10)
         for i in a:
-            self.assertNotIn(i, ("mc-a", "mc-b"))
+            self.assertFalse(i.startswith("MemoryCluster("))
+
+
+
+
+
+
+
+
+
     def test_multi_belief(self):
         s, p = _ms(CM)
         try:
@@ -118,13 +127,14 @@ class F02_WritebackRole(unittest.TestCase):
         self.u = WMTMUtility(self.w, self.s, self.e)
     def tearDown(self):
         _cl(self.p)
-    def test_writeback_uses_observed_event(self):
+    def test_writeback_uses_derived_belief(self):
+        """F02 FIX: writeback of derived items should use DerivedBelief, not ObservedEvent."""
         it = self.w.admit("d1", "derived conclusion", source_type="derived", derived_from=["mc-a"], sti=32.0)
         it.use_count = 1
         self.u.writeback(["d1"])
         with open(self.p) as f: c = f.read()
-        self.assertIn("ObservedEvent", c)
-        self.assertIn("observed-event", c)
+        self.assertIn("DerivedBelief", c)
+        self.assertNotIn("observed-event", c)
     def test_writeback_duplicates(self):
         it = self.w.admit("d2", "dup test", source_type="derived", derived_from=["mc-a"], sti=32.0)
         it.use_count = 1
@@ -143,10 +153,12 @@ class F03_Inference(unittest.TestCase):
         self.w = WMTMStore()
         self.eng = WMTMInferenceEngine(self.w)
         self.w.admit("s1", "src", sti=10.0)
-    def test_missing_parent(self):
-        self.assertIsNotNone(self.eng.derive("x", ["s1", "missing"]))
-    def test_bogus_rule(self):
-        self.assertIsNotNone(self.eng.derive("x", ["s1"], rule="bogus"))
+    def test_missing_parent_rejected(self):
+        """F03 FIX: derive() should reject missing parent IDs."""
+        self.assertIsNone(self.eng.derive("x", ["s1", "missing"]))
+    def test_bogus_rule_rejected(self):
+        """F03 FIX: derive() should reject unknown rule names."""
+        self.assertIsNone(self.eng.derive("x", ["s1"], rule="bogus"))
     def test_conjunction_concat(self):
         self.w.admit("s2", "second", sti=10.0)
         r = self.eng.derive_conjunction("s1", "s2")
