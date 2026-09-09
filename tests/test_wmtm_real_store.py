@@ -192,9 +192,15 @@ class F04(unittest.TestCase):
         prov = self.eng.get_provenance(self.leaf.id)
         self.assertIsNotNone(prov)
     def test_local_counter(self):
+        """F06: derivation IDs are content-hash based and stable across engine instances."""
         e2 = WMTMInferenceEngine(WMTMStore())
         e2.wmtm.admit("x", "x", sti=10.0)
-        self.assertEqual(e2.derive("y", ["x"]).id, "deriv-1")
+        d = e2.derive("y", ["x"])
+        self.assertTrue(d.id.startswith("deriv-"))
+        # Same content from a different engine instance should produce the same ID
+        e3 = WMTMInferenceEngine(WMTMStore())
+        e3.wmtm.admit("x", "x", sti=10.0)
+        self.assertEqual(e3.derive("y", ["x"]).id, d.id)
 
 class F05(unittest.TestCase):
     def test_recency_cycle_0(self):
@@ -207,7 +213,7 @@ class F05(unittest.TestCase):
         r = 0.9 ** max(0, item.age - item.last_used)
         self.assertAlmostEqual(r, 0.9 ** 10, places=2)
     def test_recency_cycle_100_bug(self):
-        """F05: last_used stores global cycle, age starts at 0 -> recency=1.0."""
+        """F05: recency at cycle 100 is same as cycle 0 (age-relative last_used)."""
         w = WMTMStore(capacity=100, forgetting=ForgettingPolicy(sti_threshold=0.0, max_items=999))
         for _ in range(100):
             w.tick()
@@ -256,6 +262,24 @@ class F07(unittest.TestCase):
         self.coord.on_tick()
         self.coord.on_tick()
         self.assertEqual(self.e.bank.num_atoms, n0)
+    def test_ecan_cycle_actually_runs(self):
+        """F07: Verify ECAN run_cycle executes by checking STI changes."""
+        # Get initial STI of a belief
+        sti_before = self.e.bank.get_sti('belief-a')
+        self.coord.on_tick()
+        sti_after = self.e.bank.get_sti('belief-a')
+        # If ECAN ran, STI should have changed (rent collection + diffusion)
+        self.assertNotEqual(sti_before, sti_after,
+            'ECAN run_cycle did not change STI - cycle may not be executing')
+    def test_ecan_cycle_actually_runs(self):
+        """F07: Verify ECAN run_cycle executes by checking STI changes."""
+        # Get initial STI of a belief
+        sti_before = self.e.bank.get_sti('belief-a')
+        self.coord.on_tick()
+        sti_after = self.e.bank.get_sti('belief-a')
+        # If ECAN ran, STI should have changed (rent collection + diffusion)
+        self.assertNotEqual(sti_before, sti_after,
+            'ECAN run_cycle did not change STI - cycle may not be executing')
 
 class F08(unittest.TestCase):
     def setUp(self):

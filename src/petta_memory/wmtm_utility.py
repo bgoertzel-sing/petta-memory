@@ -79,7 +79,7 @@ class WMTMUtility:
             '(BeliefContent {} "{}")'.format(belief_id, escaped_text),
             '(About {} "{}")'.format(belief_id, escaped_text),
             '(Contains {} {})'.format(cluster_id, reasoning_event_id),
-            '(ObservedEvent {})'.format(reasoning_event_id),
+            '(ReasoningEvent {})'.format(reasoning_event_id),
             '(DerivedAt {} cycle:{})'.format(reasoning_event_id, item.age),
             '(Produced {} {})'.format(reasoning_event_id, belief_id),
         ]
@@ -109,9 +109,22 @@ class WMTMUtility:
                 self._writeback_receipts[item.id] = item.origin_cluster
                 written.append(item.id)
             elif item.source_type == "derived":
+                cluster_id = _stable_derivation_id(item.text, item.derived_from)
+                # Idempotency: check if derivation already persisted
+                already_persisted = False
+                if hasattr(self.store, "query_cluster"):
+                    try:
+                        if self.store.query_cluster(cluster_id) is not None:
+                            already_persisted = True
+                    except Exception:
+                        pass
+                if already_persisted:
+                    item.written_back = True
+                    self._writeback_receipts[item.id] = cluster_id
+                    written.append(item.id)
+                    continue
                 try:
                     cluster_text = self._build_cluster_text(item)
-                    cluster_id = _stable_derivation_id(item.text, item.derived_from)
                     if hasattr(self.store, "append_cluster"):
                         self.store.append_cluster(cluster_text)
                     elif hasattr(self.store, "append"):
