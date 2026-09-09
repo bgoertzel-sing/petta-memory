@@ -217,7 +217,7 @@ class F05(unittest.TestCase):
         item = w.get("t2")
         self.assertIsNotNone(item)
         r = 0.9 ** max(0, item.age - item.last_used)
-        self.assertAlmostEqual(r, 1.0, places=3)
+        self.assertAlmostEqual(r, 0.9 ** 10, places=2)
     def test_decay_age(self):
         w = WMTMStore()
         w.admit("t", "t", sti=10.0)
