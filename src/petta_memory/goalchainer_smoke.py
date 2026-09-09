@@ -291,7 +291,7 @@ def _run_heuristic_memory_probe(
     if not (src / "goal_chainer" / "pipeline.py").exists():
         raise ValidationError(f"GoalChainer pipeline not found: {goalchainer_repo}")
 
-    old_env = {key: os.environ.get(key) for key in ("GOALCHAINER_PETTA_DIR", "GOALCHAINER_PETTACHAINER_DIR", "GOALCHAINER_PETTA_SWIPL")}
+    old_env = {key: os.environ.get(key) for key in ("GOALCHAINER_PETTA_DIR", "GOALCHAINER_PETTACHAINER_DIR", "GOALCHAINER_PETTA_SWIPL", "GOALCHAINER_USE_HEURISTIC_PLN")}
     if "GOALCHAINER_PETTA_DIR" not in os.environ and (DEFAULT_PETTA_DIR / "src" / "main.pl").exists():
         os.environ["GOALCHAINER_PETTA_DIR"] = str(DEFAULT_PETTA_DIR)
     if (
@@ -301,6 +301,9 @@ def _run_heuristic_memory_probe(
         os.environ["GOALCHAINER_PETTACHAINER_DIR"] = str(DEFAULT_PETTACHAINER_DIR)
     if "GOALCHAINER_PETTA_SWIPL" not in os.environ and DEFAULT_SWIPL.exists():
         os.environ["GOALCHAINER_PETTA_SWIPL"] = str(DEFAULT_SWIPL)
+    # Force heuristic PLN path so the memory-evidence bridge is deterministic;
+    # PeTTaChainer compileadd may hang or exceed SWI stack limits under test.
+    os.environ["GOALCHAINER_USE_HEURISTIC_PLN"] = "1"
 
     inserted = False
     if str(src) not in sys.path:
