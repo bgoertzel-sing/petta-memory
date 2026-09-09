@@ -17,6 +17,40 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+
+def _resolve_cluster_to_belief_ids(store, cluster_ids):
+    """D03 FIX: Resolve cluster IDs to their contained belief IDs using ObjectIndex."""
+    try:
+        from petta_memory.object_index import ObjectIndex
+        idx = ObjectIndex()
+        idx.build_from_store(store)
+        resolved = set()
+        for cid in cluster_ids:
+            objects = idx.objects_in_cluster(cid)
+            belief_ids = [oid for oid, otype in objects if otype == "DerivedBelief"]
+            if belief_ids:
+                resolved.update(belief_ids)
+            else:
+                # Not a cluster ID or no beliefs in it; keep as-is
+                resolved.add(cid)
+        return list(resolved)
+    except Exception:
+        return list(cluster_ids)
+
+
+def _resolve_object_to_cluster(store, obj_id):
+    """D03 FIX: Resolve a belief/event ID to its containing cluster ID."""
+    try:
+        from petta_memory.object_index import ObjectIndex
+        idx = ObjectIndex()
+        idx.build_from_store(store)
+        cluster_id = idx.cluster_of(obj_id)
+        if cluster_id:
+            return cluster_id
+    except Exception:
+        pass
+    return obj_id
+
 # Keywords to ignore during extraction
 _STOP_WORDS = frozenset({
     "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
@@ -168,9 +202,13 @@ class RecallBridge:
             log.debug("RecallBridge: no adjacency from evidence map")
             return []
 
+        # D03 FIX: Resolve cluster IDs to belief IDs before BFS,
+        # since adjacency is keyed by belief IDs (from evidence_map).
+        resolved_seeds = _resolve_cluster_to_belief_ids(self.store, seed_ids)
+
         # BFS with decay
-        visited = set(seed_ids)
-        frontier = list(seed_ids)
+        visited = set(resolved_seeds)
+        frontier = list(resolved_seeds)
         new_items: list[tuple[float, str]] = []
 
         for hop in range(1, depth + 1):
@@ -201,20 +239,28 @@ class RecallBridge:
                 if item:
                     item.sti += activation * 0.5
                 continue
+            # D03 FIX: Resolve belief/event ID to cluster ID for text lookup
+            cluster_id = _resolve_object_to_cluster(self.store, nbr_id)
+            # If already in WMTM under cluster_id, just boost
+            if cluster_id in self.wmtm and cluster_id != nbr_id:
+                item = self.wmtm.get(cluster_id)
+                if item:
+                    item.sti += activation * 0.5
+                continue
             # Try to get text from store
             try:
-                cluster = self.store.query_cluster(nbr_id)
-                text = getattr(cluster, "text", nbr_id) if cluster else nbr_id
+                cluster = self.store.query_cluster(cluster_id)
+                text = getattr(cluster, "text", cluster_id) if cluster else cluster_id
             except Exception:
-                text = nbr_id
+                text = cluster_id
             self.wmtm.admit(
-                item_id=nbr_id,
+                item_id=cluster_id,
                 text=text,
                 source_type="recalled",
-                origin_cluster=nbr_id,
+                origin_cluster=cluster_id,
                 sti=activation,
             )
-            admitted.append(nbr_id)
+            admitted.append(cluster_id)
 
         log.debug("RecallBridge: spreading activation admitted %d new items", len(admitted))
         return admitted
