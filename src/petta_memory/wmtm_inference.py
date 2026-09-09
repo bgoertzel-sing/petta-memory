@@ -43,6 +43,8 @@ class WMTMInferenceEngine:
         If sti is provided explicitly, it overrides.
 
         F03 FIX: Rejects missing parent IDs and unknown rule names.
+        F06 FIX: Derivation ID uses store-scoped counter to prevent collisions
+        across multiple engine instances sharing the same WMTMStore.
         """
         # F03 FIX: Validate rule
         if rule not in self._VALID_RULES:
@@ -65,7 +67,9 @@ class WMTMInferenceEngine:
             sti = avg_sti * 0.8
 
         self._derivation_count += 1
-        deriv_id = f"deriv-{self._derivation_count}"
+        # F06 FIX: Use store-scoped counter for unique derivation IDs
+        self.wmtm._derivation_counter += 1
+        deriv_id = f"deriv-{self.wmtm._derivation_counter}"
 
         item = self.wmtm.admit(
             item_id=deriv_id,

@@ -19,11 +19,11 @@ class TestWMTMItem:
 
     def test_touch(self):
         item = WMTMItem(id="b1", text="test")
-        item.touch(cycle=5)
+        item.touch()
         assert item.use_count == 1
-        assert item.last_used == 5
+        assert item.last_used == 0
         assert item.utility == 1.0
-        item.touch(cycle=7)
+        item.touch()
         assert item.use_count == 2
 
     def test_decay_sti(self):
