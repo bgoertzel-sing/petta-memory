@@ -57,7 +57,7 @@ class TestRecallBridge:
     def _make_cluster(self, cid, text):
         """Create a mock cluster object."""
         c = MagicMock()
-        c.id = cid
+        c.cluster_id = cid
         c.text = text
         return c
 

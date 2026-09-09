@@ -374,7 +374,7 @@ class MediumMemoryStore:
         return self._bounded(hits, limit)
 
     def query_about(self, entity: str, *, limit: int = 20) -> list[MemoryCluster]:
-        pat = re.compile(rf"^\(About\s+[^\s()]+\s+{re.escape(entity)}\)", re.MULTILINE)
+        pat = re.compile(rf"^\(About\s+[^\s()]+\s+\"?{re.escape(entity)}\"?\)", re.MULTILINE)
         return self._bounded([c for c in self.clusters() if pat.search(c.text)], limit)
 
     def query_status(self, status: str, *, limit: int = 20) -> list[MemoryCluster]:

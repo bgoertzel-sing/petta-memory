@@ -78,8 +78,15 @@ class WMTMCoordinator:
         return recalled
 
     def on_tick(self) -> list[str]:
-        """Called periodically to maintain working memory (decay + forget)."""
-        return self.wmtm.tick()
+        """Called periodically to maintain working memory (decay + forget).
+
+        F07 FIX: Also syncs ECAN from store to pick up any newly appended
+        beliefs/evidence links.
+        """
+        evicted = self.wmtm.tick()
+        # F07 FIX: Sync ECAN to pick up new atoms from store
+        self.recall.ecan.sync_from_store()
+        return evicted
 
     def on_derive(
         self,

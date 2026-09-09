@@ -26,6 +26,10 @@ class WMTMInferenceEngine:
     def derivation_count(self) -> int:
         return self._derivation_count
 
+    # F03 FIX: Valid rule names for derivation
+    _VALID_RULES = frozenset({"conjunction", "implication", "abduction",
+                              "induction", "deduction", "analogy"})
+
     def derive(
         self,
         text: str,
@@ -37,7 +41,20 @@ class WMTMInferenceEngine:
 
         The derived item's STI is the average of source STIs * 0.8 (slight discount).
         If sti is provided explicitly, it overrides.
+
+        F03 FIX: Rejects missing parent IDs and unknown rule names.
         """
+        # F03 FIX: Validate rule
+        if rule not in self._VALID_RULES:
+            log.warning("Inference: unknown rule '%s'", rule)
+            return None
+
+        # F03 FIX: All source_ids must be present in WMTM
+        missing = [sid for sid in source_ids if sid not in self.wmtm]
+        if missing:
+            log.warning("Inference: missing source IDs: %s", missing)
+            return None
+
         sources = [self.wmtm.get(sid) for sid in source_ids if sid in self.wmtm]
         if not sources:
             log.debug("Inference: no valid sources for derivation")
@@ -82,6 +99,9 @@ class WMTMInferenceEngine:
         """Trace the provenance chain of a derived item.
 
         Returns nested dict: {id, text, source_type, derived_from: [...]}
+
+        F04 FIX: When a source item has been evicted, returns a placeholder
+        dict with id and evicted=True instead of None, preserving the chain.
         """
         visited = set()
 
@@ -91,7 +111,8 @@ class WMTMInferenceEngine:
             visited.add(cid)
             item = self.wmtm.get(cid)
             if not item:
-                return None
+                # F04 FIX: Return placeholder for evicted items
+                return {"id": cid, "evicted": True}
             result = {
                 "id": item.id,
                 "text": item.text[:80],
