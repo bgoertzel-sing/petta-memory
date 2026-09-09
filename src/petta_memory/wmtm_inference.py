@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Optional, TYPE_CHECKING
 import logging
+import hashlib
 
 if TYPE_CHECKING:
     from petta_memory.wmtm import WMTMStore, WMTMItem
@@ -67,9 +68,14 @@ class WMTMInferenceEngine:
             sti = avg_sti * 0.8
 
         self._derivation_count += 1
-        # F06 FIX: Use store-scoped counter for unique derivation IDs
-        self.wmtm._derivation_counter += 1
-        deriv_id = f"deriv-{self.wmtm._derivation_counter}"
+        # F06 v2 FIX: Use content-deterministic hash for derivation IDs
+        # Prevents cross-engine collisions and duplicate derivations
+        # of the same conclusion from creating separate items.
+        h = hashlib.sha256()
+        h.update(text.encode("utf-8"))
+        for pid in sorted(source_ids):
+            h.update(pid.encode("utf-8"))
+        deriv_id = "deriv-" + h.hexdigest()[:12]
 
         item = self.wmtm.admit(
             item_id=deriv_id,

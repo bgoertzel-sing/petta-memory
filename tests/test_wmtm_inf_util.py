@@ -101,6 +101,7 @@ class TestWMTMUtility:
     def _make_mocks(self):
         store = MagicMock()
         ecan = MagicMock()
+        store.query_cluster.return_value = None
         return store, ecan
 
     def test_compute_utility(self):

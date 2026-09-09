@@ -9,7 +9,7 @@ import re
 import tempfile
 from typing import Callable, Iterable, Optional
 
-from .sexpr import SExpressionSyntaxError, SExpr, parse_one_list, parse_top_level_lists, symbol_text, to_source
+from .sexpr import SExpressionSyntaxError, SExpr, StringAtom, parse_one_list, parse_top_level_lists, symbol_text, to_source
 
 
 class ValidationError(ValueError):
@@ -52,6 +52,7 @@ _ID_DECLARING_PREDICATES = {
     "SalienceEvent",
     "PromotionEvent",
     "TruthValueEvent",
+    "ReasoningEvent",
 }
 _BINARY_RELATION_PREDICATES = {
     "SchemaVersion",
@@ -88,6 +89,8 @@ _BINARY_RELATION_PREDICATES = {
     "PromotionTrust",
     "PromotionDomain",
     "ClaimState",
+    "DerivedAt",
+    "Produced",
 }
 
 
@@ -374,8 +377,39 @@ class MediumMemoryStore:
         return self._bounded(hits, limit)
 
     def query_about(self, entity: str, *, limit: int = 20) -> list[MemoryCluster]:
-        pat = re.compile(rf"^\(About\s+[^\s()]+\s+\"?{re.escape(entity)}\"?\)", re.MULTILINE)
-        return self._bounded([c for c in self.clusters() if pat.search(c.text)], limit)
+        """Find clusters where the About value contains *entity* as a substring.
+
+        The match is case-insensitive and operates on the decoded string
+        value of the About relation, not the raw S-expression text.
+        This enables keyword-based recall: query_about("conclusion") matches
+        an atom like (About belief-x "conclusion A").
+        """
+        entity_lower = entity.lower()
+        hits: list[MemoryCluster] = []
+        for cluster in self.clusters():
+            for atom in cluster.atoms:
+                if not atom.strip().startswith("(About "):
+                    continue
+                # Parse the About value using the S-expression parser
+                try:
+                    parsed = parse_one_list(atom)
+                    if len(parsed) >= 3 and isinstance(parsed[2], StringAtom):
+                        val = parsed[2].value
+                        if entity_lower in val.lower():
+                            hits.append(cluster)
+                            break
+                    elif len(parsed) >= 3:
+                        # Non-string value: match on rendered text
+                        val = to_source(parsed[2])
+                        if entity_lower in val.lower():
+                            hits.append(cluster)
+                            break
+                except Exception:
+                    # Fallback: raw substring match
+                    if entity_lower in atom.lower():
+                        hits.append(cluster)
+                        break
+        return self._bounded(hits, limit)
 
     def query_status(self, status: str, *, limit: int = 20) -> list[MemoryCluster]:
         matches: list[MemoryCluster] = []
