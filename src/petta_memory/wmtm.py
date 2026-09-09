@@ -45,9 +45,10 @@ class WMTMItem:
     def decay_sti(self, rate: float = 0.85) -> None:
         """F05 FIX: recency uses age-relative last_used so it works
         regardless of what cycle the item was admitted at."""
+        # Compute recency BEFORE incrementing age so first tick gives 1.0
+        recency_factor = 0.9 ** max(0, self.age - self.last_used)
         self.sti *= rate
         self.age += 1
-        recency_factor = 0.9 ** max(0, self.age - self.last_used)
         self.utility = self.use_count * recency_factor - 0.1 * self.age
 
 

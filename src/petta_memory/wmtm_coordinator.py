@@ -86,6 +86,8 @@ class WMTMCoordinator:
         evicted = self.wmtm.tick()
         # F07 FIX: Sync ECAN to pick up new atoms from store
         self.recall.ecan.sync_from_store()
+        # F07 FIX: Actually run ECAN attention cycle (rent + diffusion)
+        self.recall.ecan.run_cycle()
         return evicted
 
     def on_derive(
@@ -106,8 +108,8 @@ class WMTMCoordinator:
         self.wmtm.touch(item_id)
 
     def on_turn_end(self) -> list[str]:
-        """Called at end of turn: final tick + writeback to LTM."""
-        self.wmtm.tick()
+        """Called at end of turn: writeback to LTM (no extra tick)."""
+        # F07 FIX: removed self.wmtm.tick() — on_tick() already advances clock
         self._turn_count += 1
         written = []
         if self.auto_writeback:
