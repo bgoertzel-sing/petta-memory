@@ -27,20 +27,24 @@ class WMTMItem:
     sti: float = 10.0
     lti: float = 0.0
     age: int = 0
-    last_used: int = 0
+    last_used: int = 0       # F05 FIX: age-relative (ticks since admission at last touch)
     use_count: int = 0
     utility: float = 0.0
+    written_back: bool = False          # F02 FIX: track writeback status for idempotency
 
     @property
     def is_derived(self) -> bool:
         return self.source_type == "derived"
 
-    def touch(self, cycle: int) -> None:
-        self.last_used = cycle
+    def touch(self) -> None:
+        """F05 FIX: last_used is now age-relative, not absolute cycle."""
+        self.last_used = self.age
         self.use_count += 1
         self.utility += 1.0
 
     def decay_sti(self, rate: float = 0.85) -> None:
+        """F05 FIX: recency uses age-relative last_used so it works
+        regardless of what cycle the item was admitted at."""
         self.sti *= rate
         self.age += 1
         recency_factor = 0.9 ** max(0, self.age - self.last_used)
@@ -103,6 +107,7 @@ class WMTMStore:
         self.forgetting = forgetting or ForgettingPolicy(max_items=capacity)
         self._items: dict[str, WMTMItem] = {}
         self._cycle: int = 0
+        self._derivation_counter: int = 0   # F06 FIX: store-scoped derivation counter
 
     @property
     def cycle(self) -> int:
@@ -120,7 +125,7 @@ class WMTMStore:
         if item_id in self._items:
             existing = self._items[item_id]
             existing.sti = max(existing.sti, sti)
-            existing.touch(self._cycle)
+            existing.touch()
             return existing
         item = WMTMItem(
             id=item_id,
@@ -129,7 +134,7 @@ class WMTMStore:
             origin_cluster=origin_cluster,
             derived_from=derived_from or [],
             sti=sti,
-            last_used=self._cycle,
+            last_used=0,   # F05 FIX: age-relative, starts at 0
         )
         self._items[item_id] = item
         self._enforce_capacity()
@@ -141,7 +146,7 @@ class WMTMStore:
     def touch(self, item_id: str) -> None:
         item = self._items.get(item_id)
         if item:
-            item.touch(self._cycle)
+            item.touch()
 
     def remove(self, item_id: str) -> None:
         self._items.pop(item_id, None)

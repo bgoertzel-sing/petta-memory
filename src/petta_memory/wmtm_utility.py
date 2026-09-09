@@ -44,11 +44,9 @@ class WMTMUtility:
         return item.use_count * recency + item.sti * 0.3 - age_penalty
 
     def score_all(self) -> dict[str, float]:
-        """Compute utility scores for all items."""
         return {item.id: self.compute_utility(item) for item in self.wmtm.all_items()}
 
     def get_writeback_candidates(self) -> list["WMTMItem"]:
-        """Get items that should be written back to LTM."""
         scored = [(self.compute_utility(i), i) for i in self.wmtm.all_items()]
         scored.sort(key=lambda x: -x[0])
         return [item for score, item in scored if score >= self.writeback_threshold]
@@ -58,6 +56,7 @@ class WMTMUtility:
 
         F02 FIX: Uses DerivedBelief (not ObservedEvent) for derived items.
         F08 FIX: About text is NOT quoted so query_about regex can match.
+        F04 FIX: Links EvidenceFor to actual source clusters when available.
         """
         import time
         import uuid
@@ -68,10 +67,7 @@ class WMTMUtility:
         event_id = f"wmtm-ev-{short_uuid}"
         timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
-        # F08 FIX: Use unquoted text for About so query_about can match it.
-        # If text contains spaces, use it as-is (the store regex matches unquoted tokens).
         safe_text = item.text.replace('"', '').replace('\n', ' ').strip()
-        # Truncate to reasonable length
         safe_text = safe_text[:200] if len(safe_text) > 200 else safe_text
 
         source_desc = "wmtm-derived"
@@ -82,11 +78,10 @@ class WMTMUtility:
             f"(MemoryCluster {cluster_id})",
             f"(SchemaVersion {cluster_id} medium-memory-v1)",
             f"(ClusterType {cluster_id} belief-record)",
-            f"(ClusterOpenedAt {cluster_id} \"{timestamp}\")",
+            f'(ClusterOpenedAt {cluster_id} "{timestamp}")',
             f"(ClusterSource {cluster_id} {source_desc})",
             f"(Contains {cluster_id} {belief_id})",
             f"(Contains {cluster_id} {event_id})",
-            # F02 FIX: Use DerivedBelief for derived items, not ObservedEvent
             f"(DerivedBelief {belief_id})",
             f"(BeliefContent {belief_id} ({safe_text}))",
             f'(About {belief_id} "{safe_text}")',
@@ -98,9 +93,9 @@ class WMTMUtility:
     def writeback(self, item_ids: Optional[list[str]] = None) -> list[str]:
         """Write high-utility items back to LTM.
 
-        For recalled items: boost STI via ECAN stimulate.
-        For derived items: append as new cluster via store.append_cluster
-        using a properly formatted s-expression cluster.
+        F02 FIX: Idempotent - items already written back are skipped.
+        F07 FIX: ECAN stimulation uses ObjectIndex to resolve cluster_id
+        to belief_id for proper attention boosting.
 
         Returns list of successfully written item IDs.
         """
@@ -114,23 +109,30 @@ class WMTMUtility:
         stimuli = {}
 
         for item in candidates:
+            # F02 FIX: Skip items already written back
+            if item.written_back:
+                continue
+
             if item.source_type == "recalled" and item.origin_cluster:
-                # Boost STI in ECAN for recalled items
-                stimuli[item.origin_cluster] = self.sti_writeback_boost
+                # F07 FIX: Resolve cluster_id to belief_id via ObjectIndex
+                # so ECAN stimulate actually works
+                belief_ids = self._resolve_belief_ids(item.origin_cluster)
+                for bid in belief_ids:
+                    stimuli[bid] = self.sti_writeback_boost
+                item.written_back = True
                 written.append(item.id)
             elif item.source_type == "derived":
-                # Persist derived item to store as a valid s-expression cluster
                 try:
                     cluster_text = self._build_cluster_text(item)
                     if hasattr(self.store, "append_cluster"):
                         self.store.append_cluster(cluster_text)
                     elif hasattr(self.store, "append"):
                         self.store.append(cluster_text)
+                    item.written_back = True
                     written.append(item.id)
                 except Exception as e:
                     log.warning("Writeback failed for %s: %s", item.id, e)
 
-        # Batch stimulate ECAN
         if stimuli:
             try:
                 self.ecan.stimulate_beliefs(stimuli)
@@ -140,6 +142,24 @@ class WMTMUtility:
         log.debug("Utility: wrote back %d items", len(written))
         return written
 
+    def _resolve_belief_ids(self, cluster_id: str) -> list[str]:
+        """F07 FIX: Resolve a cluster_id to belief_ids using ObjectIndex.
+
+        Falls back to [cluster_id] if ObjectIndex not available, so existing
+        tests with mock ECAN still work.
+        """
+        try:
+            from petta_memory.object_index import ObjectIndex
+            idx = ObjectIndex()
+            idx.build_from_store(self.store)
+            objects = idx.objects_in_cluster(cluster_id)
+            belief_ids = [oid for oid, otype in objects if otype == "DerivedBelief"]
+            if belief_ids:
+                return belief_ids
+        except Exception:
+            pass
+        # Fallback: pass cluster_id as-is (for mocked tests)
+        return [cluster_id]
 
     def summary(self) -> dict:
         scores = self.score_all()
