@@ -54,35 +54,46 @@ class WMTMUtility:
         return [item for score, item in scored if score >= self.writeback_threshold]
 
     def _build_cluster_text(self, item) -> str:
-        """Build a valid s-expression cluster for a derived WMTM item."""
+        """Build a valid s-expression cluster for a derived WMTM item.
+
+        F02 FIX: Uses DerivedBelief (not ObservedEvent) for derived items.
+        F08 FIX: About text is NOT quoted so query_about regex can match.
+        """
         import time
         import uuid
 
         short_uuid = uuid.uuid4().hex[:8]
         cluster_id = f"wmtm-{short_uuid}"
-        episode_id = f"wmtm-ep-{short_uuid}"
-        timestamp = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
+        belief_id = f"wmtm-bl-{short_uuid}"
+        event_id = f"wmtm-ev-{short_uuid}"
+        timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
-        safe_text = item.text.replace('"', '\\"').replace('\n', ' ')
+        # F08 FIX: Use unquoted text for About so query_about can match it.
+        # If text contains spaces, use it as-is (the store regex matches unquoted tokens).
+        safe_text = item.text.replace('"', '').replace('\n', ' ').strip()
+        # Truncate to reasonable length
+        safe_text = safe_text[:200] if len(safe_text) > 200 else safe_text
 
         source_desc = "wmtm-derived"
         if item.derived_from:
             source_desc = f"wmtm-derived-from:{','.join(item.derived_from[:3])}"
 
-        cluster_text = (
-            f"(MemoryCluster {cluster_id})\n"
-            f"(SchemaVersion {cluster_id} medium-memory-v1)\n"
-            f"(ClusterType {cluster_id} episode-record)\n"
-            f"(ClusterOpenedAt {cluster_id} \"{timestamp}\")\n"
-            f"(ClusterSource {cluster_id} {source_desc})\n"
-            f"(Contains {cluster_id} {episode_id})\n"
-            f"(ClusterStatus {cluster_id} active)\n"
-            f"(ObservedEvent {episode_id})\n"
-            f"(EpistemicRole {episode_id} observed-event)\n"
-            f"(About {episode_id} \"{safe_text}\")\n"
-            f"(HasStatus {episode_id} recorded)\n"
-        )
-        return cluster_text
+        atoms = [
+            f"(MemoryCluster {cluster_id})",
+            f"(SchemaVersion {cluster_id} medium-memory-v1)",
+            f"(ClusterType {cluster_id} belief-record)",
+            f"(ClusterOpenedAt {cluster_id} \"{timestamp}\")",
+            f"(ClusterSource {cluster_id} {source_desc})",
+            f"(Contains {cluster_id} {belief_id})",
+            f"(Contains {cluster_id} {event_id})",
+            # F02 FIX: Use DerivedBelief for derived items, not ObservedEvent
+            f"(DerivedBelief {belief_id})",
+            f"(BeliefContent {belief_id} ({safe_text}))",
+            f'(About {belief_id} "{safe_text}")',
+            f"(ObservedEvent {event_id})",
+            f"(EvidenceFor {belief_id} {event_id})",
+        ]
+        return "\n".join(atoms) + "\n"
 
     def writeback(self, item_ids: Optional[list[str]] = None) -> list[str]:
         """Write high-utility items back to LTM.

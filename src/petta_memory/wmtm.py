@@ -181,6 +181,11 @@ class WMTMStore:
             self._items.pop(eid, None)
             if len(self._items) <= self.capacity:
                 break
+        # F06 FIX: If still over capacity (forgetting policy max_items > capacity),
+        # evict lowest-STI items to enforce the hard capacity limit
+        while len(self._items) > self.capacity:
+            items = sorted(self._items.values(), key=lambda x: x.sti)
+            self._items.pop(items[0].id)
 
     def summary(self) -> dict:
         items = list(self._items.values())

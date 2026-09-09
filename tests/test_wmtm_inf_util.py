@@ -79,10 +79,13 @@ class TestWMTMInferenceEngine:
         assert "derived_from" not in prov
 
     def test_provenance_missing(self):
+        """F04 FIX: get_provenance returns placeholder for evicted/missing items."""
         wmtm = WMTMStore()
         engine = WMTMInferenceEngine(wmtm)
         prov = engine.get_provenance("nonexistent")
-        assert prov is None
+        assert prov is not None
+        assert prov["id"] == "nonexistent"
+        assert prov.get("evicted") is True
 
     def test_summary(self):
         wmtm = WMTMStore()
