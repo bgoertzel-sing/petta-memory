@@ -9,7 +9,7 @@ from petta_memory.wmtm_utility import WMTMUtility
 
 def _make_cluster(cid, text):
     c = MagicMock()
-    c.id = cid
+    c.cluster_id = cid
     c.text = text
     return c
 
