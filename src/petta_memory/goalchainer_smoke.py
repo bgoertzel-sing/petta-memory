@@ -303,6 +303,9 @@ def _run_heuristic_memory_probe(
         os.environ["GOALCHAINER_PETTACHAINER_DIR"] = str(DEFAULT_PETTACHAINER_DIR)
     if "GOALCHAINER_PETTA_SWIPL" not in os.environ and DEFAULT_SWIPL.exists():
         os.environ["GOALCHAINER_PETTA_SWIPL"] = str(DEFAULT_SWIPL)
+    # Force heuristic PLN path so the memory-evidence bridge is deterministic;
+    # PeTTaChainer compileadd may hang or exceed SWI stack limits under test.
+    os.environ["GOALCHAINER_USE_HEURISTIC_PLN"] = "1"
 
     # Force the heuristic-with-memory path so memory-evidence proofs appear
     os.environ["GOALCHAINER_USE_HEURISTIC_PLN"] = "1"
