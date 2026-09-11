@@ -382,241 +382,6 @@ All tests are deterministic with no flaky behavior. Tests use temporary director
 **F04 fix:** When a source item has been evicted, returns a placeholder dict with `id` and `evicted=True` instead of None, preserving the chain.
 
 ---
-
-## 6. Utility and Writeback
-
-### 6.1 Utility scoring
-
-`compute_utility(item)`:
-
-```python
-recency = 0.9 ** max(0, item.age - item.last_used)
-age_penalty = 0.1 * item.age
-utility = item.use_count * recency + item.sti * 0.3 - age_penalty
-```
-
-Items that are frequently used and have high STI score higher. Age erodes utility linearly.
-
-`get_writeback_candidates()`: Returns items sorted by utility descending, filtered to those above `writeback_threshold` (default 5.0).
-
-### 6.2 Writeback
-
-`writeback(item_ids=None)`:
-
-For **recalled items** (source_type="recalled"):
-1. Resolve `origin_cluster` to belief IDs via ObjectIndex.
-2. Stimulate each belief in ECAN with `sti_writeback_boost` (default 3.0).
-3. Mark `written_back=True` and record receipt.
-
-For **derived items** (source_type="derived"):
-1. Build a `.metta` cluster with: MemoryCluster, SchemaVersion, ClusterType, ClusterOpenedAt, ClusterSource, Contains, DerivedBelief, BeliefContent, About, ReasoningEvent, DerivedAt, Produced, and EvidenceFor links to each parent.
-2. **D01 fix (idempotency):** Check `item.written_back` flag and `_writeback_receipts` dict. Also check `store.query_cluster(cluster_id)` to detect if already persisted.
-3. Append cluster to store journal.
-4. Stimulate the new belief in ECAN.
-5. Mark `written_back=True`.
-
-Cluster text is built using `.format()` with single-quoted format strings to avoid quote-escaping issues. Text is S-expression escaped (backslash, double-quote, newline).
-
----
-
-## 7. Coordinator
-
-`WMTMCoordinator` ties all subsystems together:
-
-```python
-coord = WMTMCoordinator(store, ecan_bridge, capacity=60, decay_rate=0.85,
-                        recall_top_k=15, spread_depth=2,
-                        writeback_threshold=5.0, auto_writeback=True)
-
-# Per-turn lifecycle:
-coord.on_context("user asked about ECAN tuning")  # recall + spread
-# ... agent processes, may call coord.on_derive() or coord.on_touch() ...
-coord.on_tick()                                    # decay + forget + ECAN cycle
-coord.on_turn_end()                                # writeback to LTM
-```
-
-### Key coordinator invariants (post-fix):
-
-- **D04 fix:** `on_turn_end()` does NOT call `wmtm.tick()` — `on_tick()` already advances the clock. Previously, both methods ticked, causing 2x decay per turn.
-- **D05 fix:** `on_tick()` calls `ecan.sync_from_store()` AND `ecan.run_cycle()`, ensuring ECAN diffusion and rent collection actually execute. Previously only sync was called, leaving ECAN attention static.
-- **F07 fix:** ECAN sync picks up newly appended beliefs from the store, so writeback-derived beliefs are immediately visible to the attention system.
-
-### API summary
-
-| Method | Purpose |
-|---|---|
-| `on_context(query)` | Recall + spreading activation |
-| `on_tick()` | Decay, forget, ECAN cycle |
-| `on_derive(text, source_ids)` | Create derived belief |
-| `on_touch(item_id)` | Mark item as used |
-| `on_turn_end()` | Writeback to LTM |
-| `get_active_context(limit)` | Return current working set as dicts |
-| `full_summary()` | Comprehensive state dict |
-
----
-
-## 8. ECAN Integration
-
-The WMTM integrates with the ECAN (Economic Attention Allocation) system at three points:
-
-### 8.1 Recall-time: STI-modulated recall
-
-RecallBridge queries `ecan_bridge.get_prioritized_beliefs(limit=500)` to get a dict of belief_id to STI. These STI values modulate recall scoring: beliefs with high ECAN attention are recalled with higher priority, all else equal.
-
-### 8.2 Spreading activation: EvidenceFor graph traversal
-
-RecallBridge calls `ecan_bridge.get_evidence_map()` to get the EvidenceFor adjacency list. This graph (belief_id -> list of belief_ids it provides evidence for) is traversed via BFS to discover related beliefs that keyword matching alone would miss.
-
-**D02/D03 fix:** The original code used cluster IDs as keys but the evidence map uses belief IDs. The fix resolves cluster IDs to belief IDs via `ObjectIndex` before graph traversal, ensuring spreading activation actually finds neighbors.
-
-### 8.3 Writeback-time: ECAN stimulation
-
-When items are written back to LTM:
-- Recalled items stimulate their origin beliefs in ECAN (STI boost of 3.0).
-- Derived items stimulate the newly created belief in ECAN.
-
-This creates a feedback loop: useful items in WMTM boost their LTM attention, making them more likely to be recalled in future turns.
-
-### 8.4 Tick-time: ECAN cycle
-
-The coordinator runs the full ECAN cycle each tick:
-1. `sync_from_store()`: Import new atoms from the store.
-2. `run_cycle()`: Execute rent collection and importance diffusion.
-
-This ensures ECAN attention values stay current with the belief graph.
-
----
-
-## 9. Code Review: Defects Found and Fixed
-
-An autonomous code review was conducted on 2026-09-08. Seven defects were identified, reproduced, and fixed:
-
-### Defect summary
-
-| ID | Severity | Title | Fix |
-|---|---|---|---|
-| D01 | HIGH | Writeback not idempotent (duplicate clusters) | Added `written_back` flag + `_writeback_receipts` tracking + `store.query_cluster()` check |
-| D02 | HIGH | Cluster ID vs belief ID mismatch (STI boost silently dropped) | Resolve cluster IDs to belief IDs via ObjectIndex before ECAN stimulation |
-| D03 | HIGH | Spreading activation uses wrong ID domain (finds 0 neighbors) | Resolve cluster IDs to belief IDs via ObjectIndex before BFS traversal |
-| D04 | MEDIUM | Double-tick per turn (2x decay) | Removed `wmtm.tick()` from `on_turn_end()` |
-| D05 | MEDIUM | ECAN cycles never run in coordinator | Added `ecan.run_cycle()` to `on_tick()` |
-| D06 | LOW | Derivation counter collision across engines | Content-deterministic SHA-256 hash for derivation IDs |
-| D07 | LOW | decay_sti increments age before computing recency | Reorder: compute recency before age increment |
-
-### Detailed defect descriptions
-
-**D01 — Writeback non-idempotency (HIGH):**
-`_build_cluster_text()` generated a new random UUID each call. With auto-writeback running every turn, a derived item staying in WMTM for 10 turns would create 10 duplicate clusters in LTM. Fix: Track `written_back` flag on WMTMItem and `_writeback_receipts` dict on WMTMUtility. Also check `store.query_cluster()` for already-persisted derivations.
-
-**D02 — STI boost silently dropped (HIGH):**
-RecallBridge admitted items with `item_id = cluster_id`, but ECAN tracks belief IDs. `stimulate_beliefs()` checked `if belief_id in self._belief_ids` and silently skipped unmatched IDs. The entire writeback-for-recalled-items pathway was dead code. Fix: Resolve cluster IDs to belief IDs via ObjectIndex before stimulation.
-
-**D03 — Spreading activation non-functional (HIGH):**
-Same ID-domain mismatch as D02. BFS seeds were cluster IDs but the evidence map was keyed by belief IDs, so adjacency lookups returned empty lists. Spreading activation found zero neighbors. Fix: Added `_resolve_cluster_to_belief_ids()` and `_resolve_object_to_cluster()` helper functions using ObjectIndex.
-
-**D04 — Double-tick (MEDIUM):**
-`on_tick()` called `wmtm.tick()` and `on_turn_end()` called `wmtm.tick()` again, causing 2x decay per turn. An item with STI=100 after 10 turns reached 3.9 instead of the intended 19.7. Fix: Removed tick from `on_turn_end()`.
-
-**D05 — ECAN cycles never run (MEDIUM):**
-`on_tick()` called `ecan.sync_from_store()` but never `ecan.run_cycle()`. ECAN attention values were populated but diffusion, rent collection, and decay never executed. Fix: Added `ecan.run_cycle()` to `on_tick()`.
-
-**D06 — Derivation counter collision (LOW):**
-Two WMTMInferenceEngine instances sharing the same WMTMStore would both produce `deriv-1`, causing the second to overwrite the first. Fix: Content-deterministic SHA-256 hash of (text + sorted source_ids) for derivation IDs.
-
-**D07 — Recency off-by-one (LOW):**
-`decay_sti()` incremented age before computing recency, so the first tick gave recency=0.9 instead of 1.0. Over 50 ticks, cumulative effect was ~10% extra decay. Fix: Reorder to compute recency before age increment.
-
-### Fix delivery
-
-All fixes were delivered via three merged pull requests:
-- PR #3: D01 (writeback idempotency), D02/D03 (ID resolution), D04 (double-tick), D05 (ECAN cycle)
-- PR #4: D06 (derivation ID), D07 (recency ordering)
-- PR #6 + commit 797ab3a: D03 follow-up (ObjectIndex integration refinement)
-
----
-
-## 10. Test Coverage
-
-### 10.1 Test inventory
-
-| Test file | Tests | Coverage area |
-|---|---|---|
-| `test_wmtm.py` | 22 | WMTM core: items, store, forgetting policy, tick, eviction, decay |
-| `test_wmtm_recall.py` | 15 | RecallBridge: keyword extraction, recall scoring, spreading activation, ID resolution |
-| `test_wmtm_inf_util.py` | 18 | Inference engine: derivation, rule validation, provenance, utility scoring, writeback |
-| `test_wmtm_coordinator.py` | 10 | Coordinator: full cycle, context, tick, derive, turn_end, summary |
-| `test_wmtm_integration.py` | 6 | End-to-end: recall to tick to derive to utility to writeback |
-| `test_wmtm_review_v4.py` | 14 | Adversarial/regression: D01-D| Max STI=20.0 | 0.798 | Lowered from 50.0 |
-
-**Conclusion:** The baseline configuration with default parameters achieves the best ECAN score (0.805). Evidence-based STI boost tuning showed marginal degradation, suggesting the original attention allocation dynamics are well-balanced.
-
-### 11.3 Inference test results
-
-| Inference type | Result |
-|---|---|
-| Deduction | PASS |
-| Induction | PASS |
-| Abduction | PASS |
-| Analogy | PASS |
-| Evidence Aggregation | PASS |
-| Contradiction Detection | PASS |
-
----
-
-## 12. Phase 2 Proposals
-
-The current implementation provides a solid foundation. Proposed extensions:
-
-1. **Persistent storage backend:** Replace in-memory journal with SQLite or LMDB for persistence across sessions. The current `MediumMemoryStore` API is backend-agnostic.
-
-2. **Deeper PLN integration:** Feed WMTM-derived beliefs into the Patham9 PLN engine for full logical inference, rather than lightweight text composition.
-
-3. **Semantic recall:** Add embedding-based similarity matching alongside keyword matching, using local sentence-transformer models (no external API dependency).
-
-4. **LTI-driven forgetting:** Currently only STI drives WMTM forgetting. Use LTI to implement a two-tier forgetting system: STI for short-term eviction, LTI for long-term survival decisions.
-
-5. **Cross-agent WMTM sharing:** Allow multiple agents to share a WMTM instance with per-agent access control, enabling collaborative working memory.
-
-6. **Attention-aware derivation:** Use ECAN attentional focus to prioritize which derivations to attempt, rather than deriving from all active items.
-
-7. **Writeback conflict resolution:** When a derived belief conflicts with an existing LTM belief, use PLN truth value revision to merge rather than blindly appending.
-
----
-
-## 13. Summary
-
-The WMTM subsystem is a 945-LOC, 5-module working memory layer with 71 dedicated tests (998 total project tests, all passing). It implements a complete recall-spread-tick-derive-utility-writeback cycle integrated with ECAN attention allocation. An autonomous code review found 7 defects (3 HIGH, 2 MEDIUM, 2 LOW), all of which have been fixed and verified. Benchmark results show 107 cycles/s throughput with 0 violations over 200 stress cycles, and all 6 inference types pass.
-
-The subsystem is ready for integration into the agent runtime. The primary next step is wiring `WMTMCoordinator` into the live agent turn cycle so that each turn automatically recalls, maintains, derives, and writes back working memory.
-
----
-
-## Appendix A: File inventory
-
-| File | Path | LOC |
-|---|---|---|
-| `wmtm.py` | `src/petta_memory/wmtm.py` | 207 |
-| `wmtm_recall.py` | `src/petta_memory/wmtm_recall.py` | 279 |
-| `wmtm_inference.py` | `src/petta_memory/wmtm_inference.py` | 148 |
-| `wmtm_utility.py` | `src/petta_memory/wmtm_utility.py` | 166 |
-| `wmtm_coordinator.py` | `src/petta_memory/wmtm_coordinator.py` | 145 |
-| `test_wmtm.py` | `tests/test_wmtm.py` | 22 tests |
-| `test_wmtm_recall.py` | `tests/test_wmtm_recall.py` | 15 tests |
-| `test_wmtm_inf_util.py` | `tests/test_wmtm_inf_util.py` | 18 tests |
-| `test_wmtm_coordinator.py` | `tests/test_wmtm_coordinator.py` | 10 tests |
-| `test_wmtm_integration.py` | `tests/test_wmtm_integration.py` | 6 tests |
-| `WMTM_REVIEW.md` | `WMTM_REVIEW.md` | Defect report |
-| `ecan-integration-design.md` | `docs/ecan-integration-design.md` | ECAN design |
-
-## Appendix B: PR history
-
-| PR | Title | Defects fixed |
-|---|---|---|
-| #3 | WMTM review fixes: D01-D04 | D01 (idempotency), D02 (cluster-belief ID), D03 (spreading activation), D04 (double-tick) |
-| #4 | WMTM review fixes: D05-D07 | D05 (ECAN cycle), D06 (derivation ID collision), D07 (decay recency) |
-| #6 | D03 follow-up: ObjectIndex resolution | D03 follow-up (cluster-belief ID mapping via ObjectIndex) |
-| 797ab3a | D03 follow-up commit | Final D03 resolution (Sep 9) |
-
 ### 11.3 Real-store integration
 
 The `test_wmtm_real_store.py` test suite (7 tests) runs against a real `MediumMemoryStore` with `ObjectIndex`, `ECANBridge`, and journal persistence. It verifies:
@@ -629,7 +394,6 @@ The `test_wmtm_real_store.py` test suite (7 tests) runs against a real `MediumMe
 - Provenance traces through real derivation chains
 
 ---
-
 ## 12. Phase 2 Proposals
 
 The following are proposed extensions, not yet implemented:
@@ -642,8 +406,6 @@ The following are proposed extensions, not yet implemented:
 6. **Derivation quality scoring:** Before writeback, score derivations by source confidence and rule reliability; reject low-quality derivations.
 7. **WMTM checkpointing:** Persist WMTM state to disk on shutdown and restore on restart, preserving the working set across agent sessions.
 
----
-
 ## 13. Alternatives Considered
 
 | Alternative | Assessment |
@@ -655,7 +417,6 @@ The following are proposed extensions, not yet implemented:
 | No writeback (WMTM as ephemeral only) | Rejected: derived knowledge would be lost on agent restart; writeback ensures durable contributions. |
 
 ---
-
 ## 14. Reproducibility
 
 ### Running the tests
@@ -705,8 +466,34 @@ PYTHONPATH=src python3 -m pytest tests/test_wmtm_integration.py -v --tb=short
 The WMTM is implemented, tested, code-reviewed, and benchmarked. All identified defects have been fixed and verified. The subsystem is ready for external review and integration into the broader petta-memory ecosystem.
 
 ---
+## Appendix A: File inventory
 
-## Appendix A: WMTMItem Lifecycle
+| File | Path | LOC |
+|---|---|---|
+| `wmtm.py` | `src/petta_memory/wmtm.py` | 207 |
+| `wmtm_recall.py` | `src/petta_memory/wmtm_recall.py` | 279 |
+| `wmtm_inference.py` | `src/petta_memory/wmtm_inference.py` | 148 |
+| `wmtm_utility.py` | `src/petta_memory/wmtm_utility.py` | 166 |
+| `wmtm_coordinator.py` | `src/petta_memory/wmtm_coordinator.py` | 145 |
+| `test_wmtm.py` | `tests/test_wmtm.py` | 22 tests |
+| `test_wmtm_recall.py` | `tests/test_wmtm_recall.py` | 15 tests |
+| `test_wmtm_inf_util.py` | `tests/test_wmtm_inf_util.py` | 18 tests |
+| `test_wmtm_coordinator.py` | `tests/test_wmtm_coordinator.py` | 10 tests |
+| `test_wmtm_integration.py` | `tests/test_wmtm_integration.py` | 6 tests |
+| `WMTM_REVIEW.md` | `WMTM_REVIEW.md` | Defect report |
+| `ecan-integration-design.md` | `docs/ecan-integration-design.md` | ECAN design |
+
+## Appendix B: PR history
+
+| PR | Title | Defects fixed |
+|---|---|---|
+| #3 | WMTM review fixes: D01-D04 | D01 (idempotency), D02 (cluster-belief ID), D03 (spreading activation), D04 (double-tick) |
+| #4 | WMTM review fixes: D05-D07 | D05 (ECAN cycle), D06 (derivation ID collision), D07 (decay recency) |
+| #6 | D03 follow-up: ObjectIndex resolution | D03 follow-up (cluster-belief ID mapping via ObjectIndex) |
+
+---
+
+## Appendix C: WMTMItem Lifecycle
 
 ```
 [Admission]
@@ -736,7 +523,10 @@ The WMTM is implemented, tested, code-reviewed, and benchmarked. All identified 
 [Written back to LTM] or [Evicted/Forgotten]
 ```
 
-## Appendix B: Inference Rule Semantics
+
+---
+
+## Appendix D: Inference Rule Semantics
 
 | Rule | Derivation | Example |
 |---|---|---|
@@ -749,7 +539,10 @@ The WMTM is implemented, tested, code-reviewed, and benchmarked. All identified 
 
 All derivations are text-composition based with provenance tracking. They do not compute formal truth values (that is PLN's role). WMTM derivations are proposals; writeback persists them with their provenance so PLN can later evaluate them.
 
-## Appendix C: Git History
+
+---
+
+## Appendix E: Git History
 
 ```
 9b744af Add WMTM integration tests with real store and ECAN bridge
